@@ -146,9 +146,11 @@ def process_files(directory: Path):
                 print(r)
 
 
+cfg = read_configuration("./deis.cfg")
+max_size = int(cfg.get("ingest", "max_size"))
+
+
 if __name__ == "__main__":
-    cfg = read_configuration("./deis.cfg")
-    max_size = int(cfg.get("ingest", "max_size"))
     process_files(Path(cfg.get("ingest", "files")))
     Path("/extracted/ingest_done").touch()
     print("Ingest done.")

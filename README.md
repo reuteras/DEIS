@@ -121,6 +121,17 @@ To only search a for data already in elastic you can use **docker compose up -d*
 
 Stop all services with **docker compose --profile deis down**.
 
+If you get a error message about **max_analyzed_offset** open the developer console at [http://127.0.0.1:5601/app/dev_tools#/console](http://127.0.0.1:5601/app/dev_tools#/console) and execute the following command:
+
+```bash
+PUT /leakdata-index-*/_settings
+{
+  "index" : {
+    "highlight.max_analyzed_offset" : 2000000000
+  }
+}
+```
+
 ## TODO
 
 Things to do.

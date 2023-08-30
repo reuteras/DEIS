@@ -127,7 +127,18 @@ If you get a error message about **max_analyzed_offset** open the developer cons
 PUT /leakdata-index-*/_settings
 {
   "index" : {
-    "highlight.max_analyzed_offset" : 2000000000
+    "highlight.max_analyzed_offset" : 2000000000,
+  }
+}
+```
+
+At the same time run the following.
+
+```bash
+PUT _cluster/settings 
+{
+  "persistent": {
+    "search.max_async_search_response_size": "50mb"
   }
 }
 ```

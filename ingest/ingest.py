@@ -150,7 +150,7 @@ cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
 try:
     password = os.environ['ELASTIC_PASSWORD']
-except AttributeError:
+except (AttributeError, KeyError):
     password = str(cfg.get("elastic", "password"))
 
 

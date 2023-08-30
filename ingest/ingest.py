@@ -97,7 +97,7 @@ def send_elastic(filename, content, hash_value, message):
     }
 
     return request_retry(
-            'http://elastic:'+password+'@elasticsearch:9200/leakdata-index-000001/_doc/'+hash_value+'?pipeline=cbor-attachment',
+            'http://elastic:'+password+'@'+elastic_host+':9200/leakdata-index-000001/_doc/'+hash_value+'?pipeline=cbor-attachment',
             data=cbor2.dumps(doc),
     )
 
@@ -153,9 +153,14 @@ try:
 except (AttributeError, KeyError):
     password = str(cfg.get("elastic", "password"))
 
+if Path("/.dockerenv").is_file():
+    elastic_host = "elasticsearch"
+else:
+    elastic_host = "127.0.0.1"
+
 
 if __name__ == "__main__":
     process_files(Path(cfg.get("ingest", "files")))
-    Path("/extracted/ingest_done").touch()
+    Path("./extracted/ingest_done").touch()
     print("Ingest done.")
 

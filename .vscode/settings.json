@@ -1,0 +1,19 @@
+{
+    "python.linting.banditEnabled": true,
+    "python.linting.enabled": true,
+    "cSpell.words": [
+        "changeme",
+        "earch",
+        "mayswind",
+        "ngest",
+        "ownload",
+        "ransomeware",
+        "readpst",
+        "reuteras",
+        "RPCSECRET",
+        "Tika",
+        "venv",
+        "webui",
+        "xtract"
+    ]
+}

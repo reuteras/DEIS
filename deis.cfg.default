@@ -1,0 +1,12 @@
+[ingest]
+files=./extracted/files/
+max_size=314572800
+[unpack]
+pst=true
+pst_archive=true
+pst_remove=false
+summary=true
+unpack=true
+unzip=true
+zip_archive=true
+zip_remove=false

@@ -1,0 +1,190 @@
+---
+version: "3.8"
+
+services:
+  setup:
+    profiles:
+      - setup
+    build:
+      context: setup/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    init: true
+    volumes:
+      - ./setup/entrypoint.sh:/entrypoint.sh:ro
+      - ./setup/lib.sh:/lib.sh:ro
+      - ./setup/roles:/roles:ro
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+      METRICBEAT_INTERNAL_PASSWORD: ${METRICBEAT_INTERNAL_PASSWORD:-}
+      FILEBEAT_INTERNAL_PASSWORD: ${FILEBEAT_INTERNAL_PASSWORD:-}
+      HEARTBEAT_INTERNAL_PASSWORD: ${HEARTBEAT_INTERNAL_PASSWORD:-}
+      MONITORING_INTERNAL_PASSWORD: ${MONITORING_INTERNAL_PASSWORD:-}
+      BEATS_SYSTEM_PASSWORD: ${BEATS_SYSTEM_PASSWORD:-}
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch
+      - kibana
+
+  deis:
+    profiles:
+      - deis
+    build: deis
+    environment:
+      - RPCPORT=${RPCPORT:-}
+      - RPCSECRET=${RPCSECRET:-}
+      - TORSERVNUM=${TORSERVNUM:-}
+    volumes:
+      - ./files:/files
+      - ./downloader/data:/downloader/data
+      - ./extracted:/extracted
+      - ./logs:/logs
+      - ./urls:/urls
+    networks:
+      - download
+
+  downloader:
+    profiles:
+      - deis
+      - download
+    build: downloader
+    environment:
+      - RPCPORT=${RPCPORT:-}
+      - RPCSECRET=${RPCSECRET:-}
+      - TORSERVNUM=${TORSERVNUM:-}
+    volumes:
+      - ./downloader/conf:/conf
+      - ./downloader/log:/log
+      - ./downloader/run:/run
+      - ./downloader/data:/data
+      - ./files:/done
+    networks:
+      - download
+    ports:
+      - 127.0.0.1:6800:6800
+
+  controller:
+    profiles:
+      - deis
+      - download
+    build: controller
+    volumes:
+      - ./controller/conf:/conf
+      - ./controller/logs:/logs
+      - ./controller/www:/var/www
+    networks:
+      - download
+    ports:
+      - 127.0.0.1:8080:8080
+
+  unpack:
+    profiles:
+      - deis
+      - unpack
+    build: unpack
+    volumes:
+      - ./files:/files
+      - ./extracted:/extracted
+      - ./deis.cfg:/deis.cfg
+    environment:
+      ZIP_PASSWORD: ${ZIP_PASSWORD:-}
+
+  web:
+    build: web
+    volumes:
+      - ./extracted/files:/extracted/files
+      - shasum:/extracted/sha256
+    networks:
+      - web
+    ports:
+      - 127.0.0.1:8081:8081
+
+  ingest:
+    profiles:
+      - deis
+      - ingest
+    build: ingest
+    volumes:
+      - ./extracted:/extracted
+      - ./deis.cfg:/deis.cfg
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+    networks:
+      - elk
+
+  elasticsearch:
+    build:
+      context: elasticsearch/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    volumes:
+      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro,Z
+      - elasticsearch:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+      - 9300:9300
+    environment:
+      node.name: elasticsearch
+      ES_JAVA_OPTS: -Xms2g -Xmx16g
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      discovery.type: single-node
+    networks:
+      - elk
+    restart: unless-stopped
+
+  kibana:
+    build:
+      context: kibana/
+      args:
+        ELASTIC_VERSION: ${ELASTIC_VERSION}
+    volumes:
+      - ./kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro,Z
+    ports:
+      - 5601:5601
+    environment:
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  notebook:
+    image: reuteras/container-notebook
+    command: "start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
+    ports:
+      - 8888:8888
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+    volumes:
+      - ./notebook:/home/jovyan/work
+      - ./.jupyter:/home/jovyan/.jupyter
+    networks:
+      - elk
+      - web
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  gotenberg:
+    image: gotenberg/gotenberg
+    ports:
+      - 3000:3000
+    networks:
+      - web
+    restart: unless-stopped
+
+networks:
+  download:
+    driver: bridge
+  elk:
+    driver: bridge
+  web:
+    driver: bridge
+
+volumes:
+  elasticsearch:
+  shasum:

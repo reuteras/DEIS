@@ -1,0 +1,11 @@
+.jupyter/serverconfig/jupyterlabapputilsextensionannouncements.json
+.jupyter/lab/workspaces/*
+.jupyter/migrated
+.venv/
+**/privoxy*.conf
+deis.cfg
+downloader/conf/aria2.session
+downloader/conf/nginx.conf
+downloader/data/*
+downloader/log/*
+notebook/.ipynb_checkpoints

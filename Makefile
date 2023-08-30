@@ -1,5 +1,7 @@
 virtualenv = .venv
 
+all: venv
+
 clean:
 	rm -f downloader/conf/privoxy* downloader/conf/aria2.session downloader/conf/nginx.conf
 	rm -f downloader/data/*
@@ -44,9 +46,9 @@ python-bin: $(virtualenv)
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r bin/requirements.txt
 
 requires: $(virtualenv)
+	source $(virtualenv)/bin/activate && python3 -m pip -q install -r bin/requirements.txt
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r ingest/requirements.txt
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r web/requirements.txt
-	source $(virtualenv)/bin/activate && python3 -m pip -q install -r bin/requirements.txt
 
 progress: python-bin
 	$(virtualenv)/bin/python3 bin/progress.py

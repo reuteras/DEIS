@@ -95,9 +95,9 @@ def send_elastic(filename, content, hash_value, message):
         'mtime': int(filename.stat().st_mtime),
         'message': message,
     }
-    
+
     return request_retry(
-            'http://elastic:'+os.environ['ELASTIC_PASSWORD']+'@elasticsearch:9200/leakdata-index-000001/_doc/'+hash_value+'?pipeline=cbor-attachment',
+            'http://elastic:'+password+'@elasticsearch:9200/leakdata-index-000001/_doc/'+hash_value+'?pipeline=cbor-attachment',
             data=cbor2.dumps(doc),
     )
 
@@ -148,6 +148,10 @@ def process_files(directory: Path):
 
 cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
+try:
+    password = os.environ['ELASTIC_PASSWORD']
+except AttributeError:
+    password = str(cfg.get("elastic", "password"))
 
 
 if __name__ == "__main__":

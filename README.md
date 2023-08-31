@@ -145,7 +145,7 @@ PUT _cluster/settings
 
 ## TODO
 
-Things to do.
+Lots of things :)
 
   [7zz]: https://www.7-zip.org/
   [aod]: https://github.com/sn0b4ll/aria2-onion-downloader

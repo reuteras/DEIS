@@ -128,7 +128,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
       "attachment" : {
         "field" : "data",
         "remove_binary": true,
-        "indexed_chars": -1
+        "indexed_chars": 200000
       },
       "date" : {
         "field" : "mtime",
@@ -150,7 +150,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
       "attachment" : {
         "field" : "data",
         "remove_binary": true,
-        "indexed_chars": -1
+        "indexed_chars": 200000
       },
       "date" : {
         "field" : "mtime",

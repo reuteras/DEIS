@@ -43,7 +43,6 @@ def insert_into_database(filename, file_hash):
 
 def copy_file_with_progress(src_path_copy, dest_path_copy):
     """Copy file and display a tqdm progress bar."""
-    print("Wait while finding files. Can take a long time", end='', flush=True)
     total_size = src_path_copy.stat().st_size
     chunk_size = 1024 * 1024
 
@@ -65,6 +64,7 @@ def copy_file_with_progress(src_path_copy, dest_path_copy):
 
 
 def copy_or_move_files(source, dest, operation='copy'):
+    print("Wait while finding files. Can take a long time", end='', flush=True)
     all_files = list(source.rglob('*'))
     for file_path in tqdm(
         all_files,

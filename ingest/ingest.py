@@ -127,7 +127,7 @@ def handle_file(fname: Path):
         if response.status_code == 400:
             print("Error sending file to Elastic (second 400 returned):", fname)
             remove_sha256(sha256)
-        elif not response.status_code in success_list:
+        elif response.status_code not in success_list:
             print("Error sending file to Elastic (second try returned):", fname, "Code:", response.status_code)
             remove_sha256(sha256)
     return
@@ -140,7 +140,7 @@ def process_files(directory: Path):
         files_list = list(files)
         files_count = len(files_list)
         files = iter(files_list)
-        results = list(tqdm(executor.map(handle_file, files), total=files_count))
+        results = list(tqdm(executor.map(handle_file, files), total=files_count, desc="Processing files", unit="file"))
         for r in results: 
             if r:
                 print(r)

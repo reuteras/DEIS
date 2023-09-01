@@ -53,7 +53,7 @@ def copy_file_with_progress(src_path_copy, dest_path_copy):
         unit_scale=True,
         unit_divisor=1024*1024,
         desc=str(src_path_copy.name),
-        position=0,
+        position=1,
         leave=False
     ) as bar:
         while True:
@@ -69,7 +69,6 @@ def copy_or_move_files(source, dest, operation='copy'):
     for file_path in tqdm(
         all_files,
         desc="Processing files",
-        leave=False,
         position=0,
         unit="files"
         ):

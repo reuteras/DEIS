@@ -42,12 +42,17 @@ def insert_into_database(filename, file_hash):
 def copy_file_with_progress(src_path_copy, dest_path_copy):
     """Copy file and display a tqdm progress bar."""
     total_size = src_path_copy.stat().st_size
-    chunk_size = 1024 * 1024  # 1MB
-    
+    chunk_size = 1024 * 1024
+
+    print("Wait while finding files. Can take a long time", end='', flush=True)
     with src_path_copy.open('rb') as src, dest_path_copy.open('wb') as dest, tqdm(
-        total=total_size, 
-        unit='MB', 
-        desc=str(src_path_copy.name)
+        total=total_size,
+        unit='MB',
+        unit_scale=True,
+        unit_divisor=1024*1024,
+        desc=str(src_path_copy.name),
+        position=0,
+        leave=False
     ) as bar:
         while True:
             chunk = src.read(chunk_size)
@@ -59,7 +64,13 @@ def copy_file_with_progress(src_path_copy, dest_path_copy):
 
 def copy_or_move_files(source, dest, operation='copy'):
     all_files = list(source.rglob('*'))
-    for file_path in tqdm(all_files, desc="Processing files", unit="files"):
+    for file_path in tqdm(
+        all_files,
+        desc="Processing files",
+        leave=True,
+        position=0,
+        unit="files"
+        ):
         if file_path.is_file():
             file_hash = compute_sha256(file_path)
             new_file_path = dest / file_hash[:1] / file_hash[1:2] / (file_hash + file_path.suffix)
@@ -108,4 +119,4 @@ if __name__ == "__main__":
         copy_or_move_files(source_path, dest_path, operation=args.mode)
     except (sqlite3.Error, FileNotFoundError, PermissionError) as e:
         print(f"Error occurred during operation: {e}")
-#
+

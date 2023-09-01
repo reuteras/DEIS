@@ -45,6 +45,9 @@ ingest: $(virtualenv)
 python-bin: $(virtualenv)
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r bin/requirements.txt
 
+python-bin-arm64: $(virtualenv)
+	source $(virtualenv)/bin/activate && CPPFLAGS="-I/opt/homebrew/opt/sqlite/include" CPPFLAGS="-I/opt/homebrew/opt/sqlite/include" python3 -m pip -q install -r bin/requirements.txt
+
 requires: $(virtualenv)
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r bin/requirements.txt
 	source $(virtualenv)/bin/activate && python3 -m pip -q install -r ingest/requirements.txt

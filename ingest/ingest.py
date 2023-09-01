@@ -140,7 +140,7 @@ def process_files(directory: Path):
         files_list = list(files)
         files_count = len(files_list)
         files = iter(files_list)
-        results = list(tqdm(executor.map(handle_file, files), total=files_count, desc="Processing files", unit="file"))
+        results = list(tqdm(executor.map(handle_file, files), total=files_count, desc="Processing files", unit="files"))
         for r in results: 
             if r:
                 print(r)

@@ -16,6 +16,7 @@ def compute_sha256(file_path):
     with file_path.open('rb') as f:
         return hashlib.sha256(f.read()).hexdigest()
 
+
 def setup_database():
     """Initialize the SQLite database."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -29,6 +30,7 @@ def setup_database():
         """)
         conn.commit()
 
+
 def insert_into_database(filename, file_hash):
     """Insert filename and its sha256 into the database."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -41,10 +43,10 @@ def insert_into_database(filename, file_hash):
 
 def copy_file_with_progress(src_path_copy, dest_path_copy):
     """Copy file and display a tqdm progress bar."""
+    print("Wait while finding files. Can take a long time", end='', flush=True)
     total_size = src_path_copy.stat().st_size
     chunk_size = 1024 * 1024
 
-    print("Wait while finding files. Can take a long time", end='', flush=True)
     with src_path_copy.open('rb') as src, dest_path_copy.open('wb') as dest, tqdm(
         total=total_size,
         unit='MB',
@@ -67,7 +69,7 @@ def copy_or_move_files(source, dest, operation='copy'):
     for file_path in tqdm(
         all_files,
         desc="Processing files",
-        leave=True,
+        leave=False,
         position=0,
         unit="files"
         ):
@@ -86,6 +88,7 @@ def copy_or_move_files(source, dest, operation='copy'):
                     copy_file_with_progress(file_path, new_file_path)
                 elif operation == 'move':
                     file_path.rename(new_file_path)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

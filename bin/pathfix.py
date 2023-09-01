@@ -38,9 +38,28 @@ def insert_into_database(filename, file_hash):
         """, (filename, file_hash))
         conn.commit()
 
+
+def copy_file_with_progress(src_path_copy, dest_path_copy):
+    """Copy file and display a tqdm progress bar."""
+    total_size = src_path_copy.stat().st_size
+    chunk_size = 1024 * 1024  # 1MB
+    
+    with src_path_copy.open('rb') as src, dest_path_copy.open('wb') as dest, tqdm(
+        total=total_size, 
+        unit='MB', 
+        desc=str(src_path_copy.name)
+    ) as bar:
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            dest.write(chunk)
+            bar.update(len(chunk))
+
+
 def copy_or_move_files(source, dest, operation='copy'):
     all_files = list(source.rglob('*'))
-    for file_path in tqdm(all_files, desc="Processing files", unit="file"):
+    for file_path in tqdm(all_files, desc="Processing files", unit="files"):
         if file_path.is_file():
             file_hash = compute_sha256(file_path)
             new_file_path = dest / file_hash[:1] / file_hash[1:2] / (file_hash + file_path.suffix)
@@ -53,7 +72,7 @@ def copy_or_move_files(source, dest, operation='copy'):
                     new_file_path.parent.mkdir(parents=True)
 
                 if operation == 'copy':
-                    new_file_path.write_bytes(file_path.read_bytes())
+                    copy_file_with_progress(file_path, new_file_path)
                 elif operation == 'move':
                     file_path.rename(new_file_path)
 

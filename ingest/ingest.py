@@ -92,7 +92,7 @@ def send_elastic(filename, content, hash_value, message):
 
     if use_sqlite:
         cur = con.cursor()
-        res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", hash_value)
+        res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", (hash_value,))
         filename = res.fetchone()[0]
 
     doc = {

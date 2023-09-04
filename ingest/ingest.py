@@ -90,13 +90,15 @@ def request_retry(url, data, num_retries=50):
 def send_elastic(filename, content, hash_value, message):
     """Send files to elastic."""
 
+    filepath=filename
+
     if use_sqlite:
         cur = con.cursor()
         res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", (hash_value,))
-        filename = res.fetchone()[0]
+        filepath = res.fetchone()[0]
 
     doc = {
-        'filename': str(filename),
+        'filename': str(filepath),
         'sha256': hash_value,
         'data': content,
         'mtime': int(filename.stat().st_mtime),

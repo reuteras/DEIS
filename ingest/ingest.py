@@ -11,6 +11,7 @@ import configparser
 import hashlib
 import os
 import requests
+import sqlite3
 import sys
 import time
 
@@ -88,6 +89,12 @@ def request_retry(url, data, num_retries=50):
 
 def send_elastic(filename, content, hash_value, message):
     """Send files to elastic."""
+
+    if use_sqlite:
+        cur = con.cursor()
+        res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", hash_value)
+        print(res.fetchone())
+
     doc = {
         'filename': str(filename),
         'sha256': hash_value,
@@ -148,6 +155,9 @@ def process_files(directory: Path):
 
 cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
+use_sqlite = bool(cfg.get("ingest", "use_sqlite"))
+if use_sqlite:
+    con = sqlite3.connect("db/file_hashes.db")
 try:
     password = os.environ['ELASTIC_PASSWORD']
 except (AttributeError, KeyError):

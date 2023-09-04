@@ -3,6 +3,7 @@ password=changeme
 [ingest]
 files=./extracted/files/
 max_size=314572800
+use_sqlite=False
 [unpack]
 pst=true
 pst_archive=true

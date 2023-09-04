@@ -82,7 +82,7 @@ def request_retry(url, data, num_retries=50):
             if response.status_code == 400:
                 return response
             time.sleep(15)
-        except (requests.exceptions.ConnectionError, requests.exceptions.ConnectionError):
+        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
             time.sleep(15)
     return None
 

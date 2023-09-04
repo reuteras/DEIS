@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 virtualenv = .venv
 
 all: venv

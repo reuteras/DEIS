@@ -48,7 +48,6 @@ def copy_file_with_progress(src_path_copy, dest_path_copy):
 
     with src_path_copy.open('rb') as src, dest_path_copy.open('wb') as dest, tqdm(
         total=total_size,
-        unit='MB',
         unit_scale=True,
         unit_divisor=1024*1024,
         desc=str(src_path_copy.name),
@@ -70,7 +69,7 @@ def copy_or_move_files(source, dest, operation='copy'):
         all_files,
         desc="Processing files",
         position=0,
-        unit="files"
+        unit="file"
         ):
         if file_path.is_file():
             file_hash = compute_sha256(file_path)

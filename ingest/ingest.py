@@ -72,7 +72,7 @@ def remove_sha256(hash_value):
         print("ERROR: Could not remove link extraced/sha256/" + hash_value)
 
 
-def request_retry(url, data, num_retries=50):
+def request_retry(url, data, num_retries=5):
     for _ in range(num_retries):
         try:
             response = requests.put(url, data=data, headers=headers, timeout=50)
@@ -83,7 +83,7 @@ def request_retry(url, data, num_retries=50):
                 return response
             time.sleep(15)
         except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
-            time.sleep(15)
+            time.sleep(60)
     return None
 
 
@@ -131,6 +131,7 @@ def handle_file(fname: Path):
     if response is None:
         print("Error sending file to Elastic (Null returned):", fname)
         remove_sha256(sha256)
+        return
     if response.status_code == 400:
         response = send_elastic(fname, "", sha256, response.text)
         if response.status_code == 400:

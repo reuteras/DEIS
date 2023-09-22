@@ -1,3 +1,4 @@
+---
 ## Filebeat configuration
 ## https://github.com/elastic/beats/blob/main/deploy/docker/filebeat.docker.yml
 #
@@ -9,24 +10,20 @@ filebeat.config:
     path: ${path.config}/modules.d/*.yml
     reload.enabled: false
 
-filebeat.autodiscover:
-  providers:
-    # The Docker autodiscover provider automatically retrieves logs from Docker
-    # containers as they start and stop.
-    - type: docker
-      hints.enabled: true
-
-processors:
-  - add_cloud_metadata: ~
+filebeat.inputs:
+  - type: filestream
+    id: json-input
+    paths:
+      - /json/*.json
 
 monitoring:
-  enabled: true
+  enabled: false
   elasticsearch:
     username: beats_system
     password: ${BEATS_SYSTEM_PASSWORD}
 
 output.elasticsearch:
-  hosts: [ http://elasticsearch:9200 ]
+  hosts: [http://elasticsearch:9200]
   username: filebeat_internal
   password: ${FILEBEAT_INTERNAL_PASSWORD}
 

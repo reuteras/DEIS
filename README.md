@@ -9,7 +9,7 @@ The project started after a friend asked for help investigating if a data leak c
 This tool can be used to automate all of (or a selection of) the steps below.
 
 - **D**ownload files from a leek site via [TOR][tor]
-- **E**xtract files from .rar, .zip, .tgz and more with the help of [7-zip][zip]
+- **E**xtract files from .rar, .zip, .tgz and more with the help of [7-zip][7zz]
 - **I**ngest into [Elasticsearch][els] with the [Tika][tik] [pipeline][eap]
 - **S**earch via [Kibana][kib] and [JupyterLab][jup] notebooks
 
@@ -143,6 +143,19 @@ PUT _cluster/settings
 }
 ```
 
+
+## Based on
+
+This project uses several open source tools in combination. A list below and please submit an issue if I have missed any:
+
+- [docker-elk][del]
+- [aria2-onion-downloader][aod] which uses [AriaNg][maa]
+- Apache [Tika][tik]
+- [readpst][res]
+- [Tor][tor]
+- The whole ELK-stack by [Elastic.co][eco]
+- [Jupyterlab][jup]
+
 ## TODO
 
 Lots of things :)
@@ -155,6 +168,7 @@ Lots of things :)
   [dco]: https://docs.docker.com/compose/
   [doc]: https://www.docker.com/
   [eap]: https://www.elastic.co/guide/en/elasticsearch/reference/current/attachment.html
+  [eco]: https://www.elastic.co/
   [els]: https://www.elastic.co/elasticsearch/
   [for]: https://github.com/reece394/aria2-onion-downloader
   [jup]: https://github.com/jupyterlab/jupyterlab
@@ -164,5 +178,4 @@ Lots of things :)
   [res]: https://linux.die.net/man/1/readpst
   [tik]: https://tika.apache.org/
   [tor]: https://www.torproject.org/
-  [zip]: https://www.7-zip.org/
 

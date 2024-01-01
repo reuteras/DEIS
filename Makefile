@@ -5,9 +5,12 @@ virtualenv = .venv
 all: venv
 
 clean:
-	rm -f downloader/conf/privoxy* downloader/conf/aria2.session downloader/conf/nginx.conf
+	rm -f downloader/conf/aria2.session
+	rm -f downloader/conf/nginx.conf
+	rm -f downloader/conf/privoxy*
+	rm -f downloader/conf/torrc
 	rm -f downloader/data/*
-	rm -f downloader/log/*
+	rm -rf downloader/log
 	rm -f logs/*
 
 dist-clean: clean docker-clean

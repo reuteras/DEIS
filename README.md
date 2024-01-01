@@ -66,7 +66,7 @@ docker compose --profile setup up -d
 Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
 
 ```bash
-docker compose --profile logs setup -f
+docker logs deis-setup-1 -f
 ```
 
 ## Run all steps

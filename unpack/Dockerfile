@@ -1,4 +1,4 @@
-FROM debian:12.1-slim
+FROM debian:bookworm-slim
 
 LABEL maintainer="code@ongoing.today"
 

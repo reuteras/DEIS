@@ -29,6 +29,7 @@ services:
       - elasticsearch
       - kibana
 
+
   deis:
     profiles:
       - deis
@@ -45,6 +46,7 @@ services:
       - ./urls:/urls
     networks:
       - download
+
 
   downloader:
     profiles:
@@ -66,6 +68,7 @@ services:
     ports:
       - 127.0.0.1:6800:6800
 
+
   controller:
     profiles:
       - deis
@@ -80,6 +83,7 @@ services:
     ports:
       - 127.0.0.1:8080:8080
 
+
   unpack:
     profiles:
       - deis
@@ -92,6 +96,7 @@ services:
     environment:
       ZIP_PASSWORD: ${ZIP_PASSWORD:-}
 
+
   web:
     build: web
     volumes:
@@ -101,6 +106,7 @@ services:
       - web
     ports:
       - 127.0.0.1:8081:8081
+
 
   ingest:
     profiles:
@@ -114,6 +120,7 @@ services:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
     networks:
       - elk
+
 
   elasticsearch:
     build:
@@ -135,6 +142,7 @@ services:
       - elk
     restart: unless-stopped
 
+
   kibana:
     build:
       context: kibana/
@@ -152,6 +160,7 @@ services:
       - elasticsearch
     restart: unless-stopped
 
+
   notebook:
     image: reuteras/container-notebook
     command: "start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
@@ -168,6 +177,7 @@ services:
     depends_on:
       - elasticsearch
     restart: unless-stopped
+
 
   gotenberg:
     image: gotenberg/gotenberg

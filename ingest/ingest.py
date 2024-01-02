@@ -113,6 +113,8 @@ def send_elastic(filename, content, hash_value, message):
 
 def handle_file(fname: Path):
     """Handle files."""
+    if str(fname) in ["extracted/files/done", "extracted/files/path.txt"]:
+        return
     sha256 = get_filehash(fname)
     if len(sha256) != 64:
         print("ERROR: Could not get sha256 for file: ", fname)

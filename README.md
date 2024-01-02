@@ -2,7 +2,7 @@
 
 ## Background
 
-Project to create an automated pipeline with [Docker][doc] and [docker compose][dco] to investigate data from ransomeware leaks.
+Project to create an automated pipeline with [Docker][doc] and [docker compose][dco] to investigate data from ransomware leaks.
 
 The project started after a friend asked for help investigating if a data leak contained the friends personal information.
 
@@ -15,9 +15,7 @@ This tool can be used to automate all of (or a selection of) the steps below.
 
 ### Download
 
-Download files automatically from leek sites using [TOR][tor]. I use a [forked][for] version of [aria2-onion-downloader][aod]. Should look at using [docker-aria2-with-webui][aww] if TOR isn't needed or disable TOR in the current package.
-
-Monitor [mayswind/AriaNg][maa] for new releases.
+Download files automatically from leek sites using [TOR][tor]. I use a [forked][for] version of [aria2-onion-downloader][aod].
 
 ### Extract
 
@@ -77,14 +75,16 @@ To run all steps in **DEIS** run.
 docker compose --profile deis up -d
 ```
 
-You can monitor the download progress by visiting [http://127.0.0.1:8080/](http://127.0.0.1:8080/). You have to enter the value for **RPCSECRET** from the file *.env* (default is **changeme**). After the download is finished the files will be extracted to the directory _extracted_.
-
-After the extraction of is done the ingest process will start. Until it finishes you can see the files *extracted/extensions.txt"* and *extracted/mime.txt* for information about the number of files of different types. Only files with a unique sha256 will be ingested to Elasticsearch.
-
-It is possible to monitor the progress of the process by running the following command (run **make python-bin** first to setup the environment for python).
+Monitor progress by first running:
 
 ```bash
-.venv/bin/python bin/progress.py
+make venv
+```
+
+And then run the *bin/progress.py* Python script with:
+
+```bash
+make progress
 ```
 
 Press CTRL-C to exit the progress display.
@@ -143,7 +143,6 @@ PUT _cluster/settings
 }
 ```
 
-
 ## Based on
 
 This project uses several open source tools in combination. A list below and please submit an issue if I have missed any:
@@ -160,9 +159,11 @@ This project uses several open source tools in combination. A list below and ple
 
 Lots of things :)
 
+- Monitor [mayswind/AriaNg][maa] for new releases.
+
+
   [7zz]: https://www.7-zip.org/
   [aod]: https://github.com/sn0b4ll/aria2-onion-downloader
-  [aww]: https://github.com/abcminiuser/docker-aria2-with-webui
   [con]: https://github.com/reuteras/container-notebook
   [del]: https://github.com/deviantony/docker-elk
   [dco]: https://docs.docker.com/compose/

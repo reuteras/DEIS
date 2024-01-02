@@ -98,6 +98,9 @@ try:
 
         print("".ljust(max_length*2))
         print("Information can be delayed up to 60 seconds. Press CTRL-C to exit.")
+        print("".ljust(max_length*2))
+        print("Download status: http://127.0.0.1:8080/")
+        print("Kibana: http://127.0.0.1:5601/")
         time.sleep(0.1)
 
 except KeyboardInterrupt:

@@ -158,7 +158,7 @@ def process_files(directory: Path):
 
 cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
-use_sqlite = bool(cfg.get("ingest", "use_sqlite"))
+use_sqlite = cfg.getboolean("ingest", "use_sqlite")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:

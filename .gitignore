@@ -6,6 +6,7 @@
 deis.cfg
 downloader/conf/aria2.session
 downloader/conf/nginx.conf
+downloader/conf/torrc
 downloader/data/*
 downloader/log/*
 notebook/.ipynb_checkpoints

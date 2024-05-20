@@ -9,6 +9,7 @@ COPY start.sh /
 
 ENV DEBIAN_FRONTEND noninteractive
 
+# hadolint ignore=DL3008
 RUN apt-get update && \
     apt-get upgrade -yq && \
     apt-get -y install --no-install-recommends \

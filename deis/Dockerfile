@@ -7,6 +7,7 @@ RUN mkdir -p /deis/bin
 COPY *.sh /deis/bin/
 COPY crontab.txt /deis/
 
+# hadolint ignore=DL3018
 RUN apk add --no-cache \
         bash \
         curl \

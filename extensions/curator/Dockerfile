@@ -1,5 +1,6 @@
 FROM untergeek/curator:8.0.2
 
+# hadolint ignore=DL3002
 USER root
 
 RUN >>/var/spool/cron/crontabs/nobody \

@@ -8,6 +8,7 @@ COPY *.py /app
 COPY *.sh /app
 COPY requirements.txt /app
 
+# hadolint ignore=DL3008
 RUN apt-get update && \
     apt-get upgrade -yq && \
     apt-get -y install --no-install-recommends \

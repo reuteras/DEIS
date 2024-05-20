@@ -188,7 +188,7 @@ function create_user {
         '-X' 'POST'
         '-H' 'Content-Type: application/json'
         '-d' "{\"password\":\"${password}\",\"roles\":[\"${role}\"]}"
-        )
+    )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
         args+=('-u' "elastic:${ELASTIC_PASSWORD}")

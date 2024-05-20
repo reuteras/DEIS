@@ -15,7 +15,7 @@ if [[ ! -f /files/added_urls ]]; then
             /deis/bin/addurl.sh "${url}"
         done
         fi < <(cat /urls/* | sort | uniq )
-        
+
         echo ""
         echo "Added URLs and creating /files/added_urls"
         touch /files/added_urls

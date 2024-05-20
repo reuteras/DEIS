@@ -2,7 +2,7 @@
 
 function usage {
     echo "Usage: ${0} <onion url>"
-	echo "   <onion url> should end with a /"
+    echo "   <onion url> should end with a /"
 }
 
 if [[ "$#" != "1" ]]; then
@@ -16,8 +16,8 @@ if [[ "${1}" == '-h' || "${1}" == '--help' ]]; then
 fi
 
 if [[ -f "list.txt" ]]; then
-	echo "ERROR: list.txt already exists. Remove and run the script again."
-	exit
+    echo "ERROR: list.txt already exists. Remove and run the script again."
+    exit
 fi
 
 URL="${1}"

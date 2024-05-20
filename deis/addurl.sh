@@ -7,8 +7,8 @@ curl --silent "http://downloader:6800/jsonrpc" --header "Content-Type: applicati
     "method": "aria2.addUri",
     "params": [
         "token:'"${RPCSECRET}"'",
-                [
+            [
                     "'"${1}"'"
-                ]
-              ]
+            ]
+        ]
 }' > /dev/null

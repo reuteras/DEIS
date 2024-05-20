@@ -12,5 +12,5 @@ else
             echo "Download done. Creating /files/downloaded."
             touch /files/downloaded
         fi
-    fi        
+    fi
 fi

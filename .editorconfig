@@ -26,7 +26,7 @@ space_redirects = true
 # Enable this option by un-commenting the following line
 # max_line_length = 150
 
-[{*.yml,*.yaml,.dockerfilelintrc}]
+[{*.yml,*.yaml,.dockerfilelintrc,*.md,*.json,*.conf}]
 indent_style = space
 indent_size = 2
 
@@ -34,3 +34,15 @@ indent_size = 2
 indent_style = tab
 indent_size = 4
 
+[*.ipynb]
+indent_style = space
+indent_size = 1
+
+# Ignore paths
+[LICENSE,*.jupyterlab-settings,index.html,*.ndjson]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset

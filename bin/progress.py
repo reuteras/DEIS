@@ -64,7 +64,7 @@ try:
         else:
             print_status("Adding URLS to download", "DONE")
 
-        # Download 
+        # Download
         if os.path.exists('files/running') and not os.path.exists('files/downloaded'):
             print_status("Download", "RUNNING")
         elif os.path.exists('files/downloaded'):

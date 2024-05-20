@@ -131,9 +131,9 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
             },
             "date" : {
                 "field" : "mtime",
-               "target_field" : "timestamp",
-             "formats" : ["UNIX"],
-             "timezone" : "UTC"
+                "target_field" : "timestamp",
+                "formats" : ["UNIX"],
+                "timezone" : "UTC"
             }
         }
     ]

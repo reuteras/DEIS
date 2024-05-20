@@ -37,6 +37,7 @@ jobs:
           VALIDATE_ALL_CODEBASE: true
           VALIDATE_GO: false
           VALIDATE_JSCPD: false
+          VALIDATE_NATURAL_LANGUAGE: false
           VALIDATE_PYTHON_BLACK: false
           VALIDATE_PYTHON_FLAKE8: false
           VALIDATE_PYTHON_PYLINT: false

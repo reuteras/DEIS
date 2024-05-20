@@ -30,7 +30,7 @@ After unpacking the downloaded files a couple of optional (but default) steps ar
 
 Ingest files to search into [Elasticsearch][els] with the [attachment processor][eap] enabled. The processor uses Apache [Tika][tik] to extract text from files.
 
-I've incorporated the [docker-elk][del] repo setup and run Elasticsearch and Kibana but have removed Logstash.
+I've incorporated the [docker-elk][del] repository setup and run Elasticsearch and Kibana but have removed Logstash.
 
 ### Search
 
@@ -45,8 +45,8 @@ You must increase the RAM that Docker can use to 18 GB or more. Otherwise Elasti
 Download the repository from GitHub and change to the new directory.
 
 ```bash
-$ git clone https://github.com/reuteras/DEIS.git
-$ cd DEIS
+git clone https://github.com/reuteras/DEIS.git
+cd DEIS
 ```
 
 Configure DEIS by changing three files:
@@ -58,13 +58,13 @@ Configure DEIS by changing three files:
 Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
 
 ```bash
-$ docker compose --profile setup up -d
+docker compose --profile setup up -d
 ```
 
 Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
 
 ```bash
-$ docker logs deis-setup-1 -f
+docker logs deis-setup-1 -f
 ```
 
 ## Run all steps
@@ -72,19 +72,19 @@ $ docker logs deis-setup-1 -f
 To run all steps in **DEIS** run.
 
 ```bash
-$ docker compose --profile deis up -d
+docker compose --profile deis up -d
 ```
 
 Monitor progress by first running:
 
 ```bash
-$ make venv
+make venv
 ```
 
 And then run the *bin/progress.py* Python script with:
 
 ```bash
-$ make progress
+make progress
 ```
 
 Press CTRL-C to exit the progress display.
@@ -105,8 +105,8 @@ The following web services are available:
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 
 ```bash
-$ make ingest
-$ ./bin/ingest.sh
+make ingest
+./bin/ingest.sh
 ```
 
 ## Search tips

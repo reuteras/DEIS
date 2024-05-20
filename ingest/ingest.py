@@ -58,7 +58,7 @@ def create_hash_link(hash_value, filename):
         return False
     try:
         sha256_link.symlink_to("../"+str(filename).replace('extracted/', ''))
-    except:
+    except (FileExistsError, OSError, RuntimeError):
         if not sha256_link.is_symlink():
             print("ERROR: Could not create symlink for file:", filename, flush=True)
     return True
@@ -68,7 +68,7 @@ def remove_sha256(hash_value):
     sha256_link = Path("extracted/sha256/" + str(hash_value))
     try:
         sha256_link.unlink()
-    except:
+    except (FileExistsError, OSError, RuntimeError):
         print("ERROR: Could not remove link extraced/sha256/" + hash_value)
 
 

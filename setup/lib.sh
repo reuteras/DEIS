@@ -24,10 +24,10 @@ function suberr {
 function wait_for_elasticsearch {
     local elasticsearch_host="${ELASTICSEARCH_HOST:-elasticsearch}"
 
-    local -a args=('-s' '-D-' '-m15' '-w' '%{http_code}' "http://${elasticsearch_host}:9200/" )
+    local -a args=('-s' '-D-' '-m15' '-w' '%{http_code}' "http://${elasticsearch_host}:9200/")
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1
@@ -61,10 +61,10 @@ function wait_for_elasticsearch {
 function wait_for_builtin_users {
     local elasticsearch_host="${ELASTICSEARCH_HOST:-elasticsearch}"
 
-    local -a args=('-s' '-D-' '-m15' "http://${elasticsearch_host}:9200/_security/user?pretty" )
+    local -a args=('-s' '-D-' '-m15' "http://${elasticsearch_host}:9200/_security/user?pretty")
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1
@@ -115,7 +115,7 @@ function check_user_exists {
         )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1
@@ -154,7 +154,7 @@ function set_user_password {
         )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1
@@ -188,7 +188,7 @@ function create_user {
         )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1
@@ -221,7 +221,7 @@ function ensure_role {
         )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}")
     fi
 
     local -i result=1

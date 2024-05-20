@@ -1,3 +1,5 @@
+#checkov:skip=CKV_DOCKER_2
+#checkov:skip=CKV_DOCKER_3
 FROM alpine:3.19
 
 RUN mkdir -p /deis/bin

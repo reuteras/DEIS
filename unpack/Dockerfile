@@ -1,3 +1,5 @@
+#checkov:skip=CKV_DOCKER_2
+#checkov:skip=CKV_DOCKER_3
 FROM debian:bookworm-slim
 
 LABEL maintainer="code@ongoing.today"

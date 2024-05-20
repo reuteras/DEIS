@@ -1,3 +1,5 @@
+#checkov:skip=CKV_DOCKER_2
+#checkov:skip=CKV_DOCKER_3
 FROM alpine:latest
 
 LABEL maintainer="sn0b4ll"

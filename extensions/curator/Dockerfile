@@ -1,3 +1,5 @@
+#checkov:skip=CKV_DOCKER_2
+#checkov:skip=CKV_DOCKER_3
 FROM untergeek/curator:8.0.2
 
 # hadolint ignore=DL3002

@@ -29,6 +29,7 @@ space_redirects = true
 [{*.yml,*.yaml,.dockerfilelintrc,*.md,*.json,*.conf}]
 indent_style = space
 indent_size = 2
+insert_final_newline = unset
 
 [{Makefile,go.mod,go.sum,*.go,.gitmodules}]
 indent_style = tab
@@ -39,7 +40,7 @@ indent_style = space
 indent_size = 1
 
 # Ignore paths
-[LICENSE,*.jupyterlab-settings,index.html,*.ndjson]
+[{LICENSE,*.jupyterlab-settings,index.html,*.ndjson}]
 charset = unset
 end_of_line = unset
 insert_final_newline = unset

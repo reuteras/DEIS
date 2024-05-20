@@ -8,7 +8,7 @@ function unpack {
     echo "First file: ${first}"
     if [[ "${ZIP_PASSWORD}" != "" ]]; then
         echo "Unpack with password:"
-        /7zz x -y -p${ZIP_PASSWORD} -o/extracted/files "${first}"
+        /7zz x -y -p"${ZIP_PASSWORD}" -o/extracted/files "${first}"
     else
         echo "Unpack without password."
         /7zz x -y -o/extracted/files "${first}"

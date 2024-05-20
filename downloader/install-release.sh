@@ -59,13 +59,11 @@ ZIP_FILE="${TMP_DIRECTORY}v2ray-linux-$MACHINE.zip"
 DOWNLOAD_LINK="https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-$MACHINE.zip"
 
 download_v2ray() {
-    curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE" "$DOWNLOAD_LINK" -#
-    if [ "$?" -ne '0' ]; then
+    if ! curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE" "$DOWNLOAD_LINK" -#; then
         echo 'error: Download failed! Please check your network or try again.'
         exit 1
     fi
-    curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE.dgst" "$DOWNLOAD_LINK.dgst" -#
-    if [ "$?" -ne '0' ]; then
+    if ! curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE.dgst" "$DOWNLOAD_LINK.dgst" -#; then
         echo 'error: Download failed! Please check your network or try again.'
         exit 1
     fi
@@ -73,8 +71,8 @@ download_v2ray() {
 
 verification_v2ray() {
     for LISTSUM in 'md5' 'sha1' 'sha256' 'sha512'; do
-        SUM="$(${LISTSUM}sum $ZIP_FILE | sed 's/ .*//')"
-        CHECKSUM="$(grep $(echo $LISTSUM | tr [:lower:] [:upper:]) $ZIP_FILE.dgst | uniq | sed 's/.* //')"
+        SUM="$(${LISTSUM}sum "$ZIP_FILE" | sed 's/ .*//')"
+        CHECKSUM=$(grep "$(echo $LISTSUM | tr '[:lower:]' '[:upper:]')" "$ZIP_FILE".dgst | uniq | sed 's/.* //')
         if [ "$SUM" != "$CHECKSUM" ]; then
             echo 'error: Check failed! Please check your network or try again.'
             exit 1

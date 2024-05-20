@@ -3,6 +3,7 @@
 set -eu
 set -o pipefail
 
+# shellcheck disable=SC1091
 source "${BASH_SOURCE[0]%/*}"/lib.sh
 
 

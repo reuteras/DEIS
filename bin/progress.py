@@ -8,9 +8,10 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+
+from rich import print
 from rich.console import Console
 from rich.control import Control
-from rich import print
 
 max_length = 25
 

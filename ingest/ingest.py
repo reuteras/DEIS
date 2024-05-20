@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 """Ingest files to Elasticsearch"""
 
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
-from tqdm import tqdm
-from typing import Iterable
-import cbor2
 import configparser
 import hashlib
 import os
-import requests
 import sqlite3
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+from typing import Iterable
 
+import cbor2
+import requests
+from tqdm import tqdm
 
 if not Path("./extracted/sha256").is_dir():
     Path("./extracted/sha256").mkdir()

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if /deis/bin/download_status.sh | grep "gid" > /dev/null ; then
+if /deis/bin/download_status.sh | grep "gid" > /dev/null; then
     if [[ ! -f /files/running ]]; then
         echo "Download is running. Creating /files/running."
         touch /files/running

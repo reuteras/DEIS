@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """."""
 
-import hashlib
 import argparse
+import hashlib
 import sqlite3
 import sys
 from pathlib import Path
+
 from tqdm import tqdm
 
 DB_PATH = "file_hashes.db"

@@ -3,12 +3,13 @@
 """."""
 #
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pathlib import Path, PurePosixPath
 import os
+from pathlib import Path, PurePosixPath
+
 import magic
 import requests
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 app = FastAPI()
 

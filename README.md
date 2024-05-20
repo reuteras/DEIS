@@ -45,26 +45,26 @@ You must increase the RAM that Docker can use to 18 GB or more. Otherwise Elasti
 Download the repository from GitHub and change to the new directory.
 
 ```bash
-git clone https://github.com/reuteras/DEIS.git
-cd DEIS
+$ git clone https://github.com/reuteras/DEIS.git
+$ cd DEIS
 ```
 
 Configure DEIS by changing three files:
 
-- Modify passwords in *.env*. If the downloaded files are password protected you must set the **ZIP_PASSWORD**. 
+- Modify passwords in *.env*. If the downloaded files are password protected you must set the **ZIP_PASSWORD**.
 - Add a list of urls (one per line) for files to download to a file in the *urls* directory.
 - Copy *deis.cfg.default* to *deis.cfg* and update the settings described in the file.
 
 Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
 
 ```bash
-docker compose --profile setup up -d
+$ docker compose --profile setup up -d
 ```
 
 Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
 
 ```bash
-docker logs deis-setup-1 -f
+$ docker logs deis-setup-1 -f
 ```
 
 ## Run all steps
@@ -72,26 +72,26 @@ docker logs deis-setup-1 -f
 To run all steps in **DEIS** run.
 
 ```bash
-docker compose --profile deis up -d
+$ docker compose --profile deis up -d
 ```
 
 Monitor progress by first running:
 
 ```bash
-make venv
+$ make venv
 ```
 
 And then run the *bin/progress.py* Python script with:
 
 ```bash
-make progress
+$ make progress
 ```
 
 Press CTRL-C to exit the progress display.
 
 The following web services are available:
 
-- [http://127.0.0.1:3000/](http://127.0.0.1:3000/) - Gotenberg server 
+- [http://127.0.0.1:3000/](http://127.0.0.1:3000/) - Gotenberg server
 - [http://127.0.0.1:5601/](http://127.0.0.1:5601/) - Elastic/Kibana
 - [http://127.0.0.1:8080/](http://127.0.0.1:8080/) - AriaNg
 - [http://127.0.0.1:8081/file/<sha256>](http://127.0.0.1:8081/file/) - Download file based on sha256
@@ -100,13 +100,13 @@ The following web services are available:
 
 ## Only run a subset of the steps
 
-### Ingest
+### Only run ngest
 
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 
 ```bash
-make ingest
-./bin/ingest.sh
+$ make ingest
+$ ./bin/ingest.sh
 ```
 
 ## Search tips
@@ -123,7 +123,7 @@ Stop all services with **docker compose --profile deis down**.
 
 If you get a error message about **max_analyzed_offset** open the developer console at [http://127.0.0.1:5601/app/dev_tools#/console](http://127.0.0.1:5601/app/dev_tools#/console) and execute the following command:
 
-```bash
+```txt
 PUT /leakdata-index-*/_settings
 {
   "index" : {
@@ -134,8 +134,8 @@ PUT /leakdata-index-*/_settings
 
 At the same time run the following.
 
-```bash
-PUT _cluster/settings 
+```txt
+PUT _cluster/settings
 {
   "persistent": {
     "search.max_async_search_response_size": "50mb"

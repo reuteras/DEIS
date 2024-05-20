@@ -1,5 +1,6 @@
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
+#checkov:skip=CKV_DOCKER_7
 # hadolint ignore=DL3007
 FROM alpine:latest
 

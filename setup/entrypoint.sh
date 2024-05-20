@@ -121,44 +121,44 @@ elasticsearch_host="${ELASTICSEARCH_HOST:-elasticsearch}"
 log 'Add attachment pipeline'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_ingest/pipeline/attachment?pretty" -H 'Content-Type: application/json' -d'
 {
-  "description" : "Extract attachment information",
-  "processors" : [
-    {
-      "attachment" : {
-        "field" : "data",
-        "remove_binary": true,
-        "indexed_chars": 200000
-      },
-      "date" : {
-        "field" : "mtime",
-        "target_field" : "timestamp",
-        "formats" : ["UNIX"],
-        "timezone" : "UTC"
-      }
-    }
-  ]
+    "description" : "Extract attachment information",
+    "processors" : [
+        {
+            "attachment" : {
+            "field" : "data",
+            "remove_binary": true,
+            "indexed_chars": 200000
+            },
+            "date" : {
+                "field" : "mtime",
+               "target_field" : "timestamp",
+             "formats" : ["UNIX"],
+             "timezone" : "UTC"
+            }
+        }
+    ]
 }
 ' > /dev/null && sublog 'Done'
 
 log 'Add cbor-attachment pipeline'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_ingest/pipeline/cbor-attachment?pretty" -H 'Content-Type: application/json' -d'
 {
-  "description" : "Extract attachment information",
-  "processors" : [
-    {
-      "attachment" : {
-        "field" : "data",
-        "remove_binary": true,
-        "indexed_chars": 200000
-      },
-      "date" : {
-        "field" : "mtime",
-        "target_field" : "timestamp",
-        "formats" : ["UNIX"],
-        "timezone" : "UTC"
-      }
-    }
-  ]
+    "description" : "Extract attachment information",
+    "processors" : [
+        {
+            "attachment" : {
+            "field" : "data",
+            "remove_binary": true,
+            "indexed_chars": 200000
+            },
+            "date" : {
+                "field" : "mtime",
+                "target_field" : "timestamp",
+            "formats" : ["UNIX"],
+            "timezone" : "UTC"
+            }
+        }
+    ]
 }
 ' > /dev/null && sublog 'Done'
 

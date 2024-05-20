@@ -27,7 +27,7 @@ function wait_for_elasticsearch {
     local -a args=('-s' '-D-' '-m15' '-w' '%{http_code}' "http://${elasticsearch_host}:9200/" )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
-        args+= '-u' "elastic:${ELASTIC_PASSWORD}" )
+        args+=('-u' "elastic:${ELASTIC_PASSWORD}" )
     fi
 
     local -i result=1

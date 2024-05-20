@@ -9,7 +9,7 @@ The project started after a friend asked for help investigating if a data leak c
 This tool can be used to automate all of (or a selection of) the steps below.
 
 - **D**ownload files from a leek site via [TOR][tor]
-- **E**xtract files from .rar, .zip, .tgz and more with the help of [7-zip][7zz]
+- **E**xtract files from .rar, .ZIP, .tgz and more with the help of [7-zip][7zz]
 - **I**ngest into [Elasticsearch][els] with the [Tika][tik] [pipeline][eap]
 - **S**earch via [Kibana][kib] and [JupyterLab][jup] notebooks
 
@@ -52,7 +52,7 @@ $ cd DEIS
 Configure DEIS by changing three files:
 
 - Modify passwords in *.env*. If the downloaded files are password protected you must set the **ZIP_PASSWORD**.
-- Add a list of urls (one per line) for files to download to a file in the *urls* directory.
+- Add a list of URLs (one per line) for files to download to a file in the *urls* directory.
 - Copy *deis.cfg.default* to *deis.cfg* and update the settings described in the file.
 
 Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
@@ -95,7 +95,7 @@ The following web services are available:
 - [http://127.0.0.1:5601/](http://127.0.0.1:5601/) - Elastic/Kibana
 - [http://127.0.0.1:8080/](http://127.0.0.1:8080/) - AriaNg
 - [http://127.0.0.1:8081/file/<sha256>](http://127.0.0.1:8081/file/) - Download file based on sha256
-- [http://127.0.0.1:8081/convert/<sha256>](http://127.0.0.1:8081/convert/) - Convert file to pdf (if possible) and download file based on sha256
+- [http://127.0.0.1:8081/convert/<sha256>](http://127.0.0.1:8081/convert/) - Convert file to PDF (if possible) and download file based on sha256
 - [http://127.0.0.1:8888/](http://127.0.0.1:8888/) - JupyterLab
 
 ## Only run a subset of the steps

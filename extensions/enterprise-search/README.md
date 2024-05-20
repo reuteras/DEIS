@@ -66,11 +66,11 @@ enterpriseSearch.host: http://enterprise-search:3002
 
 ### Start the server
 
-To include Enterprise Search in the stack, run Docker Compose from the root of the repository with an additional command
-line argument referencing the `enterprise-search-compose.yml` file:
+To include Enterprise Search in the stack, run Docker Compose from the root of the repository with an additional 
+command-line argument referencing the `enterprise-search-compose.yml` file:
 
 ```console
-$ docker-compose -f docker-compose.yml -f extensions/enterprise-search/enterprise-search-compose.yml up
+docker-compose -f docker-compose.yml -f extensions/enterprise-search/enterprise-search-compose.yml up
 ```
 
 Allow a few minutes for the stack to start, then open your web browser at the address <http://localhost:3002> to see the
@@ -120,7 +120,7 @@ enterprise-search:
 Any change to the Enterprise Search configuration requires a restart of the Enterprise Search container:
 
 ```console
-$ docker-compose -f docker-compose.yml -f extensions/enterprise-search/enterprise-search-compose.yml restart enterprise-search
+docker-compose -f docker-compose.yml -f extensions/enterprise-search/enterprise-search-compose.yml restart enterprise-search
 ```
 
 Please refer to the following documentation page for more details about how to configure Enterprise Search inside a

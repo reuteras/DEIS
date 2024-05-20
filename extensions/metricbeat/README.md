@@ -10,11 +10,11 @@ and ships them to the output that you specify, such as Elasticsearch or Logstash
 initialized with a password.** In case you haven't done that during the initial startup of the stack, please refer to
 [How to re-execute the setup][setup] to run the setup container again and initialize these users.
 
-To include Metricbeat in the stack, run Docker Compose from the root of the repository with an additional command line
+To include Metricbeat in the stack, run Docker Compose from the root of the repository with an additional command-line
 argument referencing the `metricbeat-compose.yml` file:
 
 ```console
-$ docker-compose -f docker-compose.yml -f extensions/metricbeat/metricbeat-compose.yml up
+docker-compose -f docker-compose.yml -f extensions/metricbeat/metricbeat-compose.yml up
 ```
 
 ## Configuring Metricbeat
@@ -25,7 +25,7 @@ with the help of the [Configuration reference][metricbeat-config].
 Any change to the Metricbeat configuration requires a restart of the Metricbeat container:
 
 ```console
-$ docker-compose -f docker-compose.yml -f extensions/metricbeat/metricbeat-compose.yml restart metricbeat
+docker-compose -f docker-compose.yml -f extensions/metricbeat/metricbeat-compose.yml restart metricbeat
 ```
 
 Please refer to the following documentation page for more details about how to configure Metricbeat inside a

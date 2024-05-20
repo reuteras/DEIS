@@ -17,11 +17,11 @@ The Fleet Server exposes the TCP port `8220` for Agent to Server communications.
 
 ## Usage
 
-To include Fleet Server in the stack, run Docker Compose from the root of the repository with an additional command line
+To include Fleet Server in the stack, run Docker Compose from the root of the repository with an additional command-line
 argument referencing the `fleet-compose.yml` file:
 
 ```console
-$ docker-compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml up
+docker-compose -f docker-compose.yml -f extensions/fleet/fleet-compose.yml up
 ```
 
 ## Configuring Fleet Server

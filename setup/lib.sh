@@ -86,7 +86,10 @@ function wait_for_builtin_users {
             if [[ "$line" =~ _reserved.+true ]]; then
                 ((num_users++))
             fi
-        done < <(curl "${args[@]}"; printf '%s' "$?")
+        done < <(
+            curl "${args[@]}"
+            printf '%s' "$?"
+        )
 
         if ((exit_code)); then
             result=$exit_code
@@ -112,7 +115,7 @@ function check_user_exists {
 
     local -a args=('-s' '-D-' '-m15' '-w' '%{http_code}'
         "http://${elasticsearch_host}:9200/_security/user/${username}"
-        )
+    )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
         args+=('-u' "elastic:${ELASTIC_PASSWORD}")
@@ -151,7 +154,7 @@ function set_user_password {
         '-X' 'POST'
         '-H' 'Content-Type: application/json'
         '-d' "{\"password\" : \"${password}\"}"
-        )
+    )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
         args+=('-u' "elastic:${ELASTIC_PASSWORD}")
@@ -218,7 +221,7 @@ function ensure_role {
         '-X' 'POST'
         '-H' 'Content-Type: application/json'
         '-d' "$body"
-        )
+    )
 
     if [[ -n "${ELASTIC_PASSWORD:-}" ]]; then
         args+=('-u' "elastic:${ELASTIC_PASSWORD}")

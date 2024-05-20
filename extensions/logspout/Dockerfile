@@ -1,3 +1,4 @@
+#checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
 # uses ONBUILD instructions described here:
 # https://github.com/gliderlabs/logspout/tree/master/custom

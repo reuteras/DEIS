@@ -7,6 +7,6 @@ curl --silent "http://downloader:6800/jsonrpc" --header "Content-Type: applicati
     "method": "aria2.tellActive",
     "params": [
         "token:'"${RPCSECRET}"'",
-                ["gid"]
-              ]
+            ["gid"]
+    ]
 }' | jq '.result' | grep gid

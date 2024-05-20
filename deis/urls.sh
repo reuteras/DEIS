@@ -10,11 +10,11 @@ if [[ ! -f /files/added_urls ]]; then
 
         sleep 1
 
-        while read -r  url; do
+        while read -r url; do
             echo "Adding URL: ${url}"
             /deis/bin/addurl.sh "${url}"
         done
-    fi < <(cat /urls/* | sort | uniq )
+    fi < <(cat /urls/* | sort | uniq)
 
     echo ""
     echo "Added URLs and creating /files/added_urls"

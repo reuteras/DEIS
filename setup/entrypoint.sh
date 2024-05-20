@@ -6,7 +6,6 @@ set -o pipefail
 # shellcheck disable=SC1091
 source "${BASH_SOURCE[0]%/*}"/lib.sh
 
-
 # --------------------------------------------------------
 # Users declarations
 
@@ -43,7 +42,6 @@ roles_files=(
 
 # --------------------------------------------------------
 
-
 log 'Waiting for availability of Elasticsearch. This can take several minutes.'
 
 declare -i exit_code=0
@@ -51,18 +49,18 @@ wait_for_elasticsearch || exit_code=$?
 
 if ((exit_code)); then
     case $exit_code in
-        6)
-            suberr 'Could not resolve host. Is Elasticsearch running?'
-            ;;
-        7)
-            suberr 'Failed to connect to host. Is Elasticsearch healthy?'
-            ;;
-        28)
-            suberr 'Timeout connecting to host. Is Elasticsearch healthy?'
-            ;;
-        *)
-            suberr "Connection to Elasticsearch failed. Exit code: ${exit_code}"
-            ;;
+    6)
+        suberr 'Could not resolve host. Is Elasticsearch running?'
+        ;;
+    7)
+        suberr 'Failed to connect to host. Is Elasticsearch healthy?'
+        ;;
+    28)
+        suberr 'Timeout connecting to host. Is Elasticsearch healthy?'
+        ;;
+    *)
+        suberr "Connection to Elasticsearch failed. Exit code: ${exit_code}"
+        ;;
     esac
 
     exit $exit_code
@@ -92,7 +90,7 @@ for role in "${!roles_files[@]}"; do
     fi
 
     sublog 'Creating/updating'
-    ensure_role "$role" "$(<"${body_file}")"
+    ensure_role "$role" "$(< "${body_file}")"
 done
 
 for user in "${!users_passwords[@]}"; do
@@ -165,7 +163,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 ' > /dev/null && sublog 'Done'
 
 kibana_host="${KIBANA_HOST:-kibana}"
-while ! curl -s -m5 "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/" > /dev/null ; do
+while ! curl -s -m5 "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/" > /dev/null; do
     sleep 1
 done
 log 'Add defualt configuration and dashboards'

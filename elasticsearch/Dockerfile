@@ -11,4 +11,4 @@ FROM docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
 USER elasticsearch
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:9200/_cluster/health || exit 1
+    CMD curl -f http://localhost:9200/_cluster/health || exit 1

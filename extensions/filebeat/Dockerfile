@@ -7,6 +7,6 @@ FROM docker.elastic.co/beats/filebeat:${ELASTIC_VERSION}
 USER root
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD filebeat test output || exit 1
+    CMD filebeat test output || exit 1
 
 USER filebeat

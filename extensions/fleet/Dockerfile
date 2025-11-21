@@ -12,4 +12,4 @@ RUN mkdir state
 USER elastic-agent
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD elastic-agent status || exit 1
+    CMD elastic-agent status || exit 1

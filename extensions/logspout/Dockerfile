@@ -7,7 +7,8 @@ FROM gliderlabs/logspout:master
 ENV SYSLOG_FORMAT rfc3164
 
 RUN addgroup -g 1000 -S logspout && adduser -u 1000 -S logspout -G logspout
+
 USER logspout
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD test -f /var/run/docker.sock || exit 1
+    CMD test -f /var/run/docker.sock || exit 1

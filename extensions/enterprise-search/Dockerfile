@@ -8,4 +8,4 @@ FROM docker.elastic.co/enterprise-search/enterprise-search:${ELASTIC_VERSION}
 USER enterprise-search
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:3002/api/version || exit 1
+    CMD curl -f http://localhost:3002/api/version || exit 1

@@ -10,7 +10,7 @@ WORKDIR /home
 COPY *.patch ./
 COPY --chmod=777 install-release.sh ./
 
-# hadolint ignore=DL3018
+# hadolint ignore=DL3003,DL3018
 RUN apk add --update --no-cache bash tor tzdata vim autoconf build-base git libgcc gmp libtool gnutls gnutls-dev nettle libssh2 libssh2-dev ca-certificates c-ares c-ares-dev libxml2 libxml2-dev sqlite-libs sqlite-dev automake cppunit cppunit-dev util-macros gettext gettext-dev zlib zlib-dev curl unzip \
 && ./install-release.sh && git clone https://github.com/aria2/aria2.git ./aria2 && patch ./aria2/src/HttpSkipResponseCommand.cc < ./500retry.patch && patch ./aria2/src/DownloadCommand.cc < ./slowretry.patch && patch ./aria2/src/OptionHandlerFactory.cc < ./removeconnlimit.patch && patch ./aria2/src/SocketBuffer.cc < ./connclosed.patch \
 && rm -f ./500retry.patch ./slowretry.patch ./removeconnlimit.patch ./connclosed.patch ./install-release.sh \

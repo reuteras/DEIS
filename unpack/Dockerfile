@@ -25,6 +25,12 @@ RUN apt-get update && \
         xz-utils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /usr/share/doc && \
-    rm -rf /usr/local/share/man /var/cache/debconf/*-old /*.txt /install.sh
+    rm -rf /usr/local/share/man /var/cache/debconf/*-old /*.txt /install.sh && \
+    useradd -m -u 1000 -s /bin/bash unpack
+
+USER unpack
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD test -f /start.sh || exit 1
 
 CMD ["/start.sh"]

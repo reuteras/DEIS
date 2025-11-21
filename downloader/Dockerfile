@@ -27,6 +27,7 @@ RUN patch ./src/HttpSkipResponseCommand.cc < ../500retry.patch && \
     apk del autoconf build-base git libtool gnutls-dev libssh2-dev c-ares-dev libxml2-dev sqlite-dev automake cppunit-dev util-macros gettext-dev zlib-dev curl unzip
 
 WORKDIR /home
+# hadolint ignore=DL3018
 RUN rm -f ./500retry.patch ./slowretry.patch ./removeconnlimit.patch ./connclosed.patch ./install-release.sh && \
     rm -rf ./aria2 && \
     apk add --update --no-cache python3 py3-stem && \

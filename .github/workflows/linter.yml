@@ -59,6 +59,8 @@ jobs:
           VALIDATE_JUPYTER_NBQA_ISORT: false
           VALIDATE_JUPYTER_NBQA_MYPY: false
           VALIDATE_JUPYTER_NBQA_PYLINT: false
+          VALIDATE_JUPYTER_NBQA_RUFF: false
+          VALIDATE_PYTHON_RUFF_FORMAT: false
           LINTER_RULES_PATH: /
           # yamllint disable-line rule:line-length
           FILTER_REGEX_EXCLUDE: .*/(apple|nccgroup|sqlite|tripwire|truesec)\.(xml|html)

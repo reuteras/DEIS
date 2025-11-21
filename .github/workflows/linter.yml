@@ -52,6 +52,9 @@ jobs:
           VALIDATE_PYTHON_PYLINT: false
           VALIDATE_PYTHON_MYPY: false
           VALIDATE_YAML: false
+          VALIDATE_BIOME_FORMAT: false
+          VALIDATE_GITHUB_ACTIONS_ZIZMOR: false
+          VALIDATE_JUPYTER_NBQA_BLACK: false
           LINTER_RULES_PATH: /
           # yamllint disable-line rule:line-length
           FILTER_REGEX_EXCLUDE: .*/(apple|nccgroup|sqlite|tripwire|truesec)\.(xml|html)

@@ -4,6 +4,7 @@
 #
 
 import os
+import re
 from pathlib import Path, PurePosixPath
 
 import magic
@@ -48,6 +49,28 @@ DONT_CONVERT_MIME = [
         ]
 
 
+def validate_sha256_and_get_symlink_path(sha256: str) -> str:
+    """Validate SHA256 hash and safely construct symlink path.
+
+    Raises HTTPException if validation fails.
+    """
+    # Validate that sha256 is a valid hex string of length 64
+    if not re.match(r'^[a-f0-9]{64}$', sha256):
+        raise HTTPException(status_code=400, detail="Invalid SHA256 format")
+
+    # Construct the path safely
+    symlink_path = os.path.join(SYMLINKS_DIR, sha256)
+
+    # Normalize and verify the path is within SYMLINKS_DIR
+    normalized_path = os.path.normpath(os.path.abspath(symlink_path))
+    base_dir = os.path.normpath(os.path.abspath(SYMLINKS_DIR))
+
+    if not normalized_path.startswith(base_dir + os.sep) and normalized_path != base_dir:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    return symlink_path
+
+
 def convert_to_pdf(file_path: str):
     """Send the file to Gotenberg for conversion to PDF."""
     with open(file_path, "rb") as f:
@@ -68,7 +91,7 @@ def  convert_html_to_pdf(file_path: str):
 @app.get("/file/{sha256}")
 async def get_file(sha256: str):
     print(sha256)
-    symlink_path = os.path.join(SYMLINKS_DIR, sha256)
+    symlink_path = validate_sha256_and_get_symlink_path(sha256)
 
     if os.path.exists(symlink_path) and os.path.islink(symlink_path):
         target_file = os.readlink(symlink_path)
@@ -78,7 +101,7 @@ async def get_file(sha256: str):
     mime_type = magic.from_file(target_file, mime=True)
     if mime_type is None:
         mime_type = 'application/octet-stream'  # Default type if not known
-    extension = Path(str(PurePosixPath(symlink_path))).resolve().suffix.lower()
+    extension = Path(target_file).suffix.lower()
     print(mime_type, extension)
 
     if mime_type in SEND_AS_IS:
@@ -92,7 +115,7 @@ async def get_file(sha256: str):
 @app.get("/convert/{sha256}")
 async def convert_file(sha256: str):
     print(sha256)
-    symlink_path = os.path.join(SYMLINKS_DIR, sha256)
+    symlink_path = validate_sha256_and_get_symlink_path(sha256)
 
     if os.path.exists(symlink_path) and os.path.islink(symlink_path):
         target_file = os.readlink(symlink_path)
@@ -102,7 +125,7 @@ async def convert_file(sha256: str):
     mime_type = magic.from_file(target_file, mime=True)
     if mime_type is None:
         mime_type = 'application/octet-stream'  # Default type if not known
-    extension = Path(str(PurePosixPath(symlink_path))).resolve().suffix.lower()
+    extension = Path(target_file).suffix.lower()
     print(mime_type, extension)
 
     if mime_type in SEND_AS_IS:

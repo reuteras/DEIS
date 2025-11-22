@@ -110,13 +110,16 @@ async def get_file(sha256: str):
     extension = target_file.suffix.lower()
     print(mime_type, extension)
 
+    # Use validated filename component from path instead of user input
+    validated_filename = symlink_path.name + extension
+
     if mime_type in SEND_AS_IS:
         try:
-            return FileResponse(str(target_file), media_type=mime_type, filename=sha256 + extension)
+            return FileResponse(str(target_file), media_type=mime_type, filename=validated_filename)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
-    return FileResponse(str(target_file), media_type=mime_type, filename=sha256 + extension)
+    return FileResponse(str(target_file), media_type=mime_type, filename=validated_filename)
 
 
 @app.get("/convert/{sha256}")
@@ -136,12 +139,14 @@ async def convert_file(sha256: str):
     print(mime_type, extension)
 
     target_file_str = str(target_file)
+    # Use validated filename component from path instead of user input
+    validated_filename = symlink_path.name + extension
 
     if mime_type in SEND_AS_IS:
         try:
             if mime_type in NO_EXTENSION:
                 return FileResponse(target_file_str, media_type=mime_type)
-            return FileResponse(target_file_str, media_type=mime_type, filename=sha256 + extension)
+            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
@@ -165,4 +170,4 @@ async def convert_file(sha256: str):
     if mime_type == "application/pdf":
         return FileResponse(target_file_str, media_type=mime_type)
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=sha256 + extension)
+    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)

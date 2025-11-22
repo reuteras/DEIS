@@ -19,8 +19,9 @@ from tqdm import tqdm
 if not Path("./extracted/sha256").is_dir():
     Path("./extracted/sha256").mkdir()
 
-headers = {'content-type': 'application/cbor'}
+headers = {"content-type": "application/cbor"}
 success_list = [200, 201]
+
 
 def read_configuration(config_file):
     """Read configuration file."""
@@ -41,9 +42,9 @@ def get_filehash(filename):
     """Return sha256 hash for filename"""
     sha256_hash = hashlib.sha256()
     try:
-        with open(filename,"rb") as f:
+        with open(filename, "rb") as f:
             # Read and update hash string value in blocks of 4K
-            for byte_block in iter(lambda: f.read(4096),b""):
+            for byte_block in iter(lambda: f.read(4096), b""):
                 sha256_hash.update(byte_block)
     except FileNotFoundError:
         print("ERROR: Could not get sha256 for:", filename, flush=True)
@@ -57,7 +58,7 @@ def create_hash_link(hash_value, filename):
     if sha256_link.is_symlink():
         return False
     try:
-        sha256_link.symlink_to("../"+str(filename).replace('extracted/', ''))
+        sha256_link.symlink_to("../" + str(filename).replace("extracted/", ""))
     except (FileExistsError, OSError, RuntimeError):
         if not sha256_link.is_symlink():
             print("ERROR: Could not create symlink for file:", filename, flush=True)
@@ -90,7 +91,7 @@ def request_retry(url, data, num_retries=5):
 def send_elastic(filename, content, hash_value, message):
     """Send files to elastic."""
 
-    filepath=filename
+    filepath = filename
 
     if use_sqlite:
         cur = con.cursor()
@@ -98,16 +99,22 @@ def send_elastic(filename, content, hash_value, message):
         filepath = res.fetchone()[0]
 
     doc = {
-        'filename': str(filepath),
-        'sha256': hash_value,
-        'data': content,
-        'mtime': int(filename.stat().st_mtime),
-        'message': message,
+        "filename": str(filepath),
+        "sha256": hash_value,
+        "data": content,
+        "mtime": int(filename.stat().st_mtime),
+        "message": message,
     }
 
     return request_retry(
-            'http://elastic:'+password+'@'+elastic_host+':9200/leakdata-index-000001/_doc/'+hash_value+'?pipeline=cbor-attachment',
-            data=cbor2.dumps(doc),
+        "http://elastic:"
+        + password
+        + "@"
+        + elastic_host
+        + ":9200/leakdata-index-000001/_doc/"
+        + hash_value
+        + "?pipeline=cbor-attachment",
+        data=cbor2.dumps(doc),
     )
 
 
@@ -126,7 +133,7 @@ def handle_file(fname: Path):
         content = ""
         message = "to large"
     else:
-        with open(fname, 'rb') as f:
+        with open(fname, "rb") as f:
             content = f.read()
         message = "ok"
     response = send_elastic(fname, content, sha256, message)
@@ -164,7 +171,7 @@ use_sqlite = cfg.getboolean("ingest", "use_sqlite")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:
-    password = os.environ['ELASTIC_PASSWORD']
+    password = os.environ["ELASTIC_PASSWORD"]
 except (AttributeError, KeyError):
     password = str(cfg.get("elastic", "password"))
 
@@ -178,4 +185,3 @@ if __name__ == "__main__":
     process_files(Path(cfg.get("ingest", "files")))
     Path("./extracted/ingest_done").touch()
     print("Ingest done.")
-

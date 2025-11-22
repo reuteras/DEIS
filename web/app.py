@@ -5,7 +5,7 @@
 
 import os
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import magic
 import requests
@@ -14,39 +14,39 @@ from fastapi.responses import FileResponse
 
 app = FastAPI()
 
-SYMLINKS_DIR = '/extracted/sha256'
-GOTENBERG_URL = 'http://gotenberg:3000/forms/libreoffice/convert'
-GOTENBERG_HTML_URL = 'http://gotenberg:3000/forms/chromium/convert/html'
+SYMLINKS_DIR = "/extracted/sha256"
+GOTENBERG_URL = "http://gotenberg:3000/forms/libreoffice/convert"
+GOTENBERG_HTML_URL = "http://gotenberg:3000/forms/chromium/convert/html"
 NO_EXTENSION = [
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-        "image/tiff",
-        "message/rfc822",
-        "text/csv",
-        "text/plain",
-        "text/xml",
-        ]
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "message/rfc822",
+    "text/csv",
+    "text/plain",
+    "text/xml",
+]
 SEND_AS_IS = [
-        "application/octet-stream",
-        "image/jpeg",
-        "image/png",
-        "image/tiff",
-        "message/rfc822",
-        "text/csv",
-        "text/plain",
-        "text/xml",
-        ]
+    "application/octet-stream",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "message/rfc822",
+    "text/csv",
+    "text/plain",
+    "text/xml",
+]
 DONT_CONVERT_MIME = [
-        "application/x-matlab-data",
-        "application/quickbooks",
-        "application/encrypted",
-        "application/x-wine-extension-ini",
-        "inode/x-empty",
-        "application/x-ole-storage",
-        "application/x-fpt",
-        "application/x-ms-shortcut",
-        ]
+    "application/x-matlab-data",
+    "application/quickbooks",
+    "application/encrypted",
+    "application/x-wine-extension-ini",
+    "inode/x-empty",
+    "application/x-ole-storage",
+    "application/x-fpt",
+    "application/x-ms-shortcut",
+]
 
 
 def validate_sha256_and_get_symlink_path(sha256: str) -> Path:
@@ -56,7 +56,7 @@ def validate_sha256_and_get_symlink_path(sha256: str) -> Path:
     Returns normalized absolute Path object verified to be within SYMLINKS_DIR.
     """
     # Validate that sha256 is a valid hex string of length 64
-    if not re.match(r'^[a-f0-9]{64}$', sha256):
+    if not re.match(r"^[a-f0-9]{64}$", sha256):
         raise HTTPException(status_code=400, detail="Invalid SHA256 format")
 
     # Use only the validated filename component to prevent path injection
@@ -83,7 +83,8 @@ def convert_to_pdf(file_path: str):
     response.raise_for_status()
     return response.content
 
-def  convert_html_to_pdf(file_path: str):
+
+def convert_html_to_pdf(file_path: str):
     """Send the file to Gotenberg for conversion to PDF."""
     destination = Path("index.html")
     destination.write_bytes(Path(file_path).read_bytes())
@@ -105,17 +106,18 @@ async def get_file(sha256: str):
 
     mime_type = magic.from_file(str(target_file), mime=True)
     if mime_type is None:
-        mime_type = 'application/octet-stream'  # Default type if not known
+        mime_type = "application/octet-stream"  # Default type if not known
     extension = target_file.suffix.lower()
     print(mime_type, extension)
 
     if mime_type in SEND_AS_IS:
         try:
-            return FileResponse(str(target_file), media_type=mime_type, filename=sha256+extension)
+            return FileResponse(str(target_file), media_type=mime_type, filename=sha256 + extension)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
-    return FileResponse(str(target_file), media_type=mime_type, filename=sha256+extension)
+    return FileResponse(str(target_file), media_type=mime_type, filename=sha256 + extension)
+
 
 @app.get("/convert/{sha256}")
 async def convert_file(sha256: str):
@@ -129,7 +131,7 @@ async def convert_file(sha256: str):
 
     mime_type = magic.from_file(str(target_file), mime=True)
     if mime_type is None:
-        mime_type = 'application/octet-stream'  # Default type if not known
+        mime_type = "application/octet-stream"  # Default type if not known
     extension = target_file.suffix.lower()
     print(mime_type, extension)
 
@@ -139,7 +141,7 @@ async def convert_file(sha256: str):
         try:
             if mime_type in NO_EXTENSION:
                 return FileResponse(target_file_str, media_type=mime_type)
-            return FileResponse(target_file_str, media_type=mime_type, filename=sha256+extension)
+            return FileResponse(target_file_str, media_type=mime_type, filename=sha256 + extension)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
@@ -163,5 +165,4 @@ async def convert_file(sha256: str):
     if mime_type == "application/pdf":
         return FileResponse(target_file_str, media_type=mime_type)
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=sha256+extension)
-
+    return FileResponse(target_file_str, media_type=mime_type, filename=sha256 + extension)

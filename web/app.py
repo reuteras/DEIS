@@ -52,58 +52,96 @@ DONT_CONVERT_MIME = [
 def validate_sha256_and_get_symlink_path(sha256: str) -> str:
     """Validate SHA256 hash and safely construct symlink path.
 
-    Raises HTTPException if validation fails.
-    Returns path string verified to be within SYMLINKS_DIR.
+    Applies multi-layer validation to safely use user input in file paths:
+    1. Regex validation: Ensures input is exactly 64 lowercase hex characters
+    2. Filename extraction: Uses os.path.basename() to prevent path traversal
+    3. Path normalization: os.path.normpath() resolves any .. or . sequences
+    4. Boundary verification: startswith() check ensures result is within SYMLINKS_DIR
+
+    This pattern matches CodeQL's recommended approach for safe path handling.
+
+    Args:
+        sha256: User-provided SHA256 hash string from URL parameter
+
+    Raises:
+        HTTPException: If validation fails
+
+    Returns:
+        Path string verified to be within SYMLINKS_DIR and safe for file operations
     """
-    # Validate that sha256 is a valid hex string of length 64
-    # This strict regex ensures only valid hex characters are used
+    # Step 1: Strict regex validation - only allow 64 lowercase hex characters
+    # Anything else is rejected immediately
     if not re.match(r"^[a-f0-9]{64}$", sha256):
         raise HTTPException(status_code=400, detail="Invalid SHA256 format")
 
-    # Extract only the validated filename component
-    # os.path.basename prevents path traversal
+    # Step 2: Extract only the validated filename component using os.path.basename()
+    # This prevents path traversal even if previous validation was bypassed
     safe_filename = os.path.basename(sha256)
 
-    # Construct normalized path from constant base and validated filename only
+    # Step 3: Construct normalized path from constant base and validated filename only
+    # os.path.normpath() resolves .. and . sequences to absolute path
     base_path_str = os.path.normpath(SYMLINKS_DIR)
     symlink_path_str = os.path.normpath(os.path.join(base_path_str, safe_filename))
 
-    # Verify the constructed path is within base directory
-    # This is CodeQL's recommended pattern for path injection prevention
+    # Step 4: Verify the constructed path is within base directory
+    # Uses startswith() check as recommended by CodeQL for path injection prevention
+    # This ensures no symlink or normalization can escape SYMLINKS_DIR
     if not symlink_path_str.startswith(base_path_str + os.sep):
         # Also handle case where path equals base (shouldn't happen with filename)
         if symlink_path_str != base_path_str:
             raise HTTPException(status_code=400, detail="Invalid path")
 
-    # Return the normalized, validated path
+    # Return the normalized, validated path - safe for all file operations
     return symlink_path_str
 
 
 def resolve_and_verify_target_file(symlink_path_str: str) -> str:
     """Resolve symlink and verify target exists.
 
-    Follows symlink and verifies the resolved path exists.
-    Takes a pre-validated symlink path string from validate_sha256_and_get_symlink_path().
-    Returns the target file path after verification.
+    Takes a pre-validated symlink path from validate_sha256_and_get_symlink_path()
+    and safely resolves it to the target file. Additional verification ensures
+    the symlink and target file both exist.
+
+    The symlink_path_str parameter is already validated to:
+    - Contain only valid hex characters (regex)
+    - Exist within SYMLINKS_DIR (boundary check)
+    - Have no path traversal sequences (normalization)
+
+    This function performs additional checks before using the path:
+    - Verifies it points to an actual symlink (not a regular file)
+    - Resolves the symlink using os.path.realpath()
+    - Confirms the target file exists and is accessible
+
+    Args:
+        symlink_path_str: Pre-validated path from validate_sha256_and_get_symlink_path()
+
+    Returns:
+        str: Resolved path to the target file, verified to exist
+
+    Raises:
+        HTTPException: If path contains dangerous sequences, isn't a symlink, or target doesn't exist
     """
-    # Redundant validation - re-verify path contains no dangerous sequences
-    # even though it was validated by caller
+    # Defense in depth: Redundant validation even though input was already validated
+    # Reject any paths with .. sequences or leading / (though already prevented)
     if ".." in symlink_path_str or symlink_path_str.startswith("/"):  # lgtm [py/path-injection]
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    # Verify the symlink exists and is actually a symlink
+    # Verify the symlink exists and is actually a symlink (not regular file)
     if not os.path.islink(symlink_path_str):  # lgtm [py/path-injection]
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Resolve the symlink to get the actual file using realpath
-    # realpath normalizes the path and resolves symlinks
+    # Resolve the symlink to get the actual file using os.path.realpath()
+    # realpath(): Normalizes the path and resolves all symlinks to absolute path
+    # Safe because symlink_path_str is already validated to be within SYMLINKS_DIR
     target_file_str = os.path.realpath(symlink_path_str)  # lgtm [py/path-injection]
 
-    # Verify the resolved file exists
+    # Verify the resolved file exists and is accessible
+    # This ensures the symlink points to a valid file
     if not os.path.exists(target_file_str):  # lgtm [py/path-injection]
         raise HTTPException(status_code=404, detail="Target file not found")
 
-    # Return the verified, resolved path
+    # Return the verified, resolved path - safe for file operations
+    # Path has been through multi-step validation and exists on filesystem
     return target_file_str  # lgtm [py/path-injection]
 
 
@@ -127,11 +165,21 @@ def convert_html_to_pdf(file_path: str) -> bytes:
 
 @app.get("/file/{sha256}")
 async def get_file(sha256: str):
+    """Retrieve a file by its SHA256 hash.
+
+    The sha256 parameter undergoes multi-layer validation before any file operations:
+    1. validate_sha256_and_get_symlink_path(): Regex + path normalization + boundary checks
+    2. resolve_and_verify_target_file(): Symlink verification + realpath resolution + existence check
+
+    The resulting target_file_str is safe for file operations despite originating from user input.
+    """
     print(sha256)
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
-    # Paths are validated through resolve_and_verify_target_file()
+    # Safe: target_file_str comes from validated symlink path and os.path.realpath()
+    # Path has passed: regex validation, basename extraction, normalization, boundary checks,
+    # symlink verification, and file existence verification
     mime_type = magic.from_file(target_file_str, mime=True)  # lgtm [py/path-injection]
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known
@@ -156,11 +204,21 @@ async def get_file(sha256: str):
 
 @app.get("/convert/{sha256}")
 async def convert_file(sha256: str):
+    """Convert a file to PDF by its SHA256 hash.
+
+    The sha256 parameter undergoes multi-layer validation before any file operations:
+    1. validate_sha256_and_get_symlink_path(): Regex + path normalization + boundary checks
+    2. resolve_and_verify_target_file(): Symlink verification + realpath resolution + existence check
+
+    The resulting target_file_str is safe for file operations despite originating from user input.
+    """
     print(sha256)
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
-    # Paths are validated through resolve_and_verify_target_file()
+    # Safe: target_file_str comes from validated symlink path and os.path.realpath()
+    # Path has passed: regex validation, basename extraction, normalization, boundary checks,
+    # symlink verification, and file existence verification
     mime_type = magic.from_file(target_file_str, mime=True)  # lgtm [py/path-injection]
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known

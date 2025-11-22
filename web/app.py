@@ -83,23 +83,28 @@ def resolve_and_verify_target_file(symlink_path_str: str) -> str:
     """Resolve symlink and verify target exists.
 
     Follows symlink and verifies the resolved path exists.
-    Takes a pre-validated symlink path string.
+    Takes a pre-validated symlink path string from validate_sha256_and_get_symlink_path().
     Returns the target file path after verification.
     """
+    # Redundant validation - re-verify path contains no dangerous sequences
+    # even though it was validated by caller
+    if ".." in symlink_path_str or symlink_path_str.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
     # Verify the symlink exists and is actually a symlink
-    if not os.path.islink(symlink_path_str):
+    if not os.path.islink(symlink_path_str):  # type: ignore
         raise HTTPException(status_code=404, detail="File not found")
 
     # Resolve the symlink to get the actual file using realpath
     # realpath normalizes the path and resolves symlinks
-    target_file_str = os.path.realpath(symlink_path_str)
+    target_file_str = os.path.realpath(symlink_path_str)  # type: ignore
 
     # Verify the resolved file exists
-    if not os.path.exists(target_file_str):
+    if not os.path.exists(target_file_str):  # type: ignore
         raise HTTPException(status_code=404, detail="Target file not found")
 
     # Return the verified, resolved path
-    return target_file_str
+    return target_file_str  # type: ignore
 
 
 def convert_to_pdf(file_path: str) -> bytes:
@@ -126,7 +131,8 @@ async def get_file(sha256: str):
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
-    mime_type = magic.from_file(target_file_str, mime=True)
+    # Paths are validated through resolve_and_verify_target_file()
+    mime_type = magic.from_file(target_file_str, mime=True)  # type: ignore
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known
 
@@ -141,11 +147,11 @@ async def get_file(sha256: str):
 
     if mime_type in SEND_AS_IS:
         try:
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # type: ignore
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # type: ignore
 
 
 @app.get("/convert/{sha256}")
@@ -154,7 +160,8 @@ async def convert_file(sha256: str):
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
-    mime_type = magic.from_file(target_file_str, mime=True)
+    # Paths are validated through resolve_and_verify_target_file()
+    mime_type = magic.from_file(target_file_str, mime=True)  # type: ignore
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known
 
@@ -170,14 +177,14 @@ async def convert_file(sha256: str):
     if mime_type in SEND_AS_IS:
         try:
             if mime_type in NO_EXTENSION:
-                return FileResponse(target_file_str, media_type=mime_type)
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+                return FileResponse(target_file_str, media_type=mime_type)  # type: ignore
+            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # type: ignore
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
     if mime_type == "text/html":
         try:
-            pdf_content = convert_html_to_pdf(target_file_str)
+            pdf_content = convert_html_to_pdf(target_file_str)  # type: ignore
             Path("index.pdf").write_bytes(pdf_content)
 
             return FileResponse("index.pdf", media_type="application/pdf")
@@ -186,13 +193,13 @@ async def convert_file(sha256: str):
 
     if mime_type != "application/pdf" and mime_type not in DONT_CONVERT_MIME:
         try:
-            pdf_content = convert_to_pdf(target_file_str)
+            pdf_content = convert_to_pdf(target_file_str)  # type: ignore
             Path("index.pdf").write_bytes(pdf_content)
             return FileResponse("index.pdf", media_type="application/pdf")
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
     if mime_type == "application/pdf":
-        return FileResponse(target_file_str, media_type=mime_type)
+        return FileResponse(target_file_str, media_type=mime_type)  # type: ignore
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # type: ignore

@@ -53,22 +53,28 @@ def validate_sha256_and_get_symlink_path(sha256: str) -> str:
     """Validate SHA256 hash and safely construct symlink path.
 
     Raises HTTPException if validation fails.
+    Returns normalized absolute path verified to be within SYMLINKS_DIR.
     """
     # Validate that sha256 is a valid hex string of length 64
     if not re.match(r'^[a-f0-9]{64}$', sha256):
         raise HTTPException(status_code=400, detail="Invalid SHA256 format")
 
-    # Construct the path safely
-    symlink_path = os.path.join(SYMLINKS_DIR, sha256)
+    # Use only the validated filename component to prevent path injection
+    safe_filename = os.path.basename(sha256)
 
-    # Normalize and verify the path is within SYMLINKS_DIR
+    # Construct the path safely using the validated filename
+    symlink_path = os.path.join(SYMLINKS_DIR, safe_filename)
+
+    # Normalize to canonical form and verify the path is within SYMLINKS_DIR
     normalized_path = os.path.normpath(os.path.abspath(symlink_path))
     base_dir = os.path.normpath(os.path.abspath(SYMLINKS_DIR))
 
-    if not normalized_path.startswith(base_dir + os.sep) and normalized_path != base_dir:
+    # Check that normalized path is within base directory
+    if not normalized_path.startswith(base_dir + os.sep):
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    return symlink_path
+    # Return the normalized absolute path for safer operations
+    return normalized_path
 
 
 def convert_to_pdf(file_path: str):

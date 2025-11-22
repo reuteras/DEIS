@@ -49,51 +49,56 @@ DONT_CONVERT_MIME = [
 ]
 
 
-def validate_sha256_and_get_symlink_path(sha256: str) -> Path:
+def validate_sha256_and_get_symlink_path(sha256: str) -> str:
     """Validate SHA256 hash and safely construct symlink path.
 
     Raises HTTPException if validation fails.
-    Returns normalized absolute Path object verified to be within SYMLINKS_DIR.
+    Returns path string verified to be within SYMLINKS_DIR.
     """
     # Validate that sha256 is a valid hex string of length 64
+    # This strict regex ensures only valid hex characters are used
     if not re.match(r"^[a-f0-9]{64}$", sha256):
         raise HTTPException(status_code=400, detail="Invalid SHA256 format")
 
-    # Use only the validated filename component to prevent path injection
+    # Extract only the validated filename component
+    # os.path.basename prevents path traversal
     safe_filename = os.path.basename(sha256)
 
-    # Construct the path using pathlib.Path with the validated filename
-    base_path = Path(SYMLINKS_DIR).resolve()
-    symlink_path = base_path / safe_filename
+    # Construct normalized path from constant base and validated filename only
+    base_path_str = os.path.normpath(SYMLINKS_DIR)
+    symlink_path_str = os.path.normpath(os.path.join(base_path_str, safe_filename))
 
-    # Verify the path is within SYMLINKS_DIR (redundant but explicit for static analysis)
-    try:
-        symlink_path.relative_to(base_path)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path")
+    # Verify the constructed path is within base directory
+    # This is CodeQL's recommended pattern for path injection prevention
+    if not symlink_path_str.startswith(base_path_str + os.sep):
+        # Also handle case where path equals base (shouldn't happen with filename)
+        if symlink_path_str != base_path_str:
+            raise HTTPException(status_code=400, detail="Invalid path")
 
-    # Return the normalized, safe Path object
-    return symlink_path
+    # Return the normalized, validated path
+    return symlink_path_str
 
 
-def resolve_and_verify_target_file(symlink_path: Path) -> str:
+def resolve_and_verify_target_file(symlink_path_str: str) -> str:
     """Resolve symlink and verify target exists.
 
     Follows symlink and verifies the resolved path exists.
-    Returns the path as a string after verification.
+    Takes a pre-validated symlink path string.
+    Returns the target file path after verification.
     """
-    if not symlink_path.exists() or not symlink_path.is_symlink():
+    # Verify the symlink exists and is actually a symlink
+    if not os.path.islink(symlink_path_str):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Resolve the symlink to get the actual file
-    # Use realpath which is more explicit about symlink resolution
-    target_file_str = os.path.realpath(str(symlink_path))
+    # Resolve the symlink to get the actual file using realpath
+    # realpath normalizes the path and resolves symlinks
+    target_file_str = os.path.realpath(symlink_path_str)
 
     # Verify the resolved file exists
     if not os.path.exists(target_file_str):
         raise HTTPException(status_code=404, detail="Target file not found")
 
-    # Return the verified path
+    # Return the verified, resolved path
     return target_file_str
 
 
@@ -118,8 +123,8 @@ def convert_html_to_pdf(file_path: str) -> bytes:
 @app.get("/file/{sha256}")
 async def get_file(sha256: str):
     print(sha256)
-    symlink_path = validate_sha256_and_get_symlink_path(sha256)
-    target_file_str = resolve_and_verify_target_file(symlink_path)
+    symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
+    target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
     mime_type = magic.from_file(target_file_str, mime=True)
     if mime_type is None:
@@ -130,8 +135,9 @@ async def get_file(sha256: str):
     extension = target_path.suffix.lower()
     print(mime_type, extension)
 
-    # Use validated filename component from path instead of user input
-    validated_filename = symlink_path.name + extension
+    # Use filename from validated symlink path
+    symlink_filename = os.path.basename(symlink_path_str)
+    validated_filename = symlink_filename + extension
 
     if mime_type in SEND_AS_IS:
         try:
@@ -145,8 +151,8 @@ async def get_file(sha256: str):
 @app.get("/convert/{sha256}")
 async def convert_file(sha256: str):
     print(sha256)
-    symlink_path = validate_sha256_and_get_symlink_path(sha256)
-    target_file_str = resolve_and_verify_target_file(symlink_path)
+    symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
+    target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
     mime_type = magic.from_file(target_file_str, mime=True)
     if mime_type is None:
@@ -157,8 +163,9 @@ async def convert_file(sha256: str):
     extension = target_path.suffix.lower()
     print(mime_type, extension)
 
-    # Use validated filename component from path instead of user input
-    validated_filename = symlink_path.name + extension
+    # Use filename from validated symlink path
+    symlink_filename = os.path.basename(symlink_path_str)
+    validated_filename = symlink_filename + extension
 
     if mime_type in SEND_AS_IS:
         try:

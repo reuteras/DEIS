@@ -1,0 +1,10 @@
+[project]
+name = "deis-ingest"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "cbor2",
+    "pylint",
+    "requests",
+    "tqdm",
+]

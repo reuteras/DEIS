@@ -6,7 +6,7 @@ cbor2==5.9.0
     # via deis-ingest
 certifi==2026.2.25
     # via requests
-charset-normalizer==3.4.6
+charset-normalizer==3.4.7
     # via requests
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
@@ -20,7 +20,7 @@ isort==8.0.1
     # via pylint
 mccabe==0.7.0
     # via pylint
-platformdirs==4.9.4
+platformdirs==4.9.6
     # via pylint
 pylint==4.0.5
     # via deis-ingest

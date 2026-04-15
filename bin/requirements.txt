@@ -13,17 +13,17 @@ mdit-py-plugins==0.5.0
     # via textual
 mdurl==0.1.2
     # via markdown-it-py
-platformdirs==4.9.4
+platformdirs==4.9.6
     # via textual
 pygments==2.20.0
     # via
     #   rich
     #   textual
-rich==14.3.3
+rich==15.0.0
     # via
     #   deis-bin
     #   textual
-textual==8.2.1
+textual==8.2.3
     # via deis-bin
 tqdm==4.67.3
     # via deis-bin

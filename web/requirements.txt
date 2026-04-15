@@ -8,13 +8,13 @@ anyio==4.13.0
     # via starlette
 certifi==2026.2.25
     # via requests
-charset-normalizer==3.4.6
+charset-normalizer==3.4.7
     # via requests
-click==8.3.1
+click==8.3.2
     # via uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via click
-fastapi==0.135.2
+fastapi==0.135.3
     # via deis-web
 h11==0.16.0
     # via uvicorn
@@ -22,9 +22,9 @@ idna==3.11
     # via
     #   anyio
     #   requests
-pydantic==2.12.5
+pydantic==2.13.0
     # via fastapi
-pydantic-core==2.41.5
+pydantic-core==2.46.0
     # via pydantic
 python-magic==0.4.27
     # via deis-web
@@ -46,5 +46,5 @@ typing-inspection==0.4.2
     #   pydantic
 urllib3==2.6.3
     # via requests
-uvicorn==0.42.0
+uvicorn==0.44.0
     # via deis-web

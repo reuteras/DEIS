@@ -18,7 +18,7 @@ fastapi==0.135.3
     # via deis-web
 h11==0.16.0
     # via uvicorn
-idna==3.11
+idna==3.12
     # via
     #   anyio
     #   requests

@@ -14,7 +14,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   tqdm
 dill==0.4.1
     # via pylint
-idna==3.11
+idna==3.12
     # via requests
 isort==8.0.1
     # via pylint

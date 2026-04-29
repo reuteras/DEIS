@@ -23,7 +23,7 @@ rich==15.0.0
     # via
     #   deis-bin
     #   textual
-textual==8.2.3
+textual==8.2.4
     # via deis-bin
 tqdm==4.67.3
     # via deis-bin

@@ -24,7 +24,7 @@ idna==3.11
     #   requests
 pydantic==2.13.0
     # via fastapi
-pydantic-core==2.46.0
+pydantic-core==2.46.3
     # via pydantic
 python-magic==0.4.27
     # via deis-web

@@ -14,7 +14,7 @@ click==8.3.2
     # via uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via click
-fastapi==0.136.0
+fastapi==0.136.1
     # via deis-web
 h11==0.16.0
     # via uvicorn

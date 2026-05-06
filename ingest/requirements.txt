@@ -2,7 +2,7 @@
 #    uv export --package deis-ingest --no-hashes --no-dev --no-emit-workspace
 astroid==4.1.2
     # via pylint
-cbor2==5.9.0
+cbor2==6.0.1
     # via deis-ingest
 certifi==2026.4.22
     # via requests

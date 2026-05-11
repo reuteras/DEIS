@@ -30,5 +30,5 @@ tomlkit==0.14.0
     # via pylint
 tqdm==4.67.3
     # via deis-ingest
-urllib3==2.6.3
+urllib3==2.7.0
     # via requests

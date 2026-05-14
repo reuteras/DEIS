@@ -9,7 +9,10 @@ updates:
       default-days: 7
 
   - package-ecosystem: "uv"
-    directory: "/"
+    directory:
+      - "/bin"
+      - "/ingest"
+      - "/web"
     schedule:
       interval: "weekly"
     cooldown:

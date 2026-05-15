@@ -1,49 +1,6 @@
 ---
 version: 2
 updates:
-  - package-ecosystem: "docker"
-    directories:
-      - "/controller"
-      - "/deis"
-      - "/downloader"
-      - "/elasticsearch"
-      - "/evtx2json"
-      - "/kibana"
-      - "/logstash"
-      - "/ingest"
-      - "/setup"
-      - "/extensions/enterprise-search"
-      - "/extensions/metricbeat"
-      - "/extensions/filebeat"
-      - "/extensions/curator"
-      - "/extensions/heartbeat"
-      - "/extensions/logspout"
-      - "/extensions/fleet"
-      - "/unpack"
-      - "/web"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      docker-deps:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "uv"
-    directories:
-      - "/bin"
-      - "/ingest"
-      - "/web"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      package-deps:
-        patterns:
-          - "*"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

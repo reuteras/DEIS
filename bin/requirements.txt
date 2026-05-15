@@ -4,12 +4,12 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via tqdm
 linkify-it-py==2.1.0
     # via markdown-it-py
-markdown-it-py==4.0.0
+markdown-it-py==4.2.0
     # via
     #   mdit-py-plugins
     #   rich
     #   textual
-mdit-py-plugins==0.5.0
+mdit-py-plugins==0.6.0
     # via textual
 mdurl==0.1.2
     # via markdown-it-py
@@ -23,7 +23,7 @@ rich==15.0.0
     # via
     #   deis-bin
     #   textual
-textual==8.2.4
+textual==8.2.5
     # via deis-bin
 tqdm==4.67.3
     # via deis-bin

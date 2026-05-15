@@ -2,7 +2,7 @@
 version: 2
 updates:
   - package-ecosystem: "docker"
-    directory:
+    directories:
       - "/kibana"
       - "/logstash"
       - "/web"
@@ -31,7 +31,7 @@ updates:
           - "*"
 
   - package-ecosystem: "uv"
-    directory:
+    directories:
       - "/bin"
       - "/ingest"
       - "/web"

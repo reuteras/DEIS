@@ -9,7 +9,7 @@ markdown-it-py==4.2.0
     #   mdit-py-plugins
     #   rich
     #   textual
-mdit-py-plugins==0.6.0
+mdit-py-plugins==0.6.1
     # via textual
 mdurl==0.1.2
     # via markdown-it-py
@@ -23,7 +23,7 @@ rich==15.0.0
     # via
     #   deis-bin
     #   textual
-textual==8.2.5
+textual==8.2.7
     # via deis-bin
 tqdm==4.67.3
     # via deis-bin

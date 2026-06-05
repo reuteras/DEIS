@@ -14,11 +14,11 @@ click==8.4.1
     # via uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via click
-fastapi==0.136.1
+fastapi==0.136.3
     # via deis-web
 h11==0.16.0
     # via uvicorn
-idna==3.16
+idna==3.18
     # via
     #   anyio
     #   requests
@@ -30,7 +30,7 @@ python-magic==0.4.27
     # via deis-web
 requests==2.34.2
     # via deis-web
-starlette==1.0.1
+starlette==1.2.1
     # via fastapi
 typing-extensions==4.15.0
     # via
@@ -46,5 +46,5 @@ typing-inspection==0.4.2
     #   pydantic
 urllib3==2.7.0
     # via requests
-uvicorn==0.47.0
+uvicorn==0.49.0
     # via deis-web

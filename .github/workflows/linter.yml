@@ -40,7 +40,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: main
           VALIDATE_ALL_CODEBASE: true
-          VALDIDATE_BIOME_LINT: false
+          VALIDATE_BIOME_LINT: false
           VALIDATE_GO: false
           VALIDATE_HTML_PRETTIER: false
           VALIDATE_JSON_PRETTIER: false

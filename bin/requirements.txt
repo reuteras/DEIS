@@ -23,11 +23,11 @@ rich==15.0.0
     # via
     #   deis-bin
     #   textual
-textual==8.2.7
+textual==8.2.8
     # via deis-bin
-tqdm==4.67.3
+tqdm==4.68.4
     # via deis-bin
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via textual
 uc-micro-py==2.0.0
     # via linkify-it-py

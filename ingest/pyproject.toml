@@ -3,8 +3,8 @@ name = "deis-ingest"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "cbor2",
-    "pylint",
-    "requests",
-    "tqdm",
+    "cbor2>=6.1.3",
+    "pylint>=4.0.6",
+    "requests>=2.34.2",
+    "tqdm>=4.68.4",
 ]

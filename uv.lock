@@ -217,9 +217,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "rich" },
-    { name = "textual" },
-    { name = "tqdm" },
+    { name = "rich", specifier = ">=15.0.0" },
+    { name = "textual", specifier = ">=8.2.8" },
+    { name = "tqdm", specifier = ">=4.68.4" },
 ]
 
 [[package]]
@@ -235,10 +235,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cbor2" },
-    { name = "pylint" },
-    { name = "requests" },
-    { name = "tqdm" },
+    { name = "cbor2", specifier = ">=6.1.3" },
+    { name = "pylint", specifier = ">=4.0.6" },
+    { name = "requests", specifier = ">=2.34.2" },
+    { name = "tqdm", specifier = ">=4.68.4" },
 ]
 
 [[package]]
@@ -254,10 +254,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi" },
-    { name = "python-magic" },
-    { name = "requests" },
-    { name = "uvicorn" },
+    { name = "fastapi", specifier = ">=0.139.0" },
+    { name = "python-magic", specifier = ">=0.4.27" },
+    { name = "requests", specifier = ">=2.34.2" },
+    { name = "uvicorn", specifier = ">=0.51.0" },
 ]
 
 [[package]]

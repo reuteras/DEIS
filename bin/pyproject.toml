@@ -3,7 +3,7 @@ name = "deis-bin"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "rich",
-    "textual",
-    "tqdm",
+    "rich>=15.0.0",
+    "textual>=8.2.8",
+    "tqdm>=4.68.4",
 ]

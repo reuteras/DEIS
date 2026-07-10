@@ -3,8 +3,8 @@ name = "deis-web"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi",
-    "python-magic",
-    "requests",
-    "uvicorn",
+    "fastapi==0.139.0",
+    "python-magic==0.4.27",
+    "requests==2.34.2",
+    "uvicorn==0.51.0",
 ]

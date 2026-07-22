@@ -54,7 +54,6 @@ jobs:
           VALIDATE_PYTHON_MYPY: false
           VALIDATE_YAML: false
           VALIDATE_BIOME_FORMAT: false
-          VALIDATE_GITHUB_ACTIONS_ZIZMOR: false
           VALIDATE_JUPYTER_NBQA_BLACK: false
           VALIDATE_JUPYTER_NBQA_FLAKE8: false
           VALIDATE_JUPYTER_NBQA_ISORT: false

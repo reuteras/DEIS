@@ -161,7 +161,6 @@ Lots of things :)
 
 - Monitor [mayswind/AriaNg][maa] for new releases.
 
-
   [7zz]: https://www.7-zip.org/
   [aod]: https://github.com/sn0b4ll/aria2-onion-downloader
   [con]: https://github.com/reuteras/container-notebook
@@ -179,4 +178,3 @@ Lots of things :)
   [res]: https://linux.die.net/man/1/readpst
   [tik]: https://tika.apache.org/
   [tor]: https://www.torproject.org/
-

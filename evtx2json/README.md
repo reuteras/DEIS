@@ -11,4 +11,3 @@ Run
 ```bash
 docker run --rm -v ./evtx:/evtx evtx2json evtx_dump --format json /evtx/file.evtx > json/file.json
 ```
-

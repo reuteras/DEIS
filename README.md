@@ -155,10 +155,6 @@ This project uses several open source tools in combination. A list below and ple
 - The whole ELK-stack by [Elastic.co][eco]
 - [Jupyterlab][jup]
 
-## TODO
-
-Lots of things :)
-
 - Monitor [mayswind/AriaNg][maa] for new releases.
 
   [7zz]: https://www.7-zip.org/

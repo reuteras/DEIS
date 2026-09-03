@@ -100,7 +100,7 @@ The following web services are available:
 
 ## Only run a subset of the steps
 
-### Only run ngest
+### Only run ingest
 
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 

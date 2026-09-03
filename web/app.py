@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 app = FastAPI()
 
 SYMLINKS_DIR = "/extracted/sha256"
+EXTRACTED_ROOT = "/extracted"
 GOTENBERG_URL = "http://gotenberg:3000/forms/libreoffice/convert"
 GOTENBERG_HTML_URL = "http://gotenberg:3000/forms/chromium/convert/html"
 NO_EXTENSION = [
@@ -106,6 +107,7 @@ def resolve_and_verify_target_file(symlink_path_str: str) -> str:
     This function performs additional checks before using the path:
     - Verifies it points to an actual symlink (not a regular file)
     - Resolves the symlink using os.path.realpath()
+    - Confirms the resolved target still lands under EXTRACTED_ROOT
     - Confirms the target file exists and is accessible
 
     Args:
@@ -115,30 +117,36 @@ def resolve_and_verify_target_file(symlink_path_str: str) -> str:
         str: Resolved path to the target file, verified to exist
 
     Raises:
-        HTTPException: If path contains dangerous sequences, isn't a symlink, or target doesn't exist
+        HTTPException: If path contains dangerous sequences, isn't a symlink,
+            resolves outside EXTRACTED_ROOT, or target doesn't exist
     """
     # Defense in depth: Redundant validation even though input was already validated
     # Reject any paths with .. sequences or leading / (though already prevented)
-    if ".." in symlink_path_str or symlink_path_str.startswith("/"):  # lgtm [py/path-injection]
+    if ".." in symlink_path_str or symlink_path_str.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     # Verify the symlink exists and is actually a symlink (not regular file)
-    if not os.path.islink(symlink_path_str):  # lgtm [py/path-injection]
+    if not os.path.islink(symlink_path_str):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Resolve the symlink to get the actual file using os.path.realpath()
-    # realpath(): Normalizes the path and resolves all symlinks to absolute path
-    # Safe because symlink_path_str is already validated to be within SYMLINKS_DIR
-    target_file_str = os.path.realpath(symlink_path_str)  # lgtm [py/path-injection]
+    # Resolve the symlink to get the actual file. The symlinks under
+    # SYMLINKS_DIR legitimately point elsewhere under EXTRACTED_ROOT (see
+    # web/startup.sh and ingest/ingest.py), so realpath() is expected to
+    # leave SYMLINKS_DIR - re-verify the boundary against EXTRACTED_ROOT
+    # instead so a symlink can't resolve outside the extracted tree.
+    target_file_str = os.path.normpath(os.path.realpath(symlink_path_str))
+    extracted_root_str = os.path.normpath(EXTRACTED_ROOT)
+    if not target_file_str.startswith(extracted_root_str + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid path")
 
     # Verify the resolved file exists and is accessible
     # This ensures the symlink points to a valid file
-    if not os.path.exists(target_file_str):  # lgtm [py/path-injection]
+    if not os.path.exists(target_file_str):
         raise HTTPException(status_code=404, detail="Target file not found")
 
     # Return the verified, resolved path - safe for file operations
     # Path has been through multi-step validation and exists on filesystem
-    return target_file_str  # lgtm [py/path-injection]
+    return target_file_str
 
 
 def convert_to_pdf(file_path: str) -> bytes:
@@ -176,7 +184,7 @@ async def get_file(sha256: str):
     # Safe: target_file_str comes from validated symlink path and os.path.realpath()
     # Path has passed: regex validation, basename extraction, normalization, boundary checks,
     # symlink verification, and file existence verification
-    mime_type = magic.from_file(target_file_str, mime=True)  # lgtm [py/path-injection]
+    mime_type = magic.from_file(target_file_str, mime=True)
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known
 
@@ -191,13 +199,11 @@ async def get_file(sha256: str):
 
     if mime_type in SEND_AS_IS:
         try:
-            return FileResponse(
-                target_file_str, media_type=mime_type, filename=validated_filename
-            )  # lgtm [py/path-injection]
+            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # lgtm [py/path-injection]
+    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
 
 
 @app.get("/convert/{sha256}")
@@ -217,7 +223,7 @@ async def convert_file(sha256: str):
     # Safe: target_file_str comes from validated symlink path and os.path.realpath()
     # Path has passed: regex validation, basename extraction, normalization, boundary checks,
     # symlink verification, and file existence verification
-    mime_type = magic.from_file(target_file_str, mime=True)  # lgtm [py/path-injection]
+    mime_type = magic.from_file(target_file_str, mime=True)
     if mime_type is None:
         mime_type = "application/octet-stream"  # Default type if not known
 
@@ -233,16 +239,14 @@ async def convert_file(sha256: str):
     if mime_type in SEND_AS_IS:
         try:
             if mime_type in NO_EXTENSION:
-                return FileResponse(target_file_str, media_type=mime_type)  # lgtm [py/path-injection]
-            return FileResponse(
-                target_file_str, media_type=mime_type, filename=validated_filename
-            )  # lgtm [py/path-injection]
+                return FileResponse(target_file_str, media_type=mime_type)
+            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
     if mime_type == "text/html":
         try:
-            pdf_content = convert_html_to_pdf(target_file_str)  # lgtm [py/path-injection]
+            pdf_content = convert_html_to_pdf(target_file_str)
             Path("index.pdf").write_bytes(pdf_content)
 
             return FileResponse("index.pdf", media_type="application/pdf")
@@ -251,13 +255,13 @@ async def convert_file(sha256: str):
 
     if mime_type != "application/pdf" and mime_type not in DONT_CONVERT_MIME:
         try:
-            pdf_content = convert_to_pdf(target_file_str)  # lgtm [py/path-injection]
+            pdf_content = convert_to_pdf(target_file_str)
             Path("index.pdf").write_bytes(pdf_content)
             return FileResponse("index.pdf", media_type="application/pdf")
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
     if mime_type == "application/pdf":
-        return FileResponse(target_file_str, media_type=mime_type)  # lgtm [py/path-injection]
+        return FileResponse(target_file_str, media_type=mime_type)
 
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # lgtm [py/path-injection]
+    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)

@@ -1,0 +1,7 @@
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - "deis/Dockerfile"
+    statement: >-
+      crond must run as root to manage /etc/crontabs and execute cron
+      entries; the deis user is created but intentionally not used.

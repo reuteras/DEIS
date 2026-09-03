@@ -2,7 +2,7 @@
 #    uv export --package deis-bin --no-hashes --no-dev --no-emit-workspace
 colorama==0.4.6 ; sys_platform == 'win32'
     # via tqdm
-linkify-it-py==2.1.0
+linkify-it-py==2.2.0
     # via markdown-it-py
 markdown-it-py==4.2.0
     # via
@@ -13,9 +13,9 @@ mdit-py-plugins==0.6.1
     # via textual
 mdurl==0.1.2
     # via markdown-it-py
-platformdirs==4.10.0
+platformdirs==4.11.7
     # via textual
-pygments==2.20.0
+pygments==2.21.0
     # via
     #   rich
     #   textual
@@ -25,9 +25,7 @@ rich==15.0.0
     #   textual
 textual==8.2.8
     # via deis-bin
-tqdm==4.68.4
+tqdm==4.70.0
     # via deis-bin
 typing-extensions==4.16.0
     # via textual
-uc-micro-py==2.0.0
-    # via linkify-it-py

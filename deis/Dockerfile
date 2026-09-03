@@ -20,9 +20,10 @@ ENV OWNER_GID=1000
 
 RUN addgroup -g 1000 -S deis && adduser -u 1000 -S deis -G deis
 
-USER deis
+# crond must run as root: it needs privilege to manage /etc/crontabs
+# and to execute cron entries, so we do not drop to the deis user here.
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9999/ || exit 1
+    CMD pgrep crond || exit 1
 
 CMD ["/deis/bin/dcron.sh", "-f", "-L", "/dev/stdout"]

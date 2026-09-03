@@ -30,6 +30,7 @@ def print_status(text, status):
         "NO DOWNLOAD CONTAINER": "red",
         "NOT RUNNING": "red",
         "WAITING FOR FILES": "red",
+        "FAILED": "red",
     }
     # Split the text at the ":" to keep the prefix in default terminal color.
     print(f"{text.ljust(max_length)}: [{colors[status]}]{status.ljust(max_length)}[/{colors[status]}]")
@@ -66,10 +67,12 @@ try:
             print_status("Adding URLS to download", "DONE")
 
         # Download
-        if os.path.exists("files/running") and not os.path.exists("files/downloaded"):
-            print_status("Download", "RUNNING")
+        if os.path.exists("files/download_failed"):
+            print_status("Download", "FAILED")
         elif os.path.exists("files/downloaded"):
             print_status("Download", "DONE")
+        elif os.path.exists("files/running"):
+            print_status("Download", "RUNNING")
         else:
             print_status("Download", "NOT RUNNING")
 

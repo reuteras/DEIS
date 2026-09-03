@@ -4,15 +4,20 @@
 
 function unpack {
     cd /files || exit
-    first=$(find . -type f | sed -E 's#^\./##' | grep -vE '^(\.gitignore|unpack|done|running|added_urls)$' | sort | head -1)
-    echo "First file: ${first}"
-    if [[ "${ZIP_PASSWORD}" != "" ]]; then
-        echo "Unpack with password:"
-        /7zz x -y -p"${ZIP_PASSWORD}" -o/extracted/files "${first}"
-    else
-        echo "Unpack without password."
-        /7zz x -y -o/extracted/files "${first}"
-    fi
+    while IFS= read -r file; do
+        echo "Unpacking: ${file}"
+        if [[ "${ZIP_PASSWORD}" != "" ]]; then
+            extracted=true
+            /7zz x -y -p"${ZIP_PASSWORD}" -o/extracted/files "${file}" || extracted=false
+        else
+            extracted=true
+            /7zz x -y -o/extracted/files "${file}" || extracted=false
+        fi
+        if [[ "${extracted}" == "false" ]]; then
+            echo "Not an archive, copying as-is: ${file}"
+            cp "${file}" /extracted/files/
+        fi
+    done < <(find . -type f | sed -E 's#^\./##' | grep -vE '^(\.gitignore|unpack|done|running|added_urls|dies_done|downloaded|extract|download_failed|batch_gids)$' | sort)
 }
 
 function pst_extract {

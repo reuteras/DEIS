@@ -12,7 +12,8 @@ if [[ ! -f /files/added_urls ]]; then
 
         while read -r url; do
             echo "Adding URL: ${url}"
-            /deis/bin/addurl.sh "${url}"
+            gid="$(/deis/bin/addurl.sh "${url}")"
+            [[ -n "${gid}" && "${gid}" != "null" ]] && echo "${gid}" >> /files/batch_gids
         done
     fi < <(cat /urls/* | sort | uniq)
 

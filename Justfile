@@ -23,6 +23,7 @@ clean:
     rm -f downloader/data/*
     rm -rf downloader/log
     rm -f logs/*
+    rm -f controller/www/index.html
 
 dist-clean: clean docker-clean
     rm -rf extracted/* files/*
@@ -30,6 +31,9 @@ dist-clean: clean docker-clean
     rm -rf .jupyter/lab/workspaces/* .jupyter/migrated
     rm -rf notebook/.ipynb_checkpoints
     rm -rf .venv
+    # docker-clean stops aria2 gracefully, which flushes a fresh (empty)
+    # session file on exit - remove it again now that it's actually down.
+    rm -f downloader/conf/aria2.session
 
 docker-clean:
     docker compose --profile deis down || true

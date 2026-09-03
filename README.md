@@ -78,13 +78,13 @@ docker compose --profile deis up -d
 Monitor progress by first running:
 
 ```bash
-make venv
+just venv
 ```
 
 And then run the *bin/progress.py* Python script with:
 
 ```bash
-make progress
+just progress
 ```
 
 Press CTRL-C to exit the progress display.
@@ -105,7 +105,7 @@ The following web services are available:
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 
 ```bash
-make ingest
+just ingest
 ./bin/ingest.sh
 ```
 

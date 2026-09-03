@@ -7,5 +7,6 @@ line-length = 120
 
 [dependency-groups]
 dev = [
+    "pip>=26.2.1",
     "ruff>=0.16.5",
 ]

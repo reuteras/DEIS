@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AriaNg</title>
+<noscript><meta http-equiv="refresh" content="0; url=ariang.html"></noscript>
+</head>
+<body>
+<script>
+(function () {
+    // Pre-fills AriaNg's RPC secret once per browser using its own supported
+    // settings route, so you don't have to type it into Settings manually.
+    // Never overwrites a secret you've since changed yourself.
+    var FLAG_KEY = "deis-ariang-rpc-autoconfigured";
+    var RPC_PORT = "__RPCPORT__";
+    var RPC_SECRET = "__RPCSECRET__";
+    var target = "ariang.html";
+    try {
+        if (!localStorage.getItem(FLAG_KEY)) {
+            localStorage.setItem(FLAG_KEY, "1");
+            target = "ariang.html#!/settings/rpc/set/http/" + location.hostname + "/" + RPC_PORT + "/jsonrpc/" + encodeURIComponent(RPC_SECRET);
+        }
+    } catch (e) {
+        // localStorage unavailable (private browsing, etc.) - plain AriaNg.
+    }
+    location.replace(target);
+})();
+</script>
+</body>
+</html>

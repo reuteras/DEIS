@@ -73,6 +73,9 @@ services:
       - deis
       - download
     build: controller
+    environment:
+      - RPCPORT=${RPCPORT:-}
+      - RPCSECRET=${RPCSECRET:-}
     volumes:
       - ./controller/conf:/conf
       - ./controller/logs:/logs

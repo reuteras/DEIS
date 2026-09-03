@@ -12,6 +12,7 @@ COPY requirements.txt /app
 RUN apt-get update && \
     apt-get upgrade -yq && \
     apt-get -y install --no-install-recommends \
+        curl \
         file \
         libmagic1 && \
     pip install --no-cache-dir -r /app/requirements.txt && \
@@ -27,6 +28,6 @@ EXPOSE 8081
 ENV UVICORN_LOG_LEVEL=info
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8081/ || exit 1
+    CMD curl -f http://127.0.0.1:8081/openapi.json || exit 1
 
 CMD ["./startup.sh"]

@@ -117,12 +117,16 @@ def resolve_and_verify_target_file(symlink_path_str: str) -> str:
         str: Resolved path to the target file, verified to exist
 
     Raises:
-        HTTPException: If path contains dangerous sequences, isn't a symlink,
+        HTTPException: If path is outside SYMLINKS_DIR, isn't a symlink,
             resolves outside EXTRACTED_ROOT, or target doesn't exist
     """
-    # Defense in depth: Redundant validation even though input was already validated
-    # Reject any paths with .. sequences or leading / (though already prevented)
-    if ".." in symlink_path_str or symlink_path_str.startswith("/"):
+    # Defense in depth: re-verify the boundary check from
+    # validate_sha256_and_get_symlink_path() in this function's own scope,
+    # so it stays safe to call on its own and every path operation below
+    # is preceded by a normalize+startswith barrier in the same function.
+    symlink_path_str = os.path.normpath(symlink_path_str)
+    symlinks_dir_str = os.path.normpath(SYMLINKS_DIR)
+    if not symlink_path_str.startswith(symlinks_dir_str + os.sep):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     # Verify the symlink exists and is actually a symlink (not regular file)

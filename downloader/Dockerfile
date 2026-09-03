@@ -1,7 +1,7 @@
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
 #checkov:skip=CKV_DOCKER_7
-FROM alpine:3.18
+FROM alpine:3.24
 
 LABEL maintainer="sn0b4ll"
 

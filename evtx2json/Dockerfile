@@ -1,6 +1,6 @@
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
-FROM rust:1-bookworm
+FROM rust:1-trixie
 
 RUN cargo install evtx && \
     useradd -m -u 1000 -s /bin/bash evtx

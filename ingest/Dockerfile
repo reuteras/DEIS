@@ -1,7 +1,7 @@
 # Use an official Python runtime as the parent image
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 

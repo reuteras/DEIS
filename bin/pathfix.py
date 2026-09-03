@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""."""
+"""Fix path"""
 
 import argparse
 import hashlib

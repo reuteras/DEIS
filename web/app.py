@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """."""
-#
 
 import os
 import re
@@ -86,10 +84,8 @@ def validate_sha256_and_get_symlink_path(sha256: str) -> str:
     # Step 4: Verify the constructed path is within base directory
     # Uses startswith() check as recommended by CodeQL for path injection prevention
     # This ensures no symlink or normalization can escape SYMLINKS_DIR
-    if not symlink_path_str.startswith(base_path_str + os.sep):
-        # Also handle case where path equals base (shouldn't happen with filename)
-        if symlink_path_str != base_path_str:
-            raise HTTPException(status_code=400, detail="Invalid path")
+    if not symlink_path_str.startswith(base_path_str + os.sep) and symlink_path_str != base_path_str:
+        raise HTTPException(status_code=400, detail="Invalid path")
 
     # Return the normalized, validated path - safe for all file operations
     return symlink_path_str
@@ -195,7 +191,9 @@ async def get_file(sha256: str):
 
     if mime_type in SEND_AS_IS:
         try:
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # lgtm [py/path-injection]
+            return FileResponse(
+                target_file_str, media_type=mime_type, filename=validated_filename
+            )  # lgtm [py/path-injection]
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
@@ -236,7 +234,9 @@ async def convert_file(sha256: str):
         try:
             if mime_type in NO_EXTENSION:
                 return FileResponse(target_file_str, media_type=mime_type)  # lgtm [py/path-injection]
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)  # lgtm [py/path-injection]
+            return FileResponse(
+                target_file_str, media_type=mime_type, filename=validated_filename
+            )  # lgtm [py/path-injection]
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 

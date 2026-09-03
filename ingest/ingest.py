@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Ingest files to Elasticsearch"""
 
 import configparser
@@ -8,9 +7,9 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Iterable
 
 import cbor2
 import requests

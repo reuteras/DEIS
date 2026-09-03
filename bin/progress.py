@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""."""
-#
+"""Progress for DEIS"""
 
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich import print
 from rich.console import Console
@@ -49,7 +47,7 @@ try:
         print("DEIS - progress")
         print("###############")
         print("")
-        print(datetime.now().strftime("%c"))
+        print(datetime.now(tz=timezone.utc).strftime("%c"))
         print("")
 
         # Checking Setup

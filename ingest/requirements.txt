@@ -2,8 +2,6 @@
 #    uv export --package deis-ingest --no-hashes --no-dev --no-emit-workspace
 astroid==4.0.4
     # via pylint
-cbor2==6.1.4
-    # via deis-ingest
 certifi==2026.7.22
     # via requests
 charset-normalizer==3.5.1

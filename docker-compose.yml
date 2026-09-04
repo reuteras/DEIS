@@ -108,7 +108,7 @@ services:
     build: web
     volumes:
       - ./extracted/files:/extracted/files
-      - shasum:/extracted/sha256
+      - ./extracted/sha256:/extracted/sha256:ro
     networks:
       - web
     ports:
@@ -123,6 +123,7 @@ services:
     volumes:
       - ./extracted:/extracted
       - ./deis.cfg:/deis.cfg
+      - ./db:/db
     environment:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
     networks:
@@ -237,4 +238,3 @@ networks:
 
 volumes:
   elasticsearch:
-  shasum:

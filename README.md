@@ -131,7 +131,7 @@ If you already have the files available you can skip the download and extraction
 
 ```bash
 just ingest
-./bin/ingest.sh
+.venv/bin/python3 ingest/ingest.py
 ```
 
 ## Search tips
@@ -146,18 +146,12 @@ To only search a for data already in elastic you can use **docker compose up -d*
 
 Stop all services with **docker compose --profile deis down**.
 
-If you get a error message about **max_analyzed_offset** open the developer console at [http://127.0.0.1:5601/app/dev_tools#/console](http://127.0.0.1:5601/app/dev_tools#/console) and execute the following command:
+**highlight.max_analyzed_offset** is set for you by the setup container, both in the index
+template for future indices and directly on the existing one - no manual step needed.
 
-```txt
-PUT /leakdata-index-*/_settings
-{
-  "index" : {
-    "highlight.max_analyzed_offset" : 2000000000,
-  }
-}
-```
-
-At the same time run the following.
+If you get an error about **search.max_async_search_response_size**, open the developer
+console at [http://127.0.0.1:5601/app/dev_tools#/console](http://127.0.0.1:5601/app/dev_tools#/console)
+and execute:
 
 ```txt
 PUT _cluster/settings

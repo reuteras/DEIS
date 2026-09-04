@@ -118,28 +118,8 @@ for user in "${!users_passwords[@]}"; do
 done
 
 elasticsearch_host="${ELASTICSEARCH_HOST:-elasticsearch}"
-log 'Add attachment pipeline'
-curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_ingest/pipeline/attachment?pretty" -H 'Content-Type: application/json' -d'
-{
-    "description" : "Extract attachment information",
-    "processors" : [
-        {
-            "attachment" : {
-            "field" : "data",
-            "remove_binary": true,
-            "indexed_chars": 200000
-            },
-            "date" : {
-                "field" : "mtime",
-                "target_field" : "timestamp",
-                "formats" : ["UNIX"],
-                "timezone" : "UTC"
-            }
-        }
-    ]
-}
-' > /dev/null && sublog 'Done'
-
+# Only cbor-attachment is used - ingest.py posts CBOR-encoded documents, not
+# JSON, so a JSON-only "attachment" pipeline would never be reachable anyway.
 log 'Add cbor-attachment pipeline'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_ingest/pipeline/cbor-attachment?pretty" -H 'Content-Type: application/json' -d'
 {
@@ -162,17 +142,31 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 }
 ' > /dev/null && sublog 'Done'
 
-log 'Add leakdata index template (top_folder runtime field)'
+log 'Add leakdata index template (top_folder runtime field, explicit mapping)'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata?pretty" -H 'Content-Type: application/json' -d'
 {
     "index_patterns" : ["leakdata-*"],
     "template" : {
+        "settings" : {
+            "number_of_replicas" : 0,
+            "index.mapping.total_fields.limit" : 2000,
+            "index.highlight.max_analyzed_offset" : 2000000000
+        },
         "mappings" : {
+            "properties" : {
+                "sha256" : { "type" : "keyword" },
+                "filename" : { "type" : "keyword" },
+                "attachment" : {
+                    "properties" : {
+                        "content" : { "type" : "text" }
+                    }
+                }
+            },
             "runtime" : {
                 "top_folder" : {
                     "type" : "keyword",
                     "script" : {
-                        "source" : "def parts = doc['"'"'filename.keyword'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
+                        "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
                     }
                 }
             }
@@ -181,10 +175,33 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 }
 ' > /dev/null && sublog 'Done'
 
+# The template above only applies to indices created from now on - a live
+# mapping cannot change an existing field type (sha256/filename from
+# text+keyword to keyword, dropping attachment.content.keyword) without a
+# reindex, and nothing currently creates a new leakdata-* index (there is no
+# ILM/rollover policy), so those specific changes only take effect once one
+# does. The rest is dynamic, so it is also patched onto the existing index
+# directly: replicas (was 1 on a single node, so the cluster was permanently
+# yellow with an unassigned shard for no benefit), total_fields.limit, and
+# highlight.max_analyzed_offset (previously a manual Dev Tools step in the
+# README - not a mapping change, so it applies immediately either way).
+log 'Apply replicas/total_fields.limit/max_analyzed_offset to the existing leakdata index'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_settings?pretty" -H 'Content-Type: application/json' -d'
+{
+    "index" : {
+        "number_of_replicas" : 0,
+        "mapping.total_fields.limit" : 2000,
+        "highlight.max_analyzed_offset" : 2000000000
+    }
+}
+' > /dev/null && sublog 'Done'
+
 # The template above only applies to indices created from now on. Also patch
 # the runtime field onto the index directly, so it shows up for data already
 # ingested before this template existed (adding a runtime field to an
-# existing index's mapping doesn't require a reindex).
+# existing index's mapping doesn't require a reindex). This index's filename
+# field is still text+keyword (see above), so its script still reads
+# filename.keyword, unlike the template's version above.
 log 'Backfill top_folder runtime field onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {

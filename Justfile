@@ -40,7 +40,6 @@ docker-clean:
     docker compose --profile deis rm || true
     docker rm deis-setup-1 || true
     docker volume rm deis_elasticsearch || true
-    docker volume rm deis_shasum || true
     docker images -a | grep -E '^deis-' | cut -f1 -d\  | xargs docker rmi || true
 
 docker-clean-all:

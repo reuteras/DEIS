@@ -9,13 +9,19 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-DB_PATH = "file_hashes.db"
+# Matches ingest.py's sqlite3.connect("db/file_hashes.db") - both relative
+# to the repo root, so a database built here is the one ingest.py reads from
+# when use_sqlite=True.
+DB_PATH = "db/file_hashes.db"
 
 
 def compute_sha256(file_path):
     """Return the sha256 hash of a file."""
+    sha256_hash = hashlib.sha256()
     with file_path.open("rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+        for byte_block in iter(lambda: f.read(65536), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
 def setup_database():

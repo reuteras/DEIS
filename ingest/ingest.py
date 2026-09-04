@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Ingest files to Elasticsearch"""
 
+import base64
 import configparser
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -11,16 +13,20 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import cbor2
 import requests
 from tqdm import tqdm
 
 if not Path("./extracted/sha256").is_dir():
     Path("./extracted/sha256").mkdir()
 
-headers = {"content-type": "application/cbor"}
+headers = {"content-type": "application/x-ndjson"}
 success_list = [200, 201]
 INDEX = "leakdata-index-000001"
+# Keep individual _bulk requests to a sane size - standard Elasticsearch
+# guidance is a handful of MB per request, not so large that one slow/huge
+# batch dominates a retry, not so small that batching stops paying off.
+BULK_MAX_DOCS = 200
+BULK_MAX_BYTES = 20 * 1024 * 1024
 
 # What happened to a single file, for the summary at the end of a run.
 SKIPPED = "skipped"  # bookkeeping file, never meant to be indexed
@@ -66,10 +72,11 @@ def hash_link_exists(hash_value):
 def create_hash_link(hash_value, filename):
     """Create link from hash to file.
 
-    Only called once Elasticsearch has confirmed the document, so the symlink
-    doubles as the "this file is done" marker for later runs. Creating it
-    earlier would mean a crash between the symlink and the upload leaves the
-    file marked as done but never indexed - it would then be skipped forever.
+    Only called once Elasticsearch has confirmed the document (in a bulk
+    response, per item), so the symlink doubles as the "this file is done"
+    marker for later runs. Creating it earlier would mean a crash between the
+    symlink and the upload leaves the file marked as done but never indexed -
+    it would then be skipped forever.
     """
     sha256_link = Path("extracted/sha256/" + str(hash_value))
     if sha256_link.is_symlink():
@@ -80,50 +87,6 @@ def create_hash_link(hash_value, filename):
         if not sha256_link.is_symlink():
             print("ERROR: Could not create symlink for file:", filename, flush=True)
     return True
-
-
-def request_retry(url, data, num_retries=5):
-    for _ in range(num_retries):
-        try:
-            response = requests.put(url, data=data, headers=headers, timeout=50)
-            if response.status_code in success_list:
-                ## Return response if successful
-                return response
-            if response.status_code == 400:
-                return response
-            time.sleep(15)
-        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
-            time.sleep(60)
-        except requests.exceptions.RequestException as error:
-            # Anything else requests can raise (SSL errors, malformed URLs,
-            # too many redirects, ...). Retry rather than killing the worker.
-            print("ERROR: Request to Elastic failed:", error, flush=True)
-            time.sleep(15)
-    return None
-
-
-def send_elastic(filename, content, hash_value, message):
-    """Send files to elastic."""
-
-    filepath = filename
-
-    if use_sqlite:
-        cur = con.cursor()
-        res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", (hash_value,))
-        filepath = res.fetchone()[0]
-
-    doc = {
-        "filename": str(filepath),
-        "sha256": hash_value,
-        "data": content,
-        "mtime": int(filename.stat().st_mtime),
-        "message": message,
-    }
-
-    return request_retry(
-        index_url() + "/_doc/" + hash_value + "?pipeline=cbor-attachment",
-        data=cbor2.dumps(doc),
-    )
 
 
 def index_url():
@@ -146,52 +109,152 @@ def elastic_document_count():
         return None
 
 
-def handle_file(fname: Path):
-    """Handle files.
+def resolve_filepath(filename, hash_value):
+    """Look up the original filename via sqlite, if enabled."""
+    if not use_sqlite:
+        return filename
+    cur = con.cursor()
+    res = cur.execute("SELECT original_filename FROM files WHERE sha256=?", (hash_value,))
+    return res.fetchone()[0]
 
-    Returns (status, sha256, error) so process_files() can both report failures
-    and account for every file in the summary. Nothing raises out of here: a
-    single unreadable or unusual file must not abort the whole batch, since
-    every worker shares one ProcessPoolExecutor.
+
+def prepare_file(fname: Path):
+    """Hash and read one file, ready for a later bulk request.
+
+    Runs in a worker process - this is the CPU/IO-bound part, still worth
+    parallelizing - but never touches the network and never creates a
+    marker; those only happen once a bulk request confirms success, back in
+    the main process (see process_batch). Nothing raises out of here: a
+    single unreadable or unusual file must not abort the whole run.
+
+    Returns a dict, always with a "status" key: SKIPPED (a bookkeeping file),
+    PRESENT (already indexed, carries "sha256"), FAILED (could not even be
+    hashed, carries "error"), or "ready" (carries "fname", "sha256",
+    "content" bytes and "message", waiting to be sent).
     """
     if str(fname) in ["extracted/files/done", "extracted/files/path.txt"]:
-        return (SKIPPED, None, None)
+        return {"status": SKIPPED}
     try:
         sha256 = get_filehash(fname)
         if sha256 is None or len(sha256) != 64:
-            return (FAILED, None, f"ERROR: Could not get sha256 for file: {fname}")
+            return {"status": FAILED, "sha256": None, "error": f"ERROR: Could not get sha256 for file: {fname}"}
         if hash_link_exists(sha256):
             # This content is already indexed, by an earlier run or by an
             # identical copy of the file elsewhere in the tree.
-            return (PRESENT, sha256, None)
+            return {"status": PRESENT, "sha256": sha256}
         if fname.stat().st_size > max_size:
-            content = ""
+            content = b""
             message = "to large"
         else:
             with open(fname, "rb") as f:
                 content = f.read()
             message = "ok"
-        response = send_elastic(fname, content, sha256, message)
-        if response is None:
-            return (FAILED, sha256, f"Error sending file to Elastic (Null returned): {fname}")
-        if response.status_code == 400:
-            # Tika could not parse it. Index it again without the content so
-            # the file is still findable by name/hash, with the parser error
-            # kept in "message".
-            response = send_elastic(fname, "", sha256, response.text)
-            if response is None:
-                return (FAILED, sha256, f"Error sending file to Elastic (Null returned): {fname}")
-            if response.status_code not in success_list:
-                return (
-                    FAILED,
-                    sha256,
-                    f"Error sending file to Elastic (second try returned): {fname} Code: {response.status_code}",
-                )
-        # Only now is the file really done, so mark it for the next run.
-        create_hash_link(sha256, fname)
     except Exception as error:  # noqa: BLE001 - one bad file must not stop the batch
-        return (FAILED, None, f"ERROR: Failed to ingest {fname}: {error!r}")
-    return (INDEXED, sha256, None)
+        return {"status": FAILED, "sha256": None, "error": f"ERROR: Failed to prepare {fname}: {error!r}"}
+    return {"status": "ready", "fname": fname, "sha256": sha256, "content": content, "message": message}
+
+
+def build_bulk_body(items):
+    """Builds the newline-delimited JSON body for one _bulk request.
+
+    File content is base64-encoded: the _bulk endpoint only accepts JSON,
+    not the CBOR the single-document PUT this replaced used to send raw
+    bytes with (Elasticsearch rejects "Content-Type: application/cbor" on
+    _bulk) - verified against the live pipeline that a base64 "data" field
+    still gets correctly picked up and decoded by the attachment processor.
+    """
+    lines = []
+    for item in items:
+        lines.append(json.dumps({"index": {"_id": item["sha256"]}}))
+        doc = {
+            "filename": resolve_filepath(str(item["fname"]), item["sha256"]),
+            "sha256": item["sha256"],
+            "data": base64.b64encode(item["content"]).decode("ascii"),
+            "mtime": int(item["fname"].stat().st_mtime),
+            "message": item["message"],
+        }
+        lines.append(json.dumps(doc))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def bulk_request(items, num_retries=5):
+    """POSTs one _bulk request, retrying the whole batch on connection or
+    transient failures - the same backoff request_retry used before.
+    Returns the response's "items" list, in the same order as the request
+    (guaranteed by the _bulk API), or None if every retry failed.
+    """
+    url = index_url() + "/_bulk?pipeline=cbor-attachment"
+    body = build_bulk_body(items)
+    for _ in range(num_retries):
+        try:
+            response = requests.post(url, data=body, headers=headers, timeout=120)
+            if response.status_code in success_list:
+                return response.json()["items"]
+            time.sleep(15)
+        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
+            time.sleep(60)
+        except requests.exceptions.RequestException as error:
+            # Anything else requests can raise (SSL errors, malformed URLs,
+            # too many redirects, ...). Retry rather than giving up outright.
+            print("ERROR: Bulk request to Elastic failed:", error, flush=True)
+            time.sleep(15)
+    return None
+
+
+def process_batch(items):
+    """Sends one batch and applies the crash-safe marker-only-after-confirmed
+    rule per document. Returns (status, sha256, error) tuples, one per item,
+    the same shape prepare_file's callers already expect.
+    """
+    results = []
+    responses = bulk_request(items)
+    if responses is None:
+        return [
+            (FAILED, item["sha256"], f"Error sending file to Elastic (bulk request failed): {item['fname']}")
+            for item in items
+        ]
+
+    retry_items = []
+    for item, item_response in zip(items, responses):
+        action_result = item_response["index"]
+        status = action_result["status"]
+        if status in success_list:
+            create_hash_link(item["sha256"], item["fname"])
+            results.append((INDEXED, item["sha256"], None))
+        elif status == 400:
+            # Tika could not parse it. Retry without content so the file is
+            # still findable by name/hash, with the parser error kept in
+            # "message".
+            retry_items.append({**item, "content": b"", "message": json.dumps(action_result.get("error", {}))})
+        else:
+            results.append(
+                (FAILED, item["sha256"], f"Error sending file to Elastic (status {status}): {item['fname']}")
+            )
+
+    if retry_items:
+        retry_responses = bulk_request(retry_items)
+        if retry_responses is None:
+            results.extend(
+                (FAILED, item["sha256"], f"Error sending file to Elastic (bulk retry failed): {item['fname']}")
+                for item in retry_items
+            )
+        else:
+            for item, item_response in zip(retry_items, retry_responses):
+                action_result = item_response["index"]
+                status = action_result["status"]
+                if status in success_list:
+                    create_hash_link(item["sha256"], item["fname"])
+                    results.append((INDEXED, item["sha256"], None))
+                else:
+                    results.append(
+                        (
+                            FAILED,
+                            item["sha256"],
+                            f"Error sending file to Elastic (second try, status {status}): {item['fname']}",
+                        )
+                    )
+
+    return results
 
 
 def print_summary(results, directory):
@@ -236,18 +299,36 @@ def print_summary(results, directory):
 
 
 def process_files(directory: Path):
-    """Process all files in parallel (number of CPUs).
-
-    Returns the number of files that failed, so the caller can decide whether
-    the run counts as finished.
+    """Prepares files in parallel (number of CPUs), sends them to
+    Elasticsearch in bulk batches, and returns the number that failed.
     """
+    results = []
+    batch = []
+    batch_bytes = 0
+
+    def flush():
+        nonlocal batch, batch_bytes
+        if batch:
+            results.extend(process_batch(batch))
+            batch = []
+            batch_bytes = 0
+
     with ProcessPoolExecutor() as executor:
-        files = get_files(directory)
-        files_list = list(files)
-        files_count = len(files_list)
-        files = iter(files_list)
-        results = list(tqdm(executor.map(handle_file, files), total=files_count, desc="Processing files", unit="files"))
-        return print_summary(results, directory)
+        files = list(get_files(directory))
+        for prepared in tqdm(
+            executor.map(prepare_file, files), total=len(files), desc="Processing files", unit="files"
+        ):
+            status = prepared["status"]
+            if status == "ready":
+                batch.append(prepared)
+                batch_bytes += len(prepared["content"])
+                if len(batch) >= BULK_MAX_DOCS or batch_bytes >= BULK_MAX_BYTES:
+                    flush()
+            else:
+                results.append((status, prepared.get("sha256"), prepared.get("error")))
+        flush()
+
+    return print_summary(results, directory)
 
 
 cfg = read_configuration("./deis.cfg")

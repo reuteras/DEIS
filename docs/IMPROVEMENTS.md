@@ -54,6 +54,8 @@ Two properties should drive prioritization, because they follow from what the to
 | 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
 | 34 (partly) | No Kibana-visible signal existed for "still encrypted"/"corrupt", only plain files on disk | `a6fef83` |
 | 35 | Password in the connection URL, hardcoded/duplicated index name, and a full-corpus pull for the word cloud | `a6fef83` |
+| 38 | `ES_JAVA_OPTS` was hardcoded, forcing the 18 GB Docker requirement on everyone regardless of dump size | `3f3cf9b` |
+| 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
@@ -616,21 +618,33 @@ logic, config parsing, and a zip-slip and bomb fixture set once item 18 exists. 
 smoke test that ingests a tiny fixture dump and asserts the reconciliation counts end to end
 would catch the whole class of problem this document opens with. *Effort: M. Impact: high.*
 
-### 38. Make resource limits configurable
+### 38. Make resource limits configurable (fixed)
 
-`ES_JAVA_OPTS: -Xms2g -Xmx16g` is hardcoded in `docker-compose.yml`, which forces the
-README's 18 GB Docker requirement on everyone regardless of dump size. Drive it from `.env`
-with a smaller default. *Effort: S.*
+`ES_JAVA_OPTS: -Xms2g -Xmx16g` was hardcoded in `docker-compose.yml`, forcing the README's
+18 GB Docker requirement on everyone regardless of dump size. Now
+`${ES_JAVA_OPTS:--Xms2g -Xmx16g}`, overridable via `.env`, same default. Verified against the
+live stack: recreating Elasticsearch with `ES_JAVA_OPTS="-Xms512m -Xmx1g"` came up healthy
+with `heap.max` reporting `1gb` via `_cat/nodes`; recreating again with the default restored
+16gb and confirmed the existing 273 documents survived both restarts untouched.
 
-### 39. Structured logging across stages (partly done)
+### 39. Structured logging across stages (fixed for ingest; download/extract were already there)
 
-`deis/download.sh` and `deis/urls.sh` write timestamped entries to
-`logs/download_errors.log`, and `unpack/start.sh` now writes per-file outcomes to
-`logs/unpack.log` (item 17). Ingest still only has its end-of-run summary (item 25) rather
-than a per-file log, and everything else echoes to stdout with no timestamps and no log file.
-One log directory, one format, would still be an improvement over two different formats in
-`logs/`, but the substrate items 34 and the CLI's `status`/`report` need now exists for two
-of the three stages. *Effort: M.*
+`deis/download.sh` and `deis/urls.sh` already wrote timestamped entries to
+`logs/download_errors.log`, and `unpack/start.sh` writes per-file outcomes to
+`logs/unpack.log` (item 17). Ingest was the one stage with no per-file log, only its
+end-of-run summary (item 25) printed to the container log. `ingest.py` now also appends to
+`logs/ingest.log`: one line per file that was actually indexed or that failed, timestamped,
+in the same spirit as `unpack.log` - and, matching `unpack.log`'s own convention, nothing is
+logged for files that were already indexed and needed no work, so the file doesn't grow
+without bound on repeat runs over an unchanged corpus. Verified against the live stack: a
+clean run touched nothing in the log; removing a marker and re-running produced a real
+`[INDEXED] sha256=...` line; blocking writes on the index and retrying produced real
+`[FAILED] ...` lines naming the actual file paths.
+
+Three different formats across `logs/download_errors.log`, `logs/unpack.log` and
+`logs/ingest.log` remain (this item's original "one log directory, one format" ask) - a
+smaller polish item now, since the substrate the CLI's `status`/`report` and item 34 depend
+on exists for every stage.
 
 ### 40. Decide the fate of the log-ingest scaffolding
 
@@ -658,11 +672,11 @@ that `web` cannot write into the shared directory.
 
 ## Suggested sequencing
 
-1. **Make losses visible** (39): structured logging is now real (`logs/unpack.log`,
-   `still_encrypted.txt`/`still_corrupt.txt`), and extraction failure states are Kibana-visible
-   (item 34's `extraction_status` field and dashboard panels). What remains of 34 is the ingest
-   reconciliation counts specifically, which print to the container log rather than being
-   indexed anywhere Kibana can see.
+1. **Make losses visible** — done for logging (39: every stage now has a real per-file log)
+   and for extraction failures (34's `extraction_status` field and dashboard panels). What
+   remains is the ingest reconciliation counts specifically, which print to the container log
+   rather than being indexed anywhere Kibana can see, and unifying the three still-different
+   log file formats.
 2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio
    and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested
    passwords, distinct failure states) are done; this is what is left of the extraction

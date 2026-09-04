@@ -10,6 +10,10 @@ pst_archive=true
 pst_remove=false
 summary=true
 unpack=true
-unzip=true
 zip_archive=true
 zip_remove=false
+# How many rounds of "extract, then look inside what came out" to run before
+# giving up on further nesting. Archives more deeply nested than this are
+# left as-is in the output rather than extracted further; see
+# logs/unpack.log if that happens.
+max_depth=6

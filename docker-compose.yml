@@ -97,6 +97,8 @@ services:
       - ./files:/files
       - ./extracted:/extracted
       - ./deis.cfg:/deis.cfg
+      - ./logs:/logs
+      - ./passwords:/passwords:ro
     environment:
       ZIP_PASSWORD: ${ZIP_PASSWORD:-}
 

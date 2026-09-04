@@ -20,11 +20,18 @@ Download files automatically from leek sites using [TOR][tor]. I use a [forked][
 ### Extract
 
 Automated extraction of compressed files with a simple container running [7-zip][7zz].
+Extraction is recursive: whatever comes out of an archive is checked again, so an archive
+nested inside an archive inside an archive is still found, regardless of its extension -
+detection is "try extracting it" rather than a fixed list of extensions, since leak dumps are
+full of wrong or missing ones. This continues for up to `max_depth` rounds (`deis.cfg`,
+default 6); anything nested deeper than that is left as-is, and files still encrypted after
+every password below has been tried are listed in `extracted/still_encrypted.txt`.
 
-After unpacking the downloaded files a couple of optional (but default) steps are executed.
-
-- Run 7-zip once more on the extracted files.
 - Run [readpst][res] on files with the extension [.pst][pst] (Outlook Data File).
+- If the downloaded files are password protected, set **ZIP_PASSWORD** in *.env*, or add one
+  password per line to files in the *passwords* directory - every archive is tried against
+  all of them, in order, at every nesting level.
+- Per-file results are logged to `logs/unpack.log`.
 
 ### Ingest
 
@@ -59,7 +66,9 @@ Configure DEIS by changing three files:
 
 - Copy *.env.default* to *.env* and modify the passwords in it. Set **JUPYTER_TOKEN** to a
   random value (`openssl rand -hex 32`) - JupyterLab will not start without one. If the
-  downloaded files are password protected you must also set the **ZIP_PASSWORD**. *.env* is
+  downloaded files are password protected set the **ZIP_PASSWORD**, or - if there is more
+  than one password in play - add them one per line to files in the *passwords* directory
+  instead; every archive at every nesting level is tried against all of them. *.env* is
   not tracked by git, so your passwords stay on your machine.
 - Add a list of URLs (one per line) for files to download to a file in the *urls* directory.
 - Copy *deis.cfg.default* to *deis.cfg* and update the settings described in the file.

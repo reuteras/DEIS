@@ -32,6 +32,8 @@ every password below has been tried are listed in `extracted/still_encrypted.txt
   password per line to files in the *passwords* directory - every archive is tried against
   all of them, in order, at every nesting level.
 - Per-file results are logged to `logs/unpack.log`.
+- Each round of extraction runs in parallel, up to **PARALLELISM** archives at once (set in
+  *.env*; defaults to the number of CPU cores available to the container).
 
 ### Ingest
 

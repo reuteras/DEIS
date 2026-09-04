@@ -5,6 +5,7 @@ set -u
 LOG=/logs/unpack.log
 STILL_ENCRYPTED=/extracted/still_encrypted.txt
 MAX_DEPTH_DEFAULT=6
+PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
 
 # Marker files deis/*.sh and web/startup.sh drop into /files. They must never
 # be treated as leak data - keep this in sync with what those scripts touch
@@ -18,17 +19,26 @@ log() {
     echo "$(date -Iseconds) [$1] $2" >> "${LOG}"
 }
 
-# Reads a /deis.cfg key. Same substring match the rest of this project's
-# config reading already uses (not section-aware - a key that merely contains
-# this name as a substring would also match).
+# Reads a single key from /deis.cfg's [unpack] section - the only section
+# this script ever reads. Unlike a plain substring grep, a key in a
+# different section, or a key that merely contains this name as a substring
+# (e.g. "not_unpack=true" when reading "unpack"), is not matched.
+read_cfg() {
+    awk -F= -v key="$1" '
+        /^\[/ { insection = ($0 == "[unpack]"); next }
+        insection && $1 == key { print substr($0, index($0, "=") + 1); found = 1 }
+        END { exit !found }
+    ' /deis.cfg
+}
+
 config_true() {
-    grep -q "^$1=true" /deis.cfg
+    [[ "$(read_cfg "$1")" == "true" ]]
 }
 
 config_int() {
     local value
-    value="$(grep -oE "^$1=[0-9]+" /deis.cfg | head -1 | cut -d= -f2)"
-    [[ -n "${value}" ]] && echo "${value}" || echo "$2"
+    value="$(read_cfg "$1")"
+    [[ "${value}" =~ ^[0-9]+$ ]] && echo "${value}" || echo "$2"
 }
 
 # Every password worth trying, in order: unencrypted first (most files), then
@@ -44,6 +54,14 @@ build_password_list() {
             | sed -e 's/\r$//' \
             | grep -vE '^[[:space:]]*(#|$)'
     fi
+}
+
+# Loads PASSWORDS from the file the parent wrote once per unpack() run.
+# Needed because each round's extraction workers are separate processes
+# (spawned by xargs -P, not just backgrounded subshells of this one) and bash
+# cannot export an array into a child process's environment.
+load_passwords() {
+    mapfile -t PASSWORDS < "${WORKDIR}/passwords.list"
 }
 
 # Moves/deletes an original after it has been successfully extracted, per
@@ -75,14 +93,13 @@ dispose_of_original() {
     mv "${path}" "${dest}" 2>/dev/null
 }
 
-# Appends every regular file under $1 to the global NEXT_ROUND array, so it
-# gets attempted in the next round - this is what turns extraction into
-# recursion instead of two fixed passes.
+# Appends every regular file under $1 to this worker's own output file, later
+# merged by the parent into the next round - this is what turns extraction
+# into recursion instead of two fixed passes. A worker is a separate process
+# (see load_passwords above), so it cannot append to a shared bash array
+# directly; $$ is unique per worker, so concurrent workers never collide here.
 queue_new_files() {
-    local f
-    while IFS= read -r -d '' f; do
-        NEXT_ROUND+=("${f}")
-    done < <(find "$1" -type f -print0)
+    find "$1" -type f -print0 >> "${WORKDIR}/next.$$"
 }
 
 # Attempts every password candidate against $1, extracting into $2 on
@@ -116,21 +133,26 @@ try_extract() {
     return 1
 }
 
+# Runs the real extraction for one sha256 group's representative file
+# ("primary" - see dispatch_round below). $3, if given, is the group's
+# result-file name; every other file sharing this group's content reuses
+# whatever outcome is recorded here instead of repeating identical, wasted
+# 7-Zip work - two files with the same sha256 are byte-identical, so 7-Zip
+# extracting them is guaranteed to succeed or fail the same way both times.
 process_zip_like() {
-    local path="$1" sha dest
-    sha="$(sha256sum "${path}" | awk '{print $1}')"
-    dest="/extracted/files/${sha}"
+    local path="$1" sha="$2" resultfile="${3:-}" dest="/extracted/files/${2}"
 
     if [[ -e "${dest}" ]]; then
-        # Identical content already extracted from elsewhere (a duplicate
-        # archive) - nothing new to extract, but this copy still gets its own
-        # archive/remove disposition.
+        # Content already extracted, either earlier in this same round by
+        # this group's primary, or in an earlier round.
+        [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         dispose_of_original "${path}" zip
         return
     fi
     mkdir -p "${dest}"
 
     if try_extract "${path}" "${dest}"; then
+        [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted: ${path} -> ${dest}"
         queue_new_files "${dest}"
         dispose_of_original "${path}" zip
@@ -138,6 +160,7 @@ process_zip_like() {
     fi
 
     rmdir "${dest}" 2>/dev/null
+    [[ -n "${resultfile}" ]] && echo "${EXTRACT_RESULT}" > "${resultfile}"
     # A file discovered inside a parent's extraction directory is already at
     # a real, correctly namespaced path under /extracted/files - copying it
     # again into /extracted/files itself would just duplicate it there under
@@ -161,40 +184,167 @@ process_zip_like() {
 }
 
 process_pst() {
-    local path="$1" sha dest
-    sha="$(sha256sum "${path}" | awk '{print $1}')"
-    dest="/extracted/files/${sha}"
+    local path="$1" sha="$2" resultfile="${3:-}" dest="/extracted/files/${2}"
 
     if [[ -e "${dest}" ]]; then
+        [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         dispose_of_original "${path}" pst
         return
     fi
     mkdir -p "${dest}"
 
     if readpst -D -S -j 2 -q -r -o "${dest}" "${path}" < /dev/null 2>>"${LOG}"; then
+        [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted PST: ${path} -> ${dest}"
         queue_new_files "${dest}"
         dispose_of_original "${path}" pst
     else
         rmdir "${dest}" 2>/dev/null
+        [[ -n "${resultfile}" ]] && echo "corrupt" > "${resultfile}"
         [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
         log CORRUPT "Could not extract PST (corrupt or unsupported), left/copied as-is: ${path}"
     fi
 }
 
+# Applies an already-known outcome (from this group's primary) to a
+# duplicate file, without repeating the extraction attempt. Mirrors the
+# per-outcome handling in process_zip_like/process_pst exactly, so a
+# duplicate is indistinguishable in the log/still_encrypted.txt/final output
+# from what an independent attempt would have produced.
+apply_known_result() {
+    local path="$1" sha="$2" kind="$3" result="$4"
+    case "${result}" in
+        extracted)
+            dispose_of_original "${path}" "${kind}"
+            ;;
+        not-archive)
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            log COPIED "Not an archive (same content already checked this round), left/copied as-is: ${path}"
+            ;;
+        encrypted)
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            echo "${path}" >> "${STILL_ENCRYPTED}"
+            log ENCRYPTED "Still encrypted (same content already checked this round), left/copied as-is: ${path}"
+            ;;
+        corrupt)
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            log CORRUPT "Could not extract (same content already checked this round), left/copied as-is: ${path}"
+            ;;
+        *)
+            # Should not happen (the primary always writes a result before
+            # exiting) - fail safe by attempting this file independently
+            # rather than silently dropping it.
+            process_one_file "${path}"
+            ;;
+    esac
+}
+
+# Entry point for a round's parallel worker process (see dispatch_round).
+# Everything this needs - functions and WORKDIR/LOG/STILL_ENCRYPTED - is
+# exported into the environment before xargs -P spawns these. Takes only the
+# path and re-derives sha/kind/resultfile itself (dispatch_round's grouping
+# loop computes the same values the same way) rather than having the caller
+# pass three values through one xargs -I{} placeholder, which would need an
+# awkward custom delimiter; sha256sum is cheap enough that hashing twice is
+# not worth that.
+worker_entrypoint() {
+    local path="$1" sha kind resultfile
+    load_passwords
+    sha="$(sha256sum "${path}" | awk '{print $1}')"
+    if [[ "${path,,}" == *.pst ]]; then kind="pst"; else kind="zip"; fi
+    resultfile="${WORKDIR}/results/${sha}-${kind}"
+
+    if [[ "${kind}" == "pst" ]]; then
+        if config_true pst; then
+            process_pst "${path}" "${sha}" "${resultfile}"
+        else
+            echo "extracted" > "${resultfile}"  # "extracted" here just means "handled, nothing left to do"
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            log COPIED "PST extraction disabled (pst=false), left/copied as-is: ${path}"
+        fi
+    else
+        process_zip_like "${path}" "${sha}" "${resultfile}"
+    fi
+}
+
+# Serial fallback entry point (no parallel worker/result-file machinery),
+# used for the WORKDIR-less "should never happen" case in
+# apply_known_result and for anything that isn't part of a round dispatch.
 process_one_file() {
     local path="$1"
     [[ -f "${path}" ]] || return   # may already have been consumed elsewhere
     if [[ "${path,,}" == *.pst ]]; then
         if config_true pst; then
-            process_pst "${path}"
+            process_pst "${path}" "$(sha256sum "${path}" | awk '{print $1}')"
         else
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
             log COPIED "PST extraction disabled (pst=false), left/copied as-is: ${path}"
         fi
     else
-        process_zip_like "${path}"
+        process_zip_like "${path}" "$(sha256sum "${path}" | awk '{print $1}')"
     fi
+}
+
+export -f log read_cfg config_true config_int load_passwords dispose_of_original \
+    queue_new_files try_extract process_zip_like process_pst apply_known_result \
+    worker_entrypoint process_one_file
+
+# Extracts one round of files in parallel (up to $PARALLELISM at a time).
+# Files are deduplicated by content (sha256) plus type (.pst vs not, since
+# that decides which tool runs and which deis.cfg keys apply) before
+# dispatch: only one representative per group - the "primary" - actually
+# runs 7-Zip/readpst, since two files with the same sha256 are byte-identical
+# and extracting both would be guaranteed-redundant, wasted work at best and,
+# run truly concurrently, a real race (two processes writing into the same
+# destination directory at once). Every other file in a group - a
+# "duplicate" - is handled after every primary in the round has finished, by
+# replaying the primary's already-known outcome (apply_known_result) rather
+# than attempting extraction itself.
+dispatch_round() {
+    local -a files=("$@")
+    local path sha kind group
+    declare -A seen_group   # group -> 1, just to detect the first occurrence
+    local -a primaries=()
+    local -a dup_paths=() dup_shas=() dup_kinds=()
+
+    mkdir -p "${WORKDIR}/results"
+    rm -f "${WORKDIR}"/next.* 2>/dev/null
+
+    for path in "${files[@]}"; do
+        sha="$(sha256sum "${path}" | awk '{print $1}')"
+        if [[ "${path,,}" == *.pst ]]; then kind="pst"; else kind="zip"; fi
+        group="${sha}-${kind}"
+        if [[ -n "${seen_group[${group}]:-}" ]]; then
+            dup_paths+=("${path}")
+            dup_shas+=("${sha}")
+            dup_kinds+=("${kind}")
+        else
+            seen_group["${group}"]=1
+            primaries+=("${path}")
+        fi
+    done
+
+    echo "Round ${ROUND}: ${#files[@]} file(s) to check (${#primaries[@]} unique content, $(( ${#files[@]} - ${#primaries[@]} )) duplicate), up to ${PARALLELISM} in parallel."
+
+    if (( ${#primaries[@]} > 0 )); then
+        # shellcheck disable=SC2016 # deliberately deferred: "$1" must expand
+        # in the worker bash -c spawns, not in this parent shell.
+        printf '%s\0' "${primaries[@]}" \
+            | xargs -0 -r -P "${PARALLELISM}" -I{} bash -c 'worker_entrypoint "$1"' _ {}
+    fi
+
+    local i
+    for (( i = 0; i < ${#dup_paths[@]}; i++ )); do
+        group="${dup_shas[$i]}-${dup_kinds[$i]}"
+        apply_known_result "${dup_paths[$i]}" "${dup_shas[$i]}" "${dup_kinds[$i]}" \
+            "$(cat "${WORKDIR}/results/${group}" 2>/dev/null)"
+    done
+
+    NEXT_ROUND=()
+    local f
+    while IFS= read -r -d '' f; do
+        NEXT_ROUND+=("${f}")
+    done < <(cat "${WORKDIR}"/next.* 2>/dev/null)
 }
 
 # Extracts everything under /files, then recurses into whatever that
@@ -206,7 +356,9 @@ process_one_file() {
 # hide an archive from this at all.
 unpack() {
     : > "${STILL_ENCRYPTED}"
-    mapfile -t PASSWORDS < <(build_password_list | awk '!seen[$0]++')
+    WORKDIR="$(mktemp -d)"
+    export WORKDIR LOG STILL_ENCRYPTED
+    build_password_list | awk '!seen[$0]++' > "${WORKDIR}/passwords.list"
 
     local -a current
     mapfile -d '' -t current < <(find /files -maxdepth 1 -type f -print0 \
@@ -215,21 +367,19 @@ unpack() {
 
     local max_depth
     max_depth="$(config_int max_depth "${MAX_DEPTH_DEFAULT}")"
-    local depth=1
+    export ROUND=1
 
     while (( ${#current[@]} > 0 )); do
-        if (( depth > max_depth )); then
+        if (( ROUND > max_depth )); then
             log DEPTH-LIMIT "Reached max_depth=${max_depth} with ${#current[@]} file(s) still to check; left as-is: ${current[*]}"
             break
         fi
-        echo "Round ${depth}: ${#current[@]} file(s) to check."
-        NEXT_ROUND=()
-        for path in "${current[@]}"; do
-            process_one_file "${path}"
-        done
+        dispatch_round "${current[@]}"
         current=("${NEXT_ROUND[@]}")
-        depth=$(( depth + 1 ))
+        ROUND=$(( ROUND + 1 ))
     done
+
+    rm -rf "${WORKDIR}"
 }
 
 function summary {

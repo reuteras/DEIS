@@ -101,6 +101,7 @@ services:
       - ./passwords:/passwords:ro
     environment:
       ZIP_PASSWORD: ${ZIP_PASSWORD:-}
+      PARALLELISM: ${PARALLELISM:-}
 
 
   web:

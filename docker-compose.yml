@@ -37,6 +37,8 @@ services:
       - RPCPORT=${RPCPORT:-}
       - RPCSECRET=${RPCSECRET:-}
       - TORSERVNUM=${TORSERVNUM:-}
+      - FORCE_TOR=${FORCE_TOR:-false}
+      - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT:-86400}
     volumes:
       - ./files:/files
       - ./downloader/data:/downloader/data

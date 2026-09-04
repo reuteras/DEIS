@@ -37,6 +37,10 @@ Two properties should drive prioritization, because they follow from what the to
 | 9 | `TORSERVNUM` was set but read by nothing, so it never changed the number of TOR circuits | `5e5232c` |
 | 11 | Clearnet routing policy was accidental rather than decided | `5ce18cc` |
 | 13 | The move from `downloader/data` to `files` had no collision handling, no success check, and never retried | `95fd325` |
+| 14 | Extraction was two fixed passes, so archives nested three or more levels deep were found only by accident | `996f479` |
+| 15 | Archive detection was a fixed extension list, so a `.rar` inside a `.zip` was never extracted | `996f479` |
+| 16 | `ZIP_PASSWORD` was silently ignored on nested archives | `996f479` |
+| 17 | Wrong password, corrupt, and not-an-archive were indistinguishable and all logged the same misleading message | `996f479` |
 | 25 | Nothing reconciled files on disk against documents indexed | `8e6bbdf` |
 | 26 | A run marked itself complete even when files had failed | `8e6bbdf` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
@@ -172,33 +176,82 @@ opsec check, because it fails loudly instead of leaking quietly. *Effort: M. Imp
 
 ## E — Extract
 
-### 14. Nested extraction is two fixed passes, not recursion to a fixpoint
+### 14. Nested extraction was two fixed passes, not recursion to a fixpoint (fixed)
 
-Pass 1 handles `/files/*`; pass 2 walks `/extracted/files` once. Anything three levels deep
-(zip → zip → pst) is only picked up by accident of `find` traversal order while the same run
-is still writing files, which is undocumented and non-deterministic. Loop until a pass
-produces no new archives, with a depth cap. *Effort: M. Impact: high, this is silent recall
-loss.*
+Pass 1 handled `/files/*`; pass 2 walked `/extracted/files` once. Anything three levels deep
+(zip → zip → pst) was only picked up by accident of `find` traversal order while the same run
+was still writing files - undocumented and non-deterministic.
 
-### 15. Pass 2 only matches `zip|gz|7z|gzip`
+`unpack/start.sh` is now one recursive loop: extract a round of files, queue whatever came
+out of them for the next round, stop when a round produces nothing new or `max_depth` rounds
+have run (`deis.cfg`, default 6 - past that, files are left as-is and logged as such rather
+than silently dropped). Verified with an archive nested four levels deep through mixed
+formats (zip → zip → tar → plain file): the deepest file's actual content came back correctly
+after four rounds. A deliberately 8-level-deep archive stopped exactly at round 6 with a
+logged `DEPTH-LIMIT` line naming what was left unprocessed, confirming the cap is both real
+and visible rather than a silent truncation.
 
-`.rar`, `.tar`, `.tgz`, `.bz2` and `.xz` are excluded, so a `.rar` inside a `.zip` is never
-extracted even though pass 1 handles `.rar` fine and 7-Zip supports all of them. Better
-still, detect by content with `file --mime-type` rather than by extension, since leak dumps
-are full of wrong and missing extensions. *Effort: S. Impact: high.*
+### 15. Archive detection was a fixed extension list (fixed)
 
-### 16. `ZIP_PASSWORD` is silently ignored in pass 2
+Pass 2 only matched `zip|gz|7z|gzip`, so `.rar`, `.tar`, `.tgz`, `.bz2` and `.xz` were
+excluded - a `.rar` inside a `.zip` was never extracted even though 7-Zip handles it fine and
+the top-level pass did too.
 
-`zip_extract()` never passes `-p`, so a password-protected archive nested inside another
-archive always fails, quietly. *Effort: S.*
+Detection is now "attempt extraction and see", not an extension check at all - which also
+folds this into item 14's unified loop rather than needing a separate content-sniffing step.
+Verified: a `.tar` nested inside a `.zip` (excluded by the old pass-2 list) was found and
+extracted in the same test as item 14.
 
-### 17. "Wrong password", "corrupt" and "not an archive" are indistinguishable
+### 16. `ZIP_PASSWORD` was silently ignored on nested archives (fixed)
 
-All three collapse to `|| extracted=false`, a raw copy, and the log line
-`"Not an archive, copying as-is"`, which is actively misleading for the password case.
-7-Zip's exit codes distinguish them. Related: support a password list file rather than one
-global password, since leak dumps routinely use several, and record which archives remain
-encrypted so they can be revisited. *Effort: S. Impact: high.*
+Now folded into item 17 below, since both were fixed by the same rewrite: password handling
+is the same code path at every nesting level, so there is no longer a "pass 2" for it to be
+missing from. Verified: a password-protected archive nested inside another archive extracted
+correctly using `ZIP_PASSWORD`.
+
+### 17. "Wrong password", "corrupt" and "not an archive" were indistinguishable (fixed)
+
+All three used to collapse to the same fallback and the same misleading log line,
+`"Not an archive, copying as-is"`. `unpack/start.sh` now checks 7-Zip's actual error text
+(its exit code alone does not distinguish these) and logs one of three outcomes -
+`ENCRYPTED`, `CORRUPT`, or `COPIED` (not an archive) - to `logs/unpack.log`.
+
+Also added, both requested alongside this item: a password **list** rather than one global
+password - `passwords/*.txt`, one per line, tried in order (unencrypted first) at every
+nesting level and deduplicated against `ZIP_PASSWORD` - and a record of what remains
+encrypted after every candidate fails, `extracted/still_encrypted.txt`, so those archives can
+be revisited rather than silently lost among successfully extracted files.
+
+Verified end-to-end against a purpose-built fixture covering all of 14-17 together: a
+password only present in `passwords.txt` (not `ZIP_PASSWORD`) extracted correctly after two
+wrong guesses; a genuinely corrupt (truncated) archive was logged as `CORRUPT` and a plain
+text file with a misleading `.zip.txt.pdf` name was logged as "not an archive" - both
+distinctly, not conflated; an archive with no working password anywhere was logged as
+`ENCRYPTED` and listed in `still_encrypted.txt`; duplicate top-level archives with identical
+content were extracted once but both still received their configured disposition
+(`zip_archive`/`zip_remove`); and none of the eleven marker files `deis/*.sh` and
+`web/startup.sh` drop into `/files` (`added_urls`, `batch_gids`, `batch_started`, `dies_done`,
+`done`, `download_failed`, `downloaded`, `extract`, `pending_count`, `running`, `unpack`) were
+ever picked up as if they were leak data - the exclude list had drifted out of sync with two
+newer marker files added by earlier P0 fixes and was corrected as part of this change.
+
+One correctness bug was caught and fixed during testing rather than shipped: a file found
+already correctly placed inside a parent archive's extraction directory does not need to be
+copied again into `/extracted/files` itself - doing so would reintroduce the exact
+cross-archive filename collision that namespacing extractions by the archive's own sha256
+exists to prevent. The first draft did this for every nested leaf file; the fix checks
+whether a path is already under `/extracted/files/` before copying.
+
+Also, as a direct and necessary consequence of unifying top-level and nested handling into
+one code path: `zip_archive`/`zip_remove`/`pst_archive`/`pst_remove` now apply uniformly to
+every successful extraction, top-level or nested. Previously only nested archives were ever
+moved or removed after extraction - top-level originals in `/files` were left in place
+forever regardless of configuration, which was an inconsistency rather than a deliberate
+choice. With the default `deis.cfg` (`zip_archive=true`), successfully extracted top-level
+originals now also move to `extracted/archive/`, where they did not before. `unzip=true` is
+no longer read (there is only one pass now, so a separate toggle for a second one is
+meaningless) and has been dropped from `deis.cfg.default`; a `pst=true`/`false` toggle to
+skip PST extraction entirely, which the pre-rewrite code had, is preserved.
 
 ### 18. No guards on hostile archives
 
@@ -215,13 +268,20 @@ time with no parallelism, no progress bar, no timestamps and no log file — jus
 On a multi-hundred-GB dump this is the pipeline's wall-clock bottleneck, and the operator
 sees almost nothing while it runs. *Effort: M. Impact: high.*
 
-### 20. Fragile shell mechanics in `unpack/start.sh`
+### 20. Fragile shell mechanics in `unpack/start.sh` (partly fixed)
 
-Config is read with substring matching (`grep "unpack=true" /deis.cfg`), which is not
-section-aware and would false-positive on a key like `not_unpack=true`. Pass 1 iterates
-without `-print0`/`read -d ''` while passes 2 and 3 use it, so a filename containing a
-newline breaks only the first loop. Pass-2 failures leave empty sha256-named directories
-behind. *Effort: S.*
+Two of the three problems here were fixed as a direct consequence of the 14-17 rewrite: file
+discovery is null-delimited throughout now (`find -print0` / `mapfile -d ''` at every step,
+including the newly unified top-level pass, verified against a filename containing a literal
+newline), and a failed extraction always cleans up its speculative sha256-named directory
+rather than leaving an empty one behind.
+
+Still open: config is read with substring matching (`grep "^unpack=true" /deis.cfg`), which
+is not section-aware and would false-positive on a key like `not_unpack=true`. Left alone
+deliberately - the new `max_depth` key added for item 14 uses the same mechanism for
+consistency with every other key in the file, so fixing this now would mean either fixing it
+everywhere in the same change or introducing two different config-reading styles in one file.
+*Effort: S.*
 
 ### 21. More extractors
 
@@ -395,13 +455,15 @@ would catch the whole class of problem this document opens with. *Effort: M. Imp
 README's 18 GB Docker requirement on everyone regardless of dump size. Drive it from `.env`
 with a smaller default. *Effort: S.*
 
-### 39. Structured logging across stages
+### 39. Structured logging across stages (partly done)
 
 `deis/download.sh` and `deis/urls.sh` write timestamped entries to
-`logs/download_errors.log`; the extract stage and everything else echo to stdout with no
-timestamps and no log file. One log directory, one format, per-file outcomes. This is the
-substrate that items 17 and 34 and the CLI's `status` and `report` all depend on.
-*Effort: M.*
+`logs/download_errors.log`, and `unpack/start.sh` now writes per-file outcomes to
+`logs/unpack.log` (item 17). Ingest still only has its end-of-run summary (item 25) rather
+than a per-file log, and everything else echoes to stdout with no timestamps and no log file.
+One log directory, one format, would still be an improvement over two different formats in
+`logs/`, but the substrate items 34 and the CLI's `status`/`report` need now exists for two
+of the three stages. *Effort: M.*
 
 ### 40. Decide the fate of the log-ingest scaffolding
 
@@ -421,12 +483,13 @@ cache it rebuilds only when empty. *Effort: S. Impact: medium.*
 
 ## Suggested sequencing
 
-1. **Make losses visible** (34, 39, 17): failure dashboards and structured logging. The
-   ingest side of this is done; extraction is still silent. Cheap, and it tells you whether
-   everything else is working.
-2. **Fix extraction correctness** (14, 15, 16, 18): recursion to a fixpoint, content-based
-   detection, nested passwords, hostile-archive guards. This is where recall is quietly lost
-   today, and it is the largest remaining correctness gap.
+1. **Make losses visible** (34, 39): failure dashboards and structured logging. Both the
+   ingest and extraction sides now have this (`logs/unpack.log`, `still_encrypted.txt`);
+   34 (surfacing it in the Kibana dashboard) is what remains.
+2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio
+   and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested
+   passwords, distinct failure states) are done; this is what is left of the extraction
+   correctness gap.
 3. **Index quality and scale** (22, 23, 24): explicit template, bulk indexing, ILM.
 4. **The CLI**, once the underlying states are reportable — it is a facade over the items
    above, and building it first would mean building it twice.

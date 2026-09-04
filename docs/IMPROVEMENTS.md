@@ -37,6 +37,7 @@ Two properties should drive prioritization, because they follow from what the to
 | 11 | Clearnet routing policy was accidental rather than decided | `5ce18cc` |
 | 25 | Nothing reconciled files on disk against documents indexed | `8e6bbdf` |
 | 26 | A run marked itself complete even when files had failed | `8e6bbdf` |
+| 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 
 Item 11 was resolved as a deliberate decision, worth recording: **`.onion` goes through TOR
 because nothing else resolves it, and everything else is fetched directly**, because the
@@ -91,30 +92,24 @@ nothing at all. Either generate the outbound list from the variable at container
 drop the variable and document 50 as fixed. *Effort: S. Impact: low, but it is a knob that
 looks live and is not.*
 
-### 44. The TOR configuration generator fails on every start
+### 44. The TOR configuration generator failed on every start (fixed)
 
-`downloader/run/run_aria2.sh` runs `creatorrc.py --speetor` to generate a tuned `torrc`, then
-falls back to plain `tor --runasdaemon 1` if that fails. It always fails:
+Kept here because it explains how TOR is now configured. `creatorrc.py --speetor` writes
+`tor_config.txt` into the current directory, and the image's WORKDIR is not writable by the
+`aria2` user, so every start failed with `PermissionError: [Errno 13] Permission denied` and
+the `||` fallback quietly started TOR on stock defaults. The guard and exit selection the
+project pulls this script in for had never been applied.
 
-```text
-Fetching server descriptors...
-Traceback (most recent call last):
-  File "/home/creatorrc/creatorrc.py", line 196, in <module>
-    f = open("tor_config.txt", "w")
-PermissionError: [Errno 13] Permission denied: 'tor_config.txt'
-```
+It now runs from a writable directory. Because generating takes about 80 seconds — it
+downloads the full relay descriptor set — an existing `/conf/torrc` is reused for a week;
+delete it or run `just clean` to force a fresh one. The generated file sets `EntryNodes`,
+`ExcludeNodes` and `ExitNodes` and deliberately no `SocksPort`, so TOR stays on
+`127.0.0.1:9050` where v2ray expects it. `StrictNodes` is not set, so the 4000-relay
+`ExcludeNodes` list does not prevent hidden services from resolving — verified by fetching a
+`.onion` through the chain after the change.
 
-The script writes `tor_config.txt` into the current working directory, which the `aria2` user
-cannot write to. `/conf/torrc` is therefore never created, and TOR starts with stock defaults
-— its own log confirms it: `Configuration file "/etc/tor/torrc" not present, using reasonable
-defaults`. So the "speetor" tuning this project deliberately pulls in has never once been
-applied, and the `||` fallback hides the failure behind a working-looking container.
-
-Fix is small: run the generator from a writable directory, or give it an absolute output
-path, and stop swallowing the error. Worth pairing with item 10, since this is third-party
-code fetched unpinned at build time and executed at every start. Note that fixing it will
-change guard selection and therefore real download behaviour, so it should be a deliberate
-change rather than a silent one. *Effort: S. Impact: medium.*
+Still open from the same area: this is third-party code fetched unpinned at build time and
+executed at every start, which is item 10.
 
 ### 10. Unpinned third-party code fetched at image build
 
@@ -410,8 +405,7 @@ cache it rebuilds only when empty. *Effort: S. Impact: medium.*
    is the question the tool exists to answer.
 
 Housekeeping items (9, 13, 27, 28, 29, 30, 41, 43) are individually small and can be picked
-up whenever the surrounding code is being touched anyway. Item 44 is small too but changes
-how TOR picks guards, so treat it as a deliberate change rather than a cleanup.
+up whenever the surrounding code is being touched anyway.
 
 ## Verification approach
 

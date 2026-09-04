@@ -349,10 +349,24 @@ def print_summary(results, directory):
 def process_files(directory: Path):
     """Prepares files in parallel (number of CPUs), sends them to
     Elasticsearch in bulk batches, and returns the number that failed.
+
+    Deduplicates content first seen this run before it is ever queued to
+    send: ProcessPoolExecutor.map() yields results in input order, not
+    completion order, so this loop - a single Python thread consuming that
+    generator - sees every file in a fixed, deterministic sequence even
+    though hashing/reading happens in parallel across worker processes. The
+    first file with a given sha256 is queued normally; every later file with
+    the same sha256 in this run is deferred instead of queued, so the same
+    content is never uploaded and Tika-parsed twice just because two workers
+    both happened to hash a never-before-seen duplicate before either's
+    upload confirmed. No locking needed - the dedup decision itself never
+    leaves this one serial loop.
     """
     results = []
     batch = []
     batch_bytes = 0
+    seen_this_run = set()
+    pending_duplicates = []
 
     def flush():
         nonlocal batch, batch_bytes
@@ -368,6 +382,11 @@ def process_files(directory: Path):
         ):
             status = prepared["status"]
             if status == "ready":
+                sha256 = prepared["sha256"]
+                if sha256 in seen_this_run:
+                    pending_duplicates.append(prepared)
+                    continue
+                seen_this_run.add(sha256)
                 batch.append(prepared)
                 batch_bytes += len(prepared["content"])
                 if len(batch) >= BULK_MAX_DOCS or batch_bytes >= BULK_MAX_BYTES:
@@ -375,6 +394,22 @@ def process_files(directory: Path):
             else:
                 results.append((status, prepared.get("sha256"), prepared.get("error")))
         flush()
+
+    # Every representative's outcome is now known (create_hash_link only
+    # runs on confirmed success), so resolve every deferred duplicate
+    # against it without a second upload - two files with the same sha256
+    # are byte-identical, so a retry could never produce a different result.
+    for item in pending_duplicates:
+        if hash_link_exists(item["sha256"]):
+            results.append((PRESENT, item["sha256"], None))
+        else:
+            results.append(
+                (
+                    FAILED,
+                    item["sha256"],
+                    f"Error sending file to Elastic (same content failed this run): {item['fname']}",
+                )
+            )
 
     return print_summary(results, directory)
 

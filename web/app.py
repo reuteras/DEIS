@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """."""
 
+import html
 import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import magic
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
 
 app = FastAPI()
@@ -18,16 +20,7 @@ SYMLINKS_DIR = "/extracted/sha256"
 EXTRACTED_ROOT = "/extracted"
 GOTENBERG_URL = "http://gotenberg:3000/forms/libreoffice/convert"
 GOTENBERG_HTML_URL = "http://gotenberg:3000/forms/chromium/convert/html"
-NO_EXTENSION = [
-    "application/pdf",
-    "image/jpeg",
-    "image/png",
-    "image/tiff",
-    "message/rfc822",
-    "text/csv",
-    "text/plain",
-    "text/xml",
-]
+Disposition = Literal["inline", "attachment"]
 SEND_AS_IS = [
     "application/octet-stream",
     "image/jpeg",
@@ -179,7 +172,7 @@ def convert_html_to_pdf(file_path: str) -> bytes:
     return response.content
 
 
-def pdf_response(pdf_content: bytes) -> FileResponse:
+def pdf_response(pdf_content: bytes, filename: str, disposition: Disposition) -> FileResponse:
     """Write converted PDF bytes to a temp file and stream it back.
 
     Using a per-request temp file (instead of a fixed "index.pdf" in the cwd)
@@ -188,11 +181,46 @@ def pdf_response(pdf_content: bytes) -> FileResponse:
     """
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(pdf_content)
-    return FileResponse(tmp.name, media_type="application/pdf", background=BackgroundTask(os.remove, tmp.name))
+    return FileResponse(
+        tmp.name,
+        media_type="application/pdf",
+        filename=filename,
+        content_disposition_type=disposition,
+        background=BackgroundTask(os.remove, tmp.name),
+    )
+
+
+@app.get("/view/{sha256}", response_class=HTMLResponse)
+async def view_file(sha256: str):
+    """Landing page offering a preview-vs-download choice for a document.
+
+    Kibana's URL field formatter can only point a field at one fixed URL
+    template, so this is what the sha256 column in Discover/dashboards
+    actually links to now (instead of straight to /file/, which only ever
+    downloaded) - one click gets you a choice instead of a forced download.
+    """
+    symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
+    target_file_str = resolve_and_verify_target_file(symlink_path_str)
+    # Safe to embed: derived from the regex-validated sha256 path, not from
+    # the original filename (which may contain characters needing escaping).
+    display_name = html.escape(Path(target_file_str).name)
+
+    return f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>{display_name}</title></head>
+<body style="font-family: sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem;">
+<h1 style="font-size: 1.1rem; word-break: break-word;">{display_name}</h1>
+<p>
+<a href="/convert/{sha256}" target="_blank" style="margin-right: 1.5rem;">Preview in browser</a>
+<a href="/file/{sha256}?disposition=attachment">Download original</a>
+</p>
+</body>
+</html>
+"""
 
 
 @app.get("/file/{sha256}")
-async def get_file(sha256: str):
+async def get_file(sha256: str, disposition: Disposition = "attachment"):
     """Retrieve a file by its SHA256 hash.
 
     The sha256 parameter undergoes multi-layer validation before any file operations:
@@ -200,8 +228,10 @@ async def get_file(sha256: str):
     2. resolve_and_verify_target_file(): Symlink verification + realpath resolution + existence check
 
     The resulting target_file_str is safe for file operations despite originating from user input.
+
+    disposition picks whether the browser downloads the file (the default,
+    matching this endpoint's prior behavior) or displays it inline.
     """
-    print(sha256)
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
@@ -215,23 +245,18 @@ async def get_file(sha256: str):
     # Get extension from the target file
     target_path = Path(target_file_str)
     extension = target_path.suffix.lower()
-    print(mime_type, extension)
 
     # Use filename from validated symlink path
     symlink_filename = os.path.basename(symlink_path_str)
     validated_filename = symlink_filename + extension
 
-    if mime_type in SEND_AS_IS:
-        try:
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
-        except requests.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
-
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+    return FileResponse(
+        target_file_str, media_type=mime_type, filename=validated_filename, content_disposition_type=disposition
+    )
 
 
 @app.get("/convert/{sha256}")
-async def convert_file(sha256: str):
+async def convert_file(sha256: str, disposition: Disposition = "inline"):
     """Convert a file to PDF by its SHA256 hash.
 
     The sha256 parameter undergoes multi-layer validation before any file operations:
@@ -239,8 +264,11 @@ async def convert_file(sha256: str):
     2. resolve_and_verify_target_file(): Symlink verification + realpath resolution + existence check
 
     The resulting target_file_str is safe for file operations despite originating from user input.
+
+    disposition picks whether the browser displays the (converted) file inline
+    (the default, matching this endpoint's prior use as a preview iframe
+    source) or downloads it.
     """
-    print(sha256)
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
 
@@ -254,35 +282,31 @@ async def convert_file(sha256: str):
     # Get extension from the target file
     target_path = Path(target_file_str)
     extension = target_path.suffix.lower()
-    print(mime_type, extension)
 
     # Use filename from validated symlink path
     symlink_filename = os.path.basename(symlink_path_str)
     validated_filename = symlink_filename + extension
+    pdf_filename = f"{symlink_filename}.pdf"
 
     if mime_type in SEND_AS_IS:
-        try:
-            if mime_type in NO_EXTENSION:
-                return FileResponse(target_file_str, media_type=mime_type)
-            return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
-        except requests.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
+        return FileResponse(
+            target_file_str, media_type=mime_type, filename=validated_filename, content_disposition_type=disposition
+        )
 
     if mime_type == "text/html":
         try:
             pdf_content = convert_html_to_pdf(target_file_str)
-            return pdf_response(pdf_content)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
+        return pdf_response(pdf_content, pdf_filename, disposition)
 
     if mime_type != "application/pdf" and mime_type not in DONT_CONVERT_MIME:
         try:
             pdf_content = convert_to_pdf(target_file_str)
-            return pdf_response(pdf_content)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
+        return pdf_response(pdf_content, pdf_filename, disposition)
 
-    if mime_type == "application/pdf":
-        return FileResponse(target_file_str, media_type=mime_type)
-
-    return FileResponse(target_file_str, media_type=mime_type, filename=validated_filename)
+    return FileResponse(
+        target_file_str, media_type=mime_type, filename=validated_filename, content_disposition_type=disposition
+    )

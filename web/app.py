@@ -201,8 +201,10 @@ async def view_file(sha256: str):
     """
     symlink_path_str = validate_sha256_and_get_symlink_path(sha256)
     target_file_str = resolve_and_verify_target_file(symlink_path_str)
-    # Safe to embed: derived from the regex-validated sha256 path, not from
-    # the original filename (which may contain characters needing escaping).
+    # Both escaped before embedding, even though validate_sha256_and_get_symlink_path()
+    # already restricts sha256 to 64 lowercase hex characters: staying safe here
+    # should not depend on a guard living in a different function.
+    safe_sha256 = html.escape(sha256)
     display_name = html.escape(Path(target_file_str).name)
 
     return f"""<!doctype html>
@@ -211,10 +213,10 @@ async def view_file(sha256: str):
 <body style="font-family: sans-serif; max-width: 60rem; margin: 3rem auto; padding: 0 1rem;">
 <h1 style="font-size: 1.1rem; word-break: break-word;">{display_name}</h1>
 <p>
-<a href="/convert/{sha256}" target="_blank" style="margin-right: 1.5rem;">Full-screen preview</a>
-<a href="/file/{sha256}?disposition=attachment">Download original</a>
+<a href="/convert/{safe_sha256}" target="_blank" style="margin-right: 1.5rem;">Full-screen preview</a>
+<a href="/file/{safe_sha256}?disposition=attachment">Download original</a>
 </p>
-<iframe src="/convert/{sha256}" title="Document preview"
+<iframe src="/convert/{safe_sha256}" title="Document preview"
     style="width: 100%; height: 80vh; border: 1px solid #ccc; margin-top: 1rem;"></iframe>
 </body>
 </html>

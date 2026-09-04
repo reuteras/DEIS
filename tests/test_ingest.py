@@ -71,28 +71,80 @@ class TestLoadSha256Set:
 
 
 class TestExtractionStatus:
-    def test_ok_when_in_neither_list(self, ingest_module):
+    def test_ok_when_in_no_list(self, ingest_module):
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = set()
         assert ingest_module.extraction_status("x") == "ok"
 
     def test_encrypted_when_in_still_encrypted(self, ingest_module):
         ingest_module.still_encrypted = {"x"}
         ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = set()
         assert ingest_module.extraction_status("x") == "encrypted"
 
     def test_corrupt_when_in_still_corrupt(self, ingest_module):
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = {"x"}
+        ingest_module.still_unsafe = set()
         assert ingest_module.extraction_status("x") == "corrupt"
 
-    def test_encrypted_takes_priority_if_in_both(self, ingest_module):
+    def test_unsafe_when_in_still_unsafe(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = {"x"}
+        assert ingest_module.extraction_status("x") == "unsafe"
+
+    def test_encrypted_takes_priority_over_corrupt_and_unsafe(self, ingest_module):
         # Should not happen in practice (unpack classifies a file as exactly
         # one outcome), but the classification order should still be stable
         # and deterministic rather than depend on dict/set iteration order.
         ingest_module.still_encrypted = {"x"}
         ingest_module.still_corrupt = {"x"}
+        ingest_module.still_unsafe = {"x"}
         assert ingest_module.extraction_status("x") == "encrypted"
+
+    def test_corrupt_takes_priority_over_unsafe(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = {"x"}
+        ingest_module.still_unsafe = {"x"}
+        assert ingest_module.extraction_status("x") == "corrupt"
+
+
+class TestIndexRunSummary:
+    """index_run_summary() (item 25's remaining piece): a run's reconciliation
+    counts, best-effort indexed into RUNS_INDEX so they're visible in Kibana,
+    not just the container's own stdout.
+    """
+
+    def test_posts_counts_with_auth_to_runs_index(self, ingest_module, monkeypatch):
+        calls = []
+
+        class FakeResponse:
+            status_code = 201
+
+        def fake_post(url, json=None, auth=None, timeout=None):
+            calls.append({"url": url, "json": json, "auth": auth})
+            return FakeResponse()
+
+        monkeypatch.setattr(ingest_module.requests, "post", fake_post)
+
+        ingest_module.index_run_summary({"files_looked_at": 5})
+
+        assert len(calls) == 1
+        assert calls[0]["url"].endswith(f"/{ingest_module.RUNS_INDEX}/_doc")
+        assert calls[0]["json"] == {"files_looked_at": 5}
+        assert calls[0]["auth"] == ingest_module.elastic_auth()
+
+    def test_does_not_raise_when_elastic_is_unreachable(self, ingest_module, monkeypatch):
+        def fake_post(*args, **kwargs):
+            raise ingest_module.requests.exceptions.ConnectionError("no route to host")
+
+        monkeypatch.setattr(ingest_module.requests, "post", fake_post)
+
+        # Must not raise: a run that otherwise fully succeeded shouldn't be
+        # reported as failed just because this one extra write couldn't land.
+        ingest_module.index_run_summary({"files_looked_at": 5})
 
 
 class TestProcessFilesDedup:

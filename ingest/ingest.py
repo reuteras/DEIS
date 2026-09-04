@@ -23,6 +23,11 @@ if not Path("./extracted/sha256").is_dir():
 headers = {"content-type": "application/x-ndjson"}
 success_list = [200, 201]
 INDEX = "leakdata-index-000001"
+# Separate from INDEX: one small document per ingest run, not leak data, so
+# it has its own lifecycle and is never at risk of being mixed into a
+# content search (item 25's remaining piece - the reconciliation counts
+# below were previously only visible in the container's own stdout).
+RUNS_INDEX = "deis-ingest-runs"
 # Keep individual _bulk requests to a sane size - standard Elasticsearch
 # guidance is a handful of MB per request, not so large that one slow/huge
 # batch dominates a retry, not so small that batching stops paying off.
@@ -121,6 +126,28 @@ def elastic_document_count():
         return None
 
 
+def index_run_summary(counts):
+    """Best-effort: index one reconciliation document per ingest run into
+    RUNS_INDEX, so the counts print_summary() already prints to the
+    container log are also visible in Kibana - a saved search sorted by
+    @timestamp shows the full run history, not just whatever is in the log
+    of the most recently run container. Never raises: a run that fully
+    succeeded but couldn't reach Elasticsearch for this one extra write
+    should not be reported as failed.
+    """
+    try:
+        response = requests.post(
+            f"http://{elastic_host}:9200/{RUNS_INDEX}/_doc",
+            json=counts,
+            auth=elastic_auth(),
+            timeout=30,
+        )
+        if response.status_code not in success_list:
+            print(f"ERROR: Could not index run summary (status {response.status_code}).", flush=True)
+    except requests.exceptions.RequestException as error:
+        print("ERROR: Could not index run summary:", error, flush=True)
+
+
 def resolve_filepath(filename, hash_value):
     """Look up the original filename via sqlite, if enabled."""
     if not use_sqlite:
@@ -179,16 +206,22 @@ def load_sha256_set(path):
 
 def extraction_status(hash_value):
     """Whether unpack could extract this file's content, if it was ever an
-    archive at all - "encrypted"/"corrupt" mean the document's content is
-    the opaque original, not what was inside it. Kibana's "File without text
-    content" search already showed files with no content; this says why,
-    for files unpack itself flagged rather than a still-unclassified case
-    (an image, a format Tika doesn't parse, etc.) - see item 34.
+    archive at all - "encrypted"/"corrupt"/"unsafe" mean the document's
+    content is the opaque original, not what was inside it. Kibana's "File
+    without text content" search already showed files with no content; this
+    says why, for files unpack itself flagged rather than a
+    still-unclassified case (an image, a format Tika doesn't parse, etc.) -
+    see item 34. "unsafe" (item 18) means unpack rejected the archive before
+    ever attempting extraction - a zip-slip entry, a decompression-bomb
+    shape, or not enough disk space - so unlike "corrupt" it says nothing
+    about whether the archive itself was otherwise valid.
     """
     if hash_value in still_encrypted:
         return "encrypted"
     if hash_value in still_corrupt:
         return "corrupt"
+    if hash_value in still_unsafe:
+        return "unsafe"
     return "ok"
 
 
@@ -354,6 +387,20 @@ def print_summary(results, directory):
             print(f"  Note: {documents - len(covered)} document(s) come from files no longer in {directory}.")
     print(flush=True)
 
+    index_run_summary(
+        {
+            "@timestamp": datetime.now(UTC).isoformat(),
+            "files_looked_at": len(results),
+            "internal_files": statuses.count(SKIPPED),
+            "unique_files": len(covered),
+            "duplicate_copies": counted - len(covered),
+            "indexed_this_run": statuses.count(INDEXED),
+            "already_indexed": statuses.count(PRESENT),
+            "failed": statuses.count(FAILED),
+            "elasticsearch_document_count": documents,
+        }
+    )
+
     return statuses.count(FAILED)
 
 
@@ -430,6 +477,7 @@ max_size = int(cfg.get("ingest", "max_size"))
 use_sqlite = cfg.getboolean("ingest", "use_sqlite")
 still_encrypted = load_sha256_set("extracted/still_encrypted.txt")
 still_corrupt = load_sha256_set("extracted/still_corrupt.txt")
+still_unsafe = load_sha256_set("extracted/still_unsafe.txt")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:

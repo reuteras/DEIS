@@ -5,8 +5,21 @@ set -u
 LOG=/logs/unpack.log
 STILL_ENCRYPTED=/extracted/still_encrypted.txt
 STILL_CORRUPT=/extracted/still_corrupt.txt
+STILL_UNSAFE=/extracted/still_unsafe.txt
 MAX_DEPTH_DEFAULT=6
 PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
+# Defaults for the hostile-archive guards in check_archive_safety() and the
+# per-extraction timeout below - generous, since multi-GB archives and
+# multi-minute 7-Zip/readpst runs are normal for real leak dumps, but bound
+# to something rather than nothing. All overridable per deis.cfg.default's
+# [unpack] section. Exported (unlike MAX_DEPTH_DEFAULT above, only ever read
+# in the parent process's own unpack() loop): check_archive_safety() and
+# try_extract() run inside xargs -P's worker processes, which only inherit
+# exported variables, not plain ones - found by testing this against a real
+# archive rather than assuming export -f for the functions was enough.
+export MAX_EXTRACT_BYTES_DEFAULT=$((10 * 1024 * 1024 * 1024)) # 10 GiB uncompressed
+export MAX_COMPRESSION_RATIO_DEFAULT=200                      # uncompressed:compressed
+export EXTRACT_TIMEOUT_DEFAULT=1800                           # seconds per archive
 
 # Marker files deis/*.sh and web/startup.sh drop into /files. They must never
 # be treated as leak data - keep this in sync with what those scripts touch
@@ -103,6 +116,70 @@ queue_new_files() {
     find "$1" -type f -print0 >> "${WORKDIR}/next.$$"
 }
 
+# Pre-extraction check against a hostile archive, using 7-Zip's own -slt
+# listing rather than trusting anything about the archive that would only
+# be known after extracting it. Two independent things this catches: an
+# entry whose own path would write outside the destination directory
+# (zip-slip - an absolute path, or one containing a ".." component), and an
+# archive whose *declared* uncompressed size is implausible relative to its
+# compressed size on disk (the classic decompression-bomb shape) or simply
+# too large to extract at all. Sets SAFETY_REASON on failure, for the log.
+# Applies only to zip-like archives - PST has no equivalent dry-run listing,
+# so the per-extraction timeout below is its only guard.
+check_archive_safety() {
+    local path="$1" dest="$2"
+    local max_bytes max_ratio total_size=0 compressed_size avail_kb line entry_path entry_size in_entries=0
+
+    max_bytes="$(config_int max_extract_bytes "${MAX_EXTRACT_BYTES_DEFAULT}")"
+    max_ratio="$(config_int max_compression_ratio "${MAX_COMPRESSION_RATIO_DEFAULT}")"
+
+    # -slt's first "Path = " (before the "----------" separator) is the
+    # archive file itself, not an entry - skip everything up to and
+    # including that separator, or the archive's own (legitimately
+    # absolute) path would be misread as an entry trying to escape.
+    while IFS= read -r line; do
+        if [[ "${line}" == "----------" ]]; then
+            in_entries=1
+            continue
+        fi
+        ((in_entries)) || continue
+        case "${line}" in
+        "Path = "*)
+            entry_path="${line#Path = }"
+            case "${entry_path}" in
+            /* | *..*)
+                SAFETY_REASON="entry path escapes the destination directory: ${entry_path}"
+                return 1
+                ;;
+            esac
+            ;;
+        "Size = "*)
+            entry_size="${line#Size = }"
+            [[ "${entry_size}" =~ ^[0-9]+$ ]] && total_size=$((total_size + entry_size))
+            ;;
+        esac
+    done < <(/7zz l -slt -- "${path}" 2> /dev/null)
+
+    if ((total_size > max_bytes)); then
+        SAFETY_REASON="would extract to ${total_size} bytes, over the ${max_bytes}-byte cap"
+        return 1
+    fi
+
+    compressed_size="$(stat --format=%s "${path}" 2> /dev/null || echo 0)"
+    if ((compressed_size > 0 && total_size / compressed_size > max_ratio)); then
+        SAFETY_REASON="compression ratio $((total_size / compressed_size))x, over the ${max_ratio}x cap"
+        return 1
+    fi
+
+    avail_kb="$(df -kP "$(dirname -- "${dest}")" 2> /dev/null | awk 'NR==2 {print $4}')"
+    if [[ "${avail_kb}" =~ ^[0-9]+$ ]] && ((avail_kb * 1024 < total_size)); then
+        SAFETY_REASON="not enough disk space (${avail_kb}KB available, ${total_size} bytes needed)"
+        return 1
+    fi
+
+    return 0
+}
+
 # Attempts every password candidate against $1, extracting into $2 on
 # success. Never omits -p: 7-Zip prompts interactively for a password on an
 # encrypted archive if none is given at all, which would hang the pipeline
@@ -110,11 +187,15 @@ queue_new_files() {
 # encrypted file. Sets EXTRACT_RESULT to one of: extracted, encrypted,
 # not-archive, corrupt - these are 7-Zip's own distinction (its exit code
 # alone does not tell them apart; the message text does), rather than a
-# single generic "not an archive" for all three as before.
+# single generic "not an archive" for all three as before. Wrapped in
+# timeout so one hung archive cannot stall this worker (and, once every
+# worker slot is hung the same way, the whole serial round-based pipeline)
+# indefinitely.
 try_extract() {
-    local path="$1" dest="$2" candidate output=""
+    local path="$1" dest="$2" candidate output="" extract_timeout
+    extract_timeout="$(config_int extract_timeout "${EXTRACT_TIMEOUT_DEFAULT}")"
     for candidate in "${PASSWORDS[@]}"; do
-        if output="$(/7zz x -y -p"${candidate}" -o"${dest}" -- "${path}" < /dev/null 2>&1)"; then
+        if output="$(timeout "${extract_timeout}" /7zz x -y -p"${candidate}" -o"${dest}" -- "${path}" < /dev/null 2>&1)"; then
             EXTRACT_RESULT="extracted"
             return 0
         fi
@@ -152,7 +233,10 @@ process_zip_like() {
     fi
     mkdir -p "${dest}"
 
-    if try_extract "${path}" "${dest}"; then
+    if ! check_archive_safety "${path}" "${dest}"; then
+        EXTRACT_RESULT="unsafe"
+        EXTRACT_ERR="${SAFETY_REASON}"
+    elif try_extract "${path}" "${dest}"; then
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted: ${path} -> ${dest}"
         queue_new_files "${dest}"
@@ -182,11 +266,15 @@ process_zip_like() {
             echo "${sha}" >> "${STILL_CORRUPT}"
             log CORRUPT "Could not extract (corrupt or unsupported), left/copied as-is: ${path} - $(grep -m1 -iE 'unexpected|error' <<< "${EXTRACT_ERR}")"
             ;;
+        unsafe)
+            echo "${sha}" >> "${STILL_UNSAFE}"
+            log UNSAFE "Rejected before extraction, left/copied as-is: ${path} - ${EXTRACT_ERR}"
+            ;;
     esac
 }
 
 process_pst() {
-    local path="$1" sha="$2" resultfile="${3:-}" dest="/extracted/files/${2}"
+    local path="$1" sha="$2" resultfile="${3:-}" dest="/extracted/files/${2}" extract_timeout
 
     if [[ -e "${dest}" ]]; then
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
@@ -194,8 +282,9 @@ process_pst() {
         return
     fi
     mkdir -p "${dest}"
+    extract_timeout="$(config_int extract_timeout "${EXTRACT_TIMEOUT_DEFAULT}")"
 
-    if readpst -D -S -j 2 -q -r -o "${dest}" "${path}" < /dev/null 2>>"${LOG}"; then
+    if timeout "${extract_timeout}" readpst -D -S -j 2 -q -r -o "${dest}" "${path}" < /dev/null 2>>"${LOG}"; then
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted PST: ${path} -> ${dest}"
         queue_new_files "${dest}"
@@ -234,6 +323,11 @@ apply_known_result() {
             echo "${sha}" >> "${STILL_CORRUPT}"
             log CORRUPT "Could not extract (same content already checked this round), left/copied as-is: ${path}"
             ;;
+        unsafe)
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            echo "${sha}" >> "${STILL_UNSAFE}"
+            log UNSAFE "Rejected before extraction (same content already checked this round), left/copied as-is: ${path}"
+            ;;
         *)
             # Should not happen (the primary always writes a result before
             # exiting) - fail safe by attempting this file independently
@@ -244,8 +338,8 @@ apply_known_result() {
 }
 
 # Entry point for a round's parallel worker process (see dispatch_round).
-# Everything this needs - functions and WORKDIR/LOG/STILL_ENCRYPTED/STILL_CORRUPT - is
-# exported into the environment before xargs -P spawns these. Takes only the
+# Everything this needs - functions and WORKDIR/LOG/STILL_ENCRYPTED/STILL_CORRUPT/
+# STILL_UNSAFE - is exported into the environment before xargs -P spawns these. Takes only the
 # path and re-derives sha/kind/resultfile itself (dispatch_round's grouping
 # loop computes the same values the same way) rather than having the caller
 # pass three values through one xargs -I{} placeholder, which would need an
@@ -290,8 +384,8 @@ process_one_file() {
 }
 
 export -f log read_cfg config_true config_int load_passwords dispose_of_original \
-    queue_new_files try_extract process_zip_like process_pst apply_known_result \
-    worker_entrypoint process_one_file
+    queue_new_files check_archive_safety try_extract process_zip_like process_pst \
+    apply_known_result worker_entrypoint process_one_file
 
 # Extracts one round of files in parallel (up to $PARALLELISM at a time).
 # Files are deduplicated by content (sha256) plus type (.pst vs not, since
@@ -361,8 +455,9 @@ dispatch_round() {
 unpack() {
     : > "${STILL_ENCRYPTED}"
     : > "${STILL_CORRUPT}"
+    : > "${STILL_UNSAFE}"
     WORKDIR="$(mktemp -d)"
-    export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT
+    export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT STILL_UNSAFE
     build_password_list | awk '!seen[$0]++' > "${WORKDIR}/passwords.list"
 
     local -a current

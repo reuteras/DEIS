@@ -251,6 +251,36 @@ curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/l
 }
 ' > /dev/null && sublog 'Done'
 
+# One document per ingest run (ingest.py's index_run_summary, item 25) -
+# separate from leakdata-* so a run's reconciliation counts are never mixed
+# into a content search. @timestamp as an explicit date field (rather than
+# relying on dynamic mapping to guess it right) is what lets a saved search
+# sort by it.
+log 'Add deis-ingest-runs index template'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/deis-ingest-runs?pretty" -H 'Content-Type: application/json' -d'
+{
+    "index_patterns" : ["deis-ingest-runs*"],
+    "template" : {
+        "settings" : {
+            "number_of_replicas" : 0
+        },
+        "mappings" : {
+            "properties" : {
+                "@timestamp" : { "type" : "date" },
+                "files_looked_at" : { "type" : "long" },
+                "internal_files" : { "type" : "long" },
+                "unique_files" : { "type" : "long" },
+                "duplicate_copies" : { "type" : "long" },
+                "indexed_this_run" : { "type" : "long" },
+                "already_indexed" : { "type" : "long" },
+                "failed" : { "type" : "long" },
+                "elasticsearch_document_count" : { "type" : "long" }
+            }
+        }
+    }
+}
+' > /dev/null && sublog 'Done'
+
 kibana_host="${KIBANA_HOST:-kibana}"
 while ! curl -s -m5 "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/" > /dev/null; do
     sleep 1

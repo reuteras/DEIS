@@ -17,3 +17,10 @@ zip_remove=false
 # left as-is in the output rather than extracted further; see
 # logs/unpack.log if that happens.
 max_depth=6
+# Guards against hostile archives (zip-slip, decompression bombs, hung
+# extractions) - see docs/IMPROVEMENTS.md item 18. An archive rejected by
+# either of the first two is left as-is, unextracted, and flagged in Kibana
+# the same way an encrypted/corrupt one is (extraction_status: unsafe).
+max_extract_bytes=10737418240
+max_compression_ratio=200
+extract_timeout=1800

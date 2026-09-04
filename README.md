@@ -34,6 +34,14 @@ every password below has been tried are listed in `extracted/still_encrypted.txt
 - Per-file results are logged to `logs/unpack.log`.
 - Each round of extraction runs in parallel, up to **PARALLELISM** archives at once (set in
   *.env*; defaults to the number of CPU cores available to the container).
+- Guards against hostile archives (`deis.cfg`'s `[unpack]` section): an archive is rejected
+  before extraction if any entry's path would escape the destination directory (zip-slip), or
+  if its declared uncompressed size is over `max_extract_bytes` (default 10 GiB) or its
+  compression ratio is over `max_compression_ratio` (default 200x, the shape of a
+  decompression bomb) - either way it's left as-is, unextracted, and listed in
+  `extracted/still_unsafe.txt`. A single archive's extraction is also capped at
+  `extract_timeout` seconds (default 1800) so one hung `7-Zip`/`readpst` run can't stall the
+  pipeline indefinitely.
 
 ### Ingest
 

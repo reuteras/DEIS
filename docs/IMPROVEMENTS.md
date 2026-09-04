@@ -73,12 +73,48 @@ duplicated symlink tree is itself worth cleaning up; see item 43.
 
 ## D — Download
 
-### 9. `TORSERVNUM` is dead configuration
+### 9. `TORSERVNUM` does not drive the number of parallel circuits
 
-It is set in `.env` and passed into two containers, but no script reads it. The 50 TOR
-outbounds are hardcoded in `downloader/conf/config.json` (`tor-1`..`tor-50`, all pointing at
-the same `127.0.0.1:9050`). Either template the config from the variable or delete the
-variable; as it stands, changing it silently does nothing. *Effort: S.*
+How the download path actually works: v2ray listens on `127.0.0.1:16001` and randomly
+balances across 50 outbounds, `tor-1` to `tor-50`. All 50 point at the **same** TOR SOCKS
+proxy, `127.0.0.1:9050`, served by a single `tor` daemon; what differs is `sendThrough`,
+which binds each outbound to its own loopback source address (`127.0.0.1` through
+`127.0.0.50`). TOR isolates circuits by client address, so each outbound gets its own
+circuit. The point is **parallel downloads over one TOR daemon**, not multiple proxies.
+Confirmed on the running stack: four concurrent downloads went out over `tor-25`, `tor-33`,
+`tor-34` and `tor-40`, with `netstat` showing exactly one listener on `9050`.
+
+The defect is narrower than the mechanism: `TORSERVNUM` is set in `.env` and passed into the
+`deis` and `downloader` containers, but nothing reads it. The count of 50 is hardcoded in
+`downloader/conf/config.json`, so raising or lowering `TORSERVNUM` to tune parallelism does
+nothing at all. Either generate the outbound list from the variable at container start, or
+drop the variable and document 50 as fixed. *Effort: S. Impact: low, but it is a knob that
+looks live and is not.*
+
+### 44. The TOR configuration generator fails on every start
+
+`downloader/run/run_aria2.sh` runs `creatorrc.py --speetor` to generate a tuned `torrc`, then
+falls back to plain `tor --runasdaemon 1` if that fails. It always fails:
+
+```text
+Fetching server descriptors...
+Traceback (most recent call last):
+  File "/home/creatorrc/creatorrc.py", line 196, in <module>
+    f = open("tor_config.txt", "w")
+PermissionError: [Errno 13] Permission denied: 'tor_config.txt'
+```
+
+The script writes `tor_config.txt` into the current working directory, which the `aria2` user
+cannot write to. `/conf/torrc` is therefore never created, and TOR starts with stock defaults
+— its own log confirms it: `Configuration file "/etc/tor/torrc" not present, using reasonable
+defaults`. So the "speetor" tuning this project deliberately pulls in has never once been
+applied, and the `||` fallback hides the failure behind a working-looking container.
+
+Fix is small: run the generator from a writable directory, or give it an absolute output
+path, and stop swallowing the error. Worth pairing with item 10, since this is third-party
+code fetched unpinned at build time and executed at every start. Note that fixing it will
+change guard selection and therefore real download behaviour, so it should be a deliberate
+change rather than a silent one. *Effort: S. Impact: medium.*
 
 ### 10. Unpinned third-party code fetched at image build
 
@@ -374,7 +410,8 @@ cache it rebuilds only when empty. *Effort: S. Impact: medium.*
    is the question the tool exists to answer.
 
 Housekeeping items (9, 13, 27, 28, 29, 30, 41, 43) are individually small and can be picked
-up whenever the surrounding code is being touched anyway.
+up whenever the surrounding code is being touched anyway. Item 44 is small too but changes
+how TOR picks guards, so treat it as a deliberate change rather than a cleanup.
 
 ## Verification approach
 

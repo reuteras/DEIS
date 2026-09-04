@@ -36,6 +36,12 @@ I've incorporated the [docker-elk][del] repository setup and run Elasticsearch a
 
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].
 
+### Known limitations and planned work
+
+Known gaps and the backlog of planned improvements are documented in
+[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md). Worth reading before trusting a result:
+it explains what the pipeline currently does not extract or detect.
+
 ## Requirements
 
 You must increase the RAM that Docker can use to 18 GB or more. Otherwise Elasticsearch will not start if you don't lower the memory specified in the file docker-compose.yml.

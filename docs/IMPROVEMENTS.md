@@ -178,11 +178,11 @@ or remove it, and document `evtx2json` as the manual side tool it currently is. 
 ## Suggested sequencing
 
 1. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that
-   would make item 22's field-type changes actually take effect on a real index.
+    would make item 22's field-type changes actually take effect on a real index.
 2. **The CLI**, once the underlying states are reportable - it is a facade over the items
-   above, and building it first would mean building it twice.
+    above, and building it first would mean building it twice.
 3. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
-   is the question the tool exists to answer.
+    is the question the tool exists to answer.
 
 Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
 scaffolding, 36's result-quality polish) are individually small and can be picked up whenever

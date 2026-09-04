@@ -6,6 +6,10 @@ An audit of all four DEIS stages plus the operator experience, written as a prio
 backlog. Item numbers are stable: they are referenced from commit messages and from the
 sections below, so fixed items keep their number rather than being renumbered away.
 
+Open items come first, grouped by stage (D/E/I/S), then the CLI proposal and cross-cutting
+items, then suggested sequencing and how to verify a fix. Everything already fixed - full
+write-ups, not just a one-line summary - is collected at the end, after a quick-scan table.
+
 Effort is rough: **S** = an afternoon, **M** = a few days, **L** = a project.
 
 ## Context
@@ -19,61 +23,6 @@ Two properties should drive prioritization, because they follow from what the to
 
 1. Silent data loss is the worst failure mode. Someone asking "does this leak contain my friend's personal data?" gets a wrong answer if a file was skipped and nobody noticed.
 2. The data is toxic and the operator may be a target, so defaults matter more here than in a normal side project.
-
-## Already fixed
-
-| Item | What was wrong | Commit |
-|---|---|---|
-| 1 | Ingest wrote the "done" marker before Elasticsearch confirmed the document, so a crash mid-upload made a file look processed forever | `8e6bbdf` |
-| 2 | `len(None)` on an unreadable file, and a narrow `except`, could kill an entire ingest run | `8e6bbdf` |
-| 3 | Elasticsearch, Kibana, Gotenberg and JupyterLab published on `0.0.0.0`; Jupyter ran with authentication disabled | `92297dd` |
-| 4 | Logstash crash-looped on the obsolete `http.host` setting and started by default despite being unused | `92297dd` |
-| 5 | Only `http-proxy`/`https-proxy` were set, so any other scheme bypassed TOR silently | `5ce18cc` |
-| 6 | One unreachable URL stalled the pipeline forever, and `tellStopped` read only the first 1000 entries | `5ce18cc` |
-| 7 | `.env` held the passwords but was tracked by git | `92297dd` |
-| 8 | `addurl.sh` built JSON by string interpolation, so a URL containing a quote failed silently | `5ce18cc` |
-| 9 | `TORSERVNUM` was set but read by nothing, so it never changed the number of TOR circuits | `5e5232c` |
-| 11 | Clearnet routing policy was accidental rather than decided | `5ce18cc` |
-| 13 | The move from `downloader/data` to `files` had no collision handling, no success check, and never retried | `95fd325` |
-| 14 | Extraction was two fixed passes, so archives nested three or more levels deep were found only by accident | `996f479` |
-| 15 | Archive detection was a fixed extension list, so a `.rar` inside a `.zip` was never extracted | `996f479` |
-| 16 | `ZIP_PASSWORD` was silently ignored on nested archives | `996f479` |
-| 17 | Wrong password, corrupt, and not-an-archive were indistinguishable and all logged the same misleading message | `996f479` |
-| 25 | Nothing reconciled files on disk against documents indexed | `8e6bbdf` |
-| 26 | A run marked itself complete even when files had failed | `8e6bbdf` |
-| 19 | `unpack/start.sh` extracted one archive at a time regardless of available CPU cores | `010903c` |
-| 20 | Config reading in `unpack/start.sh` used substring matching instead of being section-aware | `010903c` |
-| 22 | The index mapping was entirely dynamic; `sha256`/`filename` were analyzed as text and the cluster was permanently `yellow` | `c8b0f59` |
-| 24 | Every ingested file was a separate `PUT /_doc`, not batched via `_bulk` | `c8b0f59` |
-| 27 | `use_sqlite=True` failed immediately in the container, and its own database's own producer used a different path | `c8b0f59` |
-| 28 | `bin/pathfix.py` read whole files into memory instead of streaming | `c8b0f59` |
-| 29 (partly) | The unused `attachment` ingest pipeline was created alongside the one actually used | `c8b0f59` |
-| 30 | README's "only run ingest" command referenced a script that does not exist | `c8b0f59` |
-| 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
-| 34 (partly) | No Kibana-visible signal existed for "still encrypted"/"corrupt", only plain files on disk | `a6fef83` |
-| 35 | Password in the connection URL, hardcoded/duplicated index name, and a full-corpus pull for the word cloud | `a6fef83` |
-| 38 | `ES_JAVA_OPTS` was hardcoded, forcing the 18 GB Docker requirement on everyone regardless of dump size | `3f3cf9b` |
-| 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
-| 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
-| 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
-| 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | 931e508 |
-
-Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
-and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
-item 10 below for what remains.
-
-Item 11 was resolved as a deliberate decision, worth recording: **`.onion` goes through TOR
-because nothing else resolves it, and everything else is fetched directly**, because the
-operator is expected to be on a VPN and routing clearnet traffic through TOR only makes it
-slower. `FORCE_TOR=true` restores the everything-through-TOR behaviour. The preflight TOR
-leak test suggested in the original item 11 was not implemented and is still worth having;
-see item 42.
-
-## Deliberately not doing
-
-| Item | Why not |
-|---|---|
-| 12 | Integrity verification against a published checksum. Leak sites essentially never publish hashes for their dumps, so it would sit unused. `ingest.py` already computes a real sha256 from the file as ingested, which catches corruption indirectly. |
 
 ## Live reconciliation
 
@@ -99,11 +48,210 @@ there are **two separate sha256 symlink trees** — `ingest.py` writes its marke
 built independently by `web/startup.sh`. Comparing the second one against Elasticsearch
 compares two things that were never meant to match. No data had been lost. The underlying
 ordering bug in item 1 was real and is fixed, but this was not evidence of it. The
-duplicated symlink tree is itself worth cleaning up; see item 43.
+duplicated symlink tree was itself cleaned up; see item 43 in "Already fixed".
 
-## D — Download
+## Open items
 
-### 9. `TORSERVNUM` did not drive the number of parallel circuits (fixed)
+### D — Download
+
+#### 10. Unpinned third-party code fetched at image build (partly fixed)
+
+`creatorrc.py` and `guard_country_resolver.py` are now vendored into `downloader/creatorrc/`
+rather than fetched over HTTPS from GitHub at every build, with source commit, license and
+sha256 recorded in `downloader/creatorrc/VENDORED.md`. `unpack/install.sh` still fetches
+7-Zip fresh at build time — a real binary, not practical to vendor into git — but the
+download is now checked against a sha256 recorded in `unpack/VENDORED.md`, and the build
+fails rather than continuing on a mismatch; verified with a deliberately wrong hash. 7-Zip
+was also bumped from 23.01 to 26.03 in the same change.
+
+Still open: v2ray itself is installed by `downloader/install-release.sh`, a fetched script
+that verifies its download only against a digest pulled from the same host it downloaded
+from — that has not been touched. *Effort: M.*
+
+#### 42. Preflight TOR leak test
+
+Fetch `check.torproject.org` through the configured proxy chain before any download starts
+and refuse to run if the answer is "not using TOR". With per-URL routing now in place this
+should assert the intended behaviour rather than blanket TOR use: `.onion` proxied, clearnet
+direct unless `FORCE_TOR` is set. For a non-expert operator this is the single most valuable
+opsec check, because it fails loudly instead of leaking quietly. *Effort: M. Impact: high.*
+
+### E — Extract
+
+#### 21. More extractors
+
+Roughly in order of real-world value for leak dumps:
+
+- **Email beyond PST**: `.msg`, `.eml`, `.mbox`, `.ost`. Only `.pst` is handled today.
+- **OCR for image-only documents**, via tesseract or Tika's tesseract integration. A scanned
+  passport or invoice currently indexes with `content_length: 0` and is invisible to every
+  content search. This is the largest recall gap in the tool.
+- **Structured data as rows rather than blobs**: `.csv`, `.xlsx`, `.sql` dumps and SQLite
+  files are where personal data actually lives in these leaks. Tika flattens them to text;
+  parsing them into per-record documents would turn "is my friend in here?" into a precise
+  query.
+- **Disk and VM images**: `.vmdk`, `.vhdx`, `.E01`, raw `.dd`.
+- **Mobile backups**, `.iso`/`.wim`, mail-server maildirs.
+- **Encrypted archives**: at minimum list them so they are not forgotten; optionally attempt
+  a wordlist.
+
+### I — Ingest
+
+#### 23. Add ILM and rollover, or drop the `-000001` pretence
+
+The index name implies rollover, but `ingest.py` writes to a hardcoded
+`leakdata-index-000001` with no alias and no ILM policy. Writing through an alias would keep
+large investigations manageable and make "one index set per case" natural. *Effort: M.*
+
+### S — Search
+
+#### 31. PII and personnummer detection
+
+The origin story of this project is "does this leak contain my friend's personal data", yet
+the only way to answer it is free-text KQL. Detect Swedish personnummer and samordningsnummer
+with checksum validation, plus emails, phone numbers, IBAN and card numbers, and national IDs
+for other locales, either as an ingest-time enrichment or a post-pass. Index them as
+structured fields so an analyst can filter on a value and get a definitive answer, and so a
+dashboard can show which documents contain personal identifiers at all. *Effort: L. Impact:
+very high — this is the feature that most directly serves the use case.*
+
+#### 32. Entity extraction and language detection
+
+Names, organisations and locations as structured fields turn the corpus from a text blob into
+something pivotable. The notebook's word cloud already hand-maintains English, Swedish and
+Portuguese stopword lists; automatic language detection would replace that and enable
+per-language analyzers, which materially improves recall on non-English dumps. *Effort: L.
+Impact: high.*
+
+#### 33. Near-duplicate detection and clustering
+
+Leak dumps are full of near-identical documents: mail threads, template letters, versioned
+files. Exact sha256 dedup already exists; fuzzy clustering with SimHash or MinHash, or a
+`fingerprint` analyzer on content, would cut the volume a person has to read. *Effort: M.*
+
+#### 36. Result quality
+
+Highlighted snippets rather than raw content, a saved search per detected entity type, and
+export of a result set as CSV or JSON for reporting back to whoever asked. *Effort: M.*
+
+## CLI — one command for non-technical operators
+
+Today the documented path requires copying and editing `.env` and `deis.cfg`, running
+`docker compose --profile setup up -d`, watching `docker logs deis-setup-1 -f`, running
+`docker compose --profile deis up -d`, then `just venv` and `just progress` — and, when a
+search fails, pasting two JSON blobs into Kibana's Dev Tools console. That is a lot of
+surface for the intended audience. `bin/progress.py` is a good seed: it already uses `rich`
+and infers state from the marker files.
+
+A single `deis` command, built on stdlib `argparse` plus `rich` to keep the dependency
+footprint small, wrapping the existing scripts rather than replacing them:
+
+- `deis init` — interactive first run: generate real passwords into an untracked `.env`,
+  create `deis.cfg`, check Docker's memory allocation against the 18 GB requirement, and fail
+  early with a plain-language message instead of an Elasticsearch OOM ten minutes later.
+- `deis doctor` — preflight and diagnosis: Docker reachable, memory sufficient, disk space
+  against expected dump size, the TOR routing check from item 42, Elasticsearch and Kibana
+  health, and a plain-English explanation of any crash-looping container. This one command
+  would have surfaced four of the seven original P0 items on its own.
+- `deis add-urls <file|url>` — validate schemes, deduplicate, report exactly what was queued.
+- `deis run [--only download,extract,ingest]` — replaces the profile incantations.
+- `deis status` — `progress.py` plus counts at each boundary, so the funnel is visible by
+  default rather than on request.
+- `deis search <term>` — terminal search for people who never open Kibana.
+- `deis report` — what was found, and what could not be processed.
+- `deis clean` / `deis reset` — wrap the `Justfile` targets behind a confirmation prompt,
+  since they delete evidence.
+
+Keep `just` for developer tasks such as linting and exporting requirements; the CLI is for
+operators. *Effort: L. Impact: high — it is the difference between a pipeline you can run and
+a tool you can hand to a friend.*
+
+### Cross-cutting
+
+#### 40. Decide the fate of the log-ingest scaffolding
+
+`evtx2json/`, `evtx/`, `json/`, `syslog/` and the filebeat extension are a half-built path
+from closed issue #1. `syslog/` is mounted into filebeat but referenced by no input config,
+and the `modules.d` glob points at a directory that does not exist. Either finish the wiring
+or remove it, and document `evtx2json` as the manual side tool it currently is. *Effort: S.*
+
+## Suggested sequencing
+
+1. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that
+   would make item 22's field-type changes actually take effect on a real index.
+2. **The CLI**, once the underlying states are reportable - it is a facade over the items
+   above, and building it first would mean building it twice.
+3. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
+   is the question the tool exists to answer.
+
+Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
+scaffolding, 36's result-quality polish) are individually small and can be picked up whenever
+the surrounding code is being touched anyway.
+
+## Verification approach
+
+- Keep a small fixture dump in the repo — nested archives, a password-protected archive, a
+  zip-slip entry, a decompression bomb, an image-only PDF, a corrupt file — and assert counts
+  end to end.
+- Reproduce each failure before fixing it. Kill the ingest container mid-run and confirm the
+  file is retried; submit a `magnet:` URL and confirm it is rejected rather than leaked; add a
+  never-completing URL and confirm the pipeline reports it as stalled rather than hanging.
+- Re-run the reconciliation under "Live reconciliation" and require the numbers to agree,
+  modulo known duplicates. The ingest summary now prints most of this at the end of every run.
+
+## Already fixed
+
+| Item | What was wrong | Commit |
+|---|---|---|
+| 1 | Ingest wrote the "done" marker before Elasticsearch confirmed the document, so a crash mid-upload made a file look processed forever | `8e6bbdf` |
+| 2 | `len(None)` on an unreadable file, and a narrow `except`, could kill an entire ingest run | `8e6bbdf` |
+| 3 | Elasticsearch, Kibana, Gotenberg and JupyterLab published on `0.0.0.0`; Jupyter ran with authentication disabled | `92297dd` |
+| 4 | Logstash crash-looped on the obsolete `http.host` setting and started by default despite being unused | `92297dd` |
+| 5 | Only `http-proxy`/`https-proxy` were set, so any other scheme bypassed TOR silently | `5ce18cc` |
+| 6 | One unreachable URL stalled the pipeline forever, and `tellStopped` read only the first 1000 entries | `5ce18cc` |
+| 7 | `.env` held the passwords but was tracked by git | `92297dd` |
+| 8 | `addurl.sh` built JSON by string interpolation, so a URL containing a quote failed silently | `5ce18cc` |
+| 9 | `TORSERVNUM` was set but read by nothing, so it never changed the number of TOR circuits | `5e5232c` |
+| 11 | Clearnet routing policy was accidental rather than decided | `5ce18cc` |
+| 13 | The move from `downloader/data` to `files` had no collision handling, no success check, and never retried | `95fd325` |
+| 14 | Extraction was two fixed passes, so archives nested three or more levels deep were found only by accident | `996f479` |
+| 15 | Archive detection was a fixed extension list, so a `.rar` inside a `.zip` was never extracted | `996f479` |
+| 16 | `ZIP_PASSWORD` was silently ignored on nested archives | `996f479` |
+| 17 | Wrong password, corrupt, and not-an-archive were indistinguishable and all logged the same misleading message | `996f479` |
+| 18 | No zip-slip/decompression-bomb/disk-space guard and no timeout on `7zz`/`readpst` | 44ff308 |
+| 25 | Nothing reconciled files on disk against documents indexed, and the counts were never Kibana-visible | 44ff308 |
+| 26 | A run marked itself complete even when files had failed | `8e6bbdf` |
+| 19 | `unpack/start.sh` extracted one archive at a time regardless of available CPU cores | `010903c` |
+| 20 | Config reading in `unpack/start.sh` used substring matching instead of being section-aware | `010903c` |
+| 22 | The index mapping was entirely dynamic; `sha256`/`filename` were analyzed as text and the cluster was permanently `yellow` | `c8b0f59` |
+| 24 | Every ingested file was a separate `PUT /_doc`, not batched via `_bulk` | `c8b0f59` |
+| 27 | `use_sqlite=True` failed immediately in the container, and its own database's own producer used a different path | `c8b0f59` |
+| 28 | `bin/pathfix.py` read whole files into memory instead of streaming | `c8b0f59` |
+| 29 (partly) | The unused `attachment` ingest pipeline was created alongside the one actually used | `c8b0f59` |
+| 30 | README's "only run ingest" command referenced a script that does not exist | `c8b0f59` |
+| 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
+| 34 | No Kibana-visible signal existed for "still encrypted"/"corrupt"/"unsafe", only plain files on disk | `a6fef83` |
+| 35 | Password in the connection URL, hardcoded/duplicated index name, and a full-corpus pull for the word cloud | `a6fef83` |
+| 38 | `ES_JAVA_OPTS` was hardcoded, forcing the 18 GB Docker requirement on everyone regardless of dump size | `3f3cf9b` |
+| 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
+| 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
+| 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
+| 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | `931e508` |
+
+Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
+and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
+item 10 above for what remains.
+
+Item 11 was resolved as a deliberate decision, worth recording: **`.onion` goes through TOR
+because nothing else resolves it, and everything else is fetched directly**, because the
+operator is expected to be on a VPN and routing clearnet traffic through TOR only makes it
+slower. `FORCE_TOR=true` restores the everything-through-TOR behaviour. The preflight TOR
+leak test suggested in the original item 11 was not implemented and is still worth having;
+see item 42 above.
+
+### D — Download (fixed)
+
+#### 9. `TORSERVNUM` did not drive the number of parallel circuits (fixed)
 
 Kept because it explains the mechanism. v2ray listens on `127.0.0.1:16001` and randomly
 balances across N outbounds, `tor-1` to `tor-N`. All of them point at the **same** TOR SOCKS
@@ -121,7 +269,7 @@ needed, so this is cheap), range-checked to 1-250 with a fallback to 50 on anyth
 Verified: `TORSERVNUM=7` produces exactly 7 outbounds, and the default output is
 semantically identical to the file it replaced.
 
-### 44. The TOR configuration generator failed on every start (fixed)
+#### 44. The TOR configuration generator failed on every start (fixed)
 
 Kept here because it explains how TOR is now configured. `creatorrc.py --speetor` writes
 `tor_config.txt` into the current directory, and the image's WORKDIR is not writable by the
@@ -137,32 +285,7 @@ delete it or run `just clean` to force a fresh one. The generated file sets `Ent
 `ExcludeNodes` list does not prevent hidden services from resolving — verified by fetching a
 `.onion` through the chain after the change.
 
-Still open from the same area: this is third-party code fetched unpinned at build time and
-executed at every start, which is item 10.
-
-### 10. Unpinned third-party code fetched at image build (partly fixed)
-
-`creatorrc.py` and `guard_country_resolver.py` are now vendored into `downloader/creatorrc/`
-rather than fetched over HTTPS from GitHub at every build, with source commit, license and
-sha256 recorded in `downloader/creatorrc/VENDORED.md`. `unpack/install.sh` still fetches
-7-Zip fresh at build time — a real binary, not practical to vendor into git — but the
-download is now checked against a sha256 recorded in `unpack/VENDORED.md`, and the build
-fails rather than continuing on a mismatch; verified with a deliberately wrong hash. 7-Zip
-was also bumped from 23.01 to 26.03 in the same change.
-
-Still open: v2ray itself is installed by `downloader/install-release.sh`, a fetched script
-that verifies its download only against a digest pulled from the same host it downloaded
-from — that has not been touched. *Effort: M.*
-
-### 12. No integrity verification of downloads (ignored)
-
-`aria2.addUri` passes no per-download options, so aria2's `checksum` support goes unused.
-Leak sites essentially never publish hashes for what they dump, so a `url<TAB>sha256` format
-in `urls/*.txt` would sit unused in practice. Not worth building. `ingest.py` still computes
-its own sha256 from what actually landed on disk, so a truncated or corrupted download is
-caught at ingest time by way of a broken/unparseable document, just not at download time.
-
-### 13. The move step in `done.sh` was one-shot and unverified (fixed)
+#### 13. The move step in `done.sh` was one-shot and unverified (fixed)
 
 It moved files with a bare `mv`: no success check, and a name collision would silently
 overwrite whichever file was already there. It was also guarded by a one-shot `/files/extract`
@@ -179,17 +302,9 @@ to `-dup2`, and — with `/files` bind-mounted read-only to force a real failure
 logged and left in place with no `/files/unpack` created, completing correctly once writable
 again.
 
-### 42. Preflight TOR leak test
+### E — Extract (fixed)
 
-Fetch `check.torproject.org` through the configured proxy chain before any download starts
-and refuse to run if the answer is "not using TOR". With per-URL routing now in place this
-should assert the intended behaviour rather than blanket TOR use: `.onion` proxied, clearnet
-direct unless `FORCE_TOR` is set. For a non-expert operator this is the single most valuable
-opsec check, because it fails loudly instead of leaking quietly. *Effort: M. Impact: high.*
-
-## E — Extract
-
-### 14. Nested extraction was two fixed passes, not recursion to a fixpoint (fixed)
+#### 14. Nested extraction was two fixed passes, not recursion to a fixpoint (fixed)
 
 Pass 1 handled `/files/*`; pass 2 walked `/extracted/files` once. Anything three levels deep
 (zip → zip → pst) was only picked up by accident of `find` traversal order while the same run
@@ -204,7 +319,7 @@ after four rounds. A deliberately 8-level-deep archive stopped exactly at round 
 logged `DEPTH-LIMIT` line naming what was left unprocessed, confirming the cap is both real
 and visible rather than a silent truncation.
 
-### 15. Archive detection was a fixed extension list (fixed)
+#### 15. Archive detection was a fixed extension list (fixed)
 
 Pass 2 only matched `zip|gz|7z|gzip`, so `.rar`, `.tar`, `.tgz`, `.bz2` and `.xz` were
 excluded - a `.rar` inside a `.zip` was never extracted even though 7-Zip handles it fine and
@@ -215,14 +330,14 @@ folds this into item 14's unified loop rather than needing a separate content-sn
 Verified: a `.tar` nested inside a `.zip` (excluded by the old pass-2 list) was found and
 extracted in the same test as item 14.
 
-### 16. `ZIP_PASSWORD` was silently ignored on nested archives (fixed)
+#### 16. `ZIP_PASSWORD` was silently ignored on nested archives (fixed)
 
 Now folded into item 17 below, since both were fixed by the same rewrite: password handling
 is the same code path at every nesting level, so there is no longer a "pass 2" for it to be
 missing from. Verified: a password-protected archive nested inside another archive extracted
 correctly using `ZIP_PASSWORD`.
 
-### 17. "Wrong password", "corrupt" and "not an archive" were indistinguishable (fixed)
+#### 17. "Wrong password", "corrupt" and "not an archive" were indistinguishable (fixed)
 
 All three used to collapse to the same fallback and the same misleading log line,
 `"Not an archive, copying as-is"`. `unpack/start.sh` now checks 7-Zip's actual error text
@@ -266,15 +381,44 @@ no longer read (there is only one pass now, so a separate toggle for a second on
 meaningless) and has been dropped from `deis.cfg.default`; a `pst=true`/`false` toggle to
 skip PST extraction entirely, which the pre-rewrite code had, is preserved.
 
-### 18. No guards on hostile archives
+#### 18. No guards on hostile archives (fixed)
 
 No zip-slip check on extracted paths, no expansion-ratio or output-size cap, no disk-space
-check, no timeout on `7zz` or `readpst`. A decompression bomb fills the volume and a hung
-archive stalls the serial pipeline indefinitely. `web/app.py` has careful path-traversal
-defenses; the extract stage, which is the part actually handling adversary-supplied
-archives, has none. *Effort: M. Impact: high.*
+check, no timeout on `7zz` or `readpst`. A decompression bomb could fill the volume and a
+hung archive could stall the serial pipeline indefinitely; `web/app.py` already had careful
+path-traversal defenses, but the extract stage - the part actually handling
+adversary-supplied archives - had none.
 
-### 19. Extraction was fully serial (fixed)
+`unpack/start.sh`'s `check_archive_safety()` runs `7zz l -slt` against an archive before ever
+attempting extraction and rejects it outright (`extraction_status: unsafe`, listed in the new
+`extracted/still_unsafe.txt`, left as-is unextracted) if: any entry's path is absolute or
+contains a `..` component (zip-slip); the archive's declared uncompressed size exceeds
+`max_extract_bytes` (`deis.cfg`'s `[unpack]` section, default 10 GiB); its compression ratio
+exceeds `max_compression_ratio` (default 200x - the shape of a decompression bomb); or there
+isn't enough free disk space to hold it. `try_extract()` and `process_pst()` are both wrapped
+in `timeout "${extract_timeout}"` (default 1800s) around the actual `7zz x`/`readpst` call, so
+one hung archive can no longer stall a worker - and, once every worker is hung the same way,
+the whole round-based pipeline - forever; a killed extraction falls into the existing
+`corrupt` classification and its `rm -rf` cleanup (item 34 below), so a timed-out run leaves
+no partial output behind either.
+
+Verified against purpose-built fixture archives, not the live pipeline's real data
+(deliberately never fed a hostile archive into the real `/files` or `/extracted` used by the
+running stack - fixtures were run through isolated volume overrides instead): a zip-slip zip
+(`../../../tmp/evil.txt`) and an absolute-path variant were both rejected before extraction; a
+50 MB-of-zeros zip (1026x compression ratio) was rejected for exceeding the ratio cap; a
+normal small zip extracted and recursed correctly in the same run. The timeout wrapper was
+verified directly against a deliberately hung command (`timeout 2 <a process that sleeps 30>`
+returns exit 124 after ~2s, exactly the mechanism now wrapping `7zz`/`readpst`).
+
+One real bug was caught by this testing, not by reading the code: the three new
+`*_DEFAULT` config constants were plain (non-exported) shell variables, invisible inside the
+`xargs -P` worker subprocesses that actually call `check_archive_safety()` - every archive was
+being rejected with an empty (so arithmetically zero) size cap until this was found by running
+the guard against a real archive and getting "would extract to 18 bytes, over the -byte cap"
+instead of the expected pass. Fixed by exporting the three constants.
+
+#### 19. Extraction was fully serial (fixed)
 
 `ingest.py` used a `ProcessPoolExecutor`, but `unpack/start.sh` processed one archive at a
 time with no parallelism, no progress bar, no timestamps and no log file - the timestamps
@@ -304,7 +448,7 @@ as item 17, since two unrelated originals can share a basename here too). The fu
 regression fixture, including the embedded-newline filename and cross-round duplicate-name
 collision cases, was re-run against the parallel implementation with no change in outcome.
 
-### 20. Fragile shell mechanics in `unpack/start.sh` (fixed)
+#### 20. Fragile shell mechanics in `unpack/start.sh` (fixed)
 
 Three problems: config was read with substring matching (`grep "^unpack=true" /deis.cfg`),
 not section-aware and would false-positive on a key like `not_unpack=true`; file discovery
@@ -321,26 +465,9 @@ case. Item 34's testing found the real, worse case: `rmdir` only removes empty d
 and 7-Zip can leave partial output behind even on a reported failure - so a non-empty leftover
 silently survived. Actually fixed (`rmdir` -> `rm -rf`) under item 34, not here.
 
-### 21. More extractors
+### I — Ingest (fixed)
 
-Roughly in order of real-world value for leak dumps:
-
-- **Email beyond PST**: `.msg`, `.eml`, `.mbox`, `.ost`. Only `.pst` is handled today.
-- **OCR for image-only documents**, via tesseract or Tika's tesseract integration. A scanned
-  passport or invoice currently indexes with `content_length: 0` and is invisible to every
-  content search. This is the largest recall gap in the tool.
-- **Structured data as rows rather than blobs**: `.csv`, `.xlsx`, `.sql` dumps and SQLite
-  files are where personal data actually lives in these leaks. Tika flattens them to text;
-  parsing them into per-record documents would turn "is my friend in here?" into a precise
-  query.
-- **Disk and VM images**: `.vmdk`, `.vhdx`, `.E01`, raw `.dd`.
-- **Mobile backups**, `.iso`/`.wim`, mail-server maildirs.
-- **Encrypted archives**: at minimum list them so they are not forgotten; optionally attempt
-  a wordlist.
-
-## I — Ingest
-
-### 22. Define an explicit index template instead of relying on dynamic mapping (fixed, partly deferred)
+#### 22. Define an explicit index template instead of relying on dynamic mapping (fixed, partly deferred)
 
 The mapping was entirely dynamic. `setup/entrypoint.sh`'s `leakdata` index template (already
 existed for the `top_folder` runtime field) now also declares `sha256` and `filename` as
@@ -365,13 +492,7 @@ reads `filename.keyword` on the live index, but `filename` directly in the templ
 two now have different types) still resolves correctly on both; and a full ingest run against
 the live, newly-templated index completed with no change in behavior.
 
-### 23. Add ILM and rollover, or drop the `-000001` pretence
-
-The index name implies rollover, but `ingest.py` writes to a hardcoded
-`leakdata-index-000001` with no alias and no ILM policy. Writing through an alias would keep
-large investigations manageable and make "one index set per case" natural. *Effort: M.*
-
-### 24. Use the `_bulk` API (fixed)
+#### 24. Use the `_bulk` API (fixed)
 
 Every file was a separate `PUT /_doc/<sha>` from a worker process. `ingest.py` now splits
 hashing/reading (still CPU/IO-parallel across worker processes, unchanged) from sending: a
@@ -411,7 +532,7 @@ content all verified correct - purely wasted work, but this raises the case for 
 implementing item 41's suggested fix (an atomic claim-before-send marker) rather than leaving
 it as an accepted trade-off.
 
-### 27. `use_sqlite=True` was broken in the container (fixed)
+#### 27. `use_sqlite=True` was broken in the container (fixed)
 
 `sqlite3.connect("db/file_hashes.db")` resolved to `/db/file_hashes.db` because the working
 directory is `/`, and the `ingest` service mounted no such volume, so it failed immediately.
@@ -428,14 +549,14 @@ against a file named `Original Name With Spaces.txt`, then ran `ingest.py` with
 document's `filename` field is the original name recovered from the database, not the
 sha-based path on disk - the feature's actual purpose, which had never worked before.
 
-### 28. `bin/pathfix.py` read whole files into memory (fixed)
+#### 28. `bin/pathfix.py` read whole files into memory (fixed)
 
 `compute_sha256` called `f.read()` on the entire file, which would OOM on any large archive
 or disk image. Now streams in 64 KB blocks, the same technique `ingest.py` already used (it
 uses a smaller 4 KB block size; pathfix.py's files are typically larger, so a bigger block
 trades a little more peak memory for fewer read() calls).
 
-### 29. Dead ingest pipeline (fixed) - the rest of this item was a mischaracterization
+#### 29. Dead ingest pipeline (fixed) - the rest of this item was a mischaracterization
 
 The `attachment` pipeline, created by `setup/entrypoint.sh` but never referenced (only
 `cbor-attachment` is used - `ingest.py` posts CBOR, not JSON, so the JSON-only `attachment`
@@ -453,7 +574,7 @@ broken a real, documented, optional feature. (Compare item 9, where a similar
 looks-dead-but-isn't read turned out to be wrong in the same way, and was corrected the same
 way: verify before deleting, and correct the finding when it turns out to be wrong.)
 
-### 30. `README.md` referenced `./bin/ingest.sh`, which does not exist (fixed)
+#### 30. `README.md` referenced `./bin/ingest.sh`, which does not exist (fixed)
 
 The documented "only run ingest" path was broken. Replaced with
 `.venv/bin/python3 ingest/ingest.py`, which matches how `just ingest` already prepares the
@@ -461,7 +582,7 @@ venv and how `bin/progress.py` is invoked elsewhere in the same README. Verified
 the repo root with `ELASTIC_PASSWORD` exported, it connects to `127.0.0.1:9200` (ingest.py's
 own host/container detection) and completes a normal run against the live stack.
 
-### 41. Identical files could be indexed multiple times on first ingest (fixed)
+#### 41. Identical files could be indexed multiple times on first ingest (fixed)
 
 A consequence of the fix for item 1: the marker was only written after Elasticsearch
 confirmed, so multiple copies of a file that had never been ingested could all be sent before
@@ -497,33 +618,9 @@ with `docker compose up -d --force-recreate` from there: the 4-copy case produce
 `[INDEXED]` line, and the 250-marker case produced exactly 250 - both matched the fixture,
 with zero duplicate sha256 values remaining in `logs/ingest.log`.
 
-## S — Search
+### S — Search (fixed)
 
-### 31. PII and personnummer detection
-
-The origin story of this project is "does this leak contain my friend's personal data", yet
-the only way to answer it is free-text KQL. Detect Swedish personnummer and samordningsnummer
-with checksum validation, plus emails, phone numbers, IBAN and card numbers, and national IDs
-for other locales, either as an ingest-time enrichment or a post-pass. Index them as
-structured fields so an analyst can filter on a value and get a definitive answer, and so a
-dashboard can show which documents contain personal identifiers at all. *Effort: L. Impact:
-very high — this is the feature that most directly serves the use case.*
-
-### 32. Entity extraction and language detection
-
-Names, organisations and locations as structured fields turn the corpus from a text blob into
-something pivotable. The notebook's word cloud already hand-maintains English, Swedish and
-Portuguese stopword lists; automatic language detection would replace that and enable
-per-language analyzers, which materially improves recall on non-English dumps. *Effort: L.
-Impact: high.*
-
-### 33. Near-duplicate detection and clustering
-
-Leak dumps are full of near-identical documents: mail threads, template letters, versioned
-files. Exact sha256 dedup already exists; fuzzy clustering with SimHash or MinHash, or a
-`fingerprint` analyzer on content, would cut the volume a person has to read. *Effort: M.*
-
-### 34. Surface the failure states in the dashboard (fixed, partly)
+#### 34. Surface the failure states in the dashboard (fixed)
 
 This needed more than a panel: `unpack.log` and `still_encrypted.txt` are plain files on
 disk, not in Elasticsearch, so Kibana had nothing to show a panel from - there was no
@@ -531,16 +628,16 @@ Kibana-visible signal for "still encrypted" or "corrupt" at all before this.
 
 `unpack/start.sh` now also writes `extracted/still_corrupt.txt` (sha256 per line, mirroring
 `still_encrypted.txt`), and `ingest.py` tags every document with an `extraction_status` field
-(`ok`/`encrypted`/`corrupt`) by checking a file's sha256 against those two lists at ingest
-time - a small, surgical addition that keeps everything in the existing `leakdata-*` index
-rather than standing up a second one (`unpack` has no network route to Elasticsearch at all,
-so posting from unpack directly was not an option without wiring that up too). The dashboard
-gained an "Extraction status" donut and a "Files needing attention" saved search
-(`extraction_status: (encrypted or corrupt)`). Documents indexed before this field existed
-are backfilled to `ok` by `setup/entrypoint.sh`, the same pattern already used for
-`top_folder`. Zero-content files (`attachment.content_length: 0`) already had a saved search;
-still true, and distinct from this - a file can have zero content for reasons unrelated to
-unpack ever flagging it (an image, a format Tika doesn't parse).
+(`ok`/`encrypted`/`corrupt`/`unsafe`, the last added by item 18) by checking a file's sha256
+against those lists at ingest time - a small, surgical addition that keeps everything in the
+existing `leakdata-*` index rather than standing up a second one (`unpack` has no network
+route to Elasticsearch at all, so posting from unpack directly was not an option without
+wiring that up too). The dashboard gained an "Extraction status" donut and a "Files needing
+attention" saved search (`extraction_status: (encrypted or corrupt or unsafe)`). Documents
+indexed before this field existed are backfilled to `ok` by `setup/entrypoint.sh`, the same
+pattern already used for `top_folder`. Zero-content files (`attachment.content_length: 0`)
+already had a saved search; still true, and distinct from this - a file can have zero content
+for reasons unrelated to unpack ever flagging it (an image, a format Tika doesn't parse).
 
 Testing this surfaced a real, unrelated bug from the item 14-17 work, fixed here rather than
 carried forward: on a failed extraction, cleanup used `rmdir`, which only removes *empty*
@@ -553,11 +650,20 @@ the original - meaning it could be picked up and indexed as if it were a second,
 file. Changed to `rm -rf`, which cannot fail this way; verified the leftover fragment is now
 correctly gone in both cases.
 
-Ingest reconciliation counts (item 25) print to the container log, not into Elasticsearch,
-so they are not Kibana-visible either - still open, and now the clearer remaining half of
-this item. *Effort remaining: S.*
+Ingest reconciliation counts (item 25) were also finished as part of closing this item out:
+`ingest.py`'s `print_summary()` now indexes one document per run into a new `deis-ingest-runs`
+index (`index_run_summary()`) - files looked at, unique files, duplicate copies, indexed this
+run, already indexed, failed, and the live Elasticsearch document count - instead of only
+printing them to the container's own stdout. A new `deis-ingest-runs*` index template
+(`@timestamp` as an explicit `date` field) and an "Ingest run history" saved search
+(sorted by `@timestamp` desc) were added to the "Leaked data" dashboard, matching this item's
+existing saved-search pattern. Best-effort by design: a failure to index the summary is
+logged but does not fail an otherwise-successful run. Verified against the live stack: a real
+`ingest.py` run produced exactly one new `deis-ingest-runs` document with the expected counts
+(399 files looked at, 273 already indexed, 0 failed, 273 in Elasticsearch), and the saved
+search/data view both imported correctly via `setup`'s Kibana import.
 
-### 35. Notebook hardening (fixed)
+#### 35. Notebook hardening (fixed)
 
 The Elasticsearch password was embedded in the connection URL string; now passed via the
 client's `basic_auth` parameter instead, so it no longer ends up in that process's URL string
@@ -585,46 +691,9 @@ new `INDEX` constant and `basic_auth` connection, and a diagnostic cell confirme
 word-cloud path produced 891 real term/count pairs and a genuine rendered PNG - not merely
 "no exception," but the actual expected output.
 
-### 36. Result quality
+### Cross-cutting (fixed)
 
-Highlighted snippets rather than raw content, a saved search per detected entity type, and
-export of a result set as CSV or JSON for reporting back to whoever asked. *Effort: M.*
-
-## CLI — one command for non-technical operators
-
-Today the documented path requires copying and editing `.env` and `deis.cfg`, running
-`docker compose --profile setup up -d`, watching `docker logs deis-setup-1 -f`, running
-`docker compose --profile deis up -d`, then `just venv` and `just progress` — and, when a
-search fails, pasting two JSON blobs into Kibana's Dev Tools console. That is a lot of
-surface for the intended audience. `bin/progress.py` is a good seed: it already uses `rich`
-and infers state from the marker files.
-
-A single `deis` command, built on stdlib `argparse` plus `rich` to keep the dependency
-footprint small, wrapping the existing scripts rather than replacing them:
-
-- `deis init` — interactive first run: generate real passwords into an untracked `.env`,
-  create `deis.cfg`, check Docker's memory allocation against the 18 GB requirement, and fail
-  early with a plain-language message instead of an Elasticsearch OOM ten minutes later.
-- `deis doctor` — preflight and diagnosis: Docker reachable, memory sufficient, disk space
-  against expected dump size, the TOR routing check from item 42, Elasticsearch and Kibana
-  health, and a plain-English explanation of any crash-looping container. This one command
-  would have surfaced four of the seven original P0 items on its own.
-- `deis add-urls <file|url>` — validate schemes, deduplicate, report exactly what was queued.
-- `deis run [--only download,extract,ingest]` — replaces the profile incantations.
-- `deis status` — `progress.py` plus counts at each boundary, so the funnel is visible by
-  default rather than on request.
-- `deis search <term>` — terminal search for people who never open Kibana.
-- `deis report` — what was found, and what could not be processed.
-- `deis clean` / `deis reset` — wrap the `Justfile` targets behind a confirmation prompt,
-  since they delete evidence.
-
-Keep `just` for developer tasks such as linting and exporting requirements; the CLI is for
-operators. *Effort: L. Impact: high — it is the difference between a pipeline you can run and
-a tool you can hand to a friend.*
-
-## Cross-cutting
-
-### 37. No tests at all (fixed)
+#### 37. No tests at all (fixed)
 
 There was no test suite, and CI ran only super-linter and osv-scanner. Added a `tests/`
 suite (pytest) covering the pure, security-relevant functions that don't need the
@@ -671,7 +740,7 @@ directly against the running Elasticsearch (399 files looked at, 273 already ind
 failed, in Elasticsearch: 273) and confirmed `logs/ingest.log` contains no trace of the
 password either way.
 
-### 38. Make resource limits configurable (fixed)
+#### 38. Make resource limits configurable (fixed)
 
 `ES_JAVA_OPTS: -Xms2g -Xmx16g` was hardcoded in `docker-compose.yml`, forcing the README's
 18 GB Docker requirement on everyone regardless of dump size. Now
@@ -680,7 +749,7 @@ live stack: recreating Elasticsearch with `ES_JAVA_OPTS="-Xms512m -Xmx1g"` came 
 with `heap.max` reporting `1gb` via `_cat/nodes`; recreating again with the default restored
 16gb and confirmed the existing 273 documents survived both restarts untouched.
 
-### 39. Structured logging across stages (fixed for ingest; download/extract were already there)
+#### 39. Structured logging across stages (fixed for ingest; download/extract were already there)
 
 `deis/download.sh` and `deis/urls.sh` already wrote timestamped entries to
 `logs/download_errors.log`, and `unpack/start.sh` writes per-file outcomes to
@@ -699,14 +768,7 @@ Three different formats across `logs/download_errors.log`, `logs/unpack.log` and
 smaller polish item now, since the substrate the CLI's `status`/`report` and item 34 depend
 on exists for every stage.
 
-### 40. Decide the fate of the log-ingest scaffolding
-
-`evtx2json/`, `evtx/`, `json/`, `syslog/` and the filebeat extension are a half-built path
-from closed issue #1. `syslog/` is mounted into filebeat but referenced by no input config,
-and the `modules.d` glob points at a directory that does not exist. Either finish the wiring
-or remove it, and document `evtx2json` as the manual side tool it currently is. *Effort: S.*
-
-### 43. Two separate sha256 symlink trees (fixed)
+#### 43. Two separate sha256 symlink trees (fixed)
 
 `ingest.py` wrote its dedup markers to `extracted/sha256` on the host, while `web` had its
 own `deis_shasum` named volume, populated independently by `web/startup.sh` rehashing every
@@ -723,24 +785,8 @@ is a real (if minor) correctness improvement, not just a wash. Verified: recreat
 against the new mount and confirmed `/view/<sha256>` still resolves and serves correctly, and
 that `web` cannot write into the shared directory.
 
-## Suggested sequencing
+## Deliberately not doing
 
-1. **Make losses visible** — done for logging (39: every stage now has a real per-file log) and for extraction failures (34's `extraction_status` field and dashboard panels). What remains is the ingest reconciliation counts specifically, which print to the container log rather than being indexed anywhere Kibana can see, and unifying the three still-different log file formats.
-2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested passwords, distinct failure states) are done; this is what is left of the extraction correctness gap.
-3. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that would make item 22's field-type changes actually take effect on a real index. 22 and 24 (explicit template, bulk indexing) are done.
-4. **The CLI**, once the underlying states are reportable — it is a facade over the items above, and building it first would mean building it twice.
-5. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it is the question the tool exists to answer.
-
-Housekeeping items (10's v2ray remainder) are individually small and can be picked up
-whenever the surrounding code is being touched anyway.
-
-## Verification approach
-
-- Keep a small fixture dump in the repo — nested archives, a password-protected archive, a
-  zip-slip entry, a decompression bomb, an image-only PDF, a corrupt file — and assert counts
-  end to end.
-- Reproduce each failure before fixing it. Kill the ingest container mid-run and confirm the
-  file is retried; submit a `magnet:` URL and confirm it is rejected rather than leaked; add a
-  never-completing URL and confirm the pipeline reports it as stalled rather than hanging.
-- Re-run the reconciliation under "Live reconciliation" and require the numbers to agree,
-  modulo known duplicates. The ingest summary now prints most of this at the end of every run.
+| Item | Why not |
+|---|---|
+| 12 | Integrity verification against a published checksum. Leak sites essentially never publish hashes for their dumps, so it would sit unused. `ingest.py` already computes a real sha256 from the file as ingested, which catches corruption indirectly. |

@@ -57,7 +57,7 @@ services:
     environment:
       - RPCPORT=${RPCPORT:-}
       - RPCSECRET=${RPCSECRET:-}
-      - TORSERVNUM=${TORSERVNUM:-}
+      - TORSERVNUM=${TORSERVNUM:-50}
     volumes:
       - ./downloader/conf:/conf
       - ./downloader/log:/log

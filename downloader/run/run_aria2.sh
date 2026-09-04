@@ -35,5 +35,9 @@ else
     tor --runasdaemon 1
 fi
 
+# Regenerated on every start (it's cheap - no network needed) so TORSERVNUM
+# actually controls how many parallel circuits v2ray load-balances across.
+python /run/generate_v2ray_config.py > /conf/config.json
+
 exec v2ray run -c /conf/config.json &
 exec aria2c --conf-path=/conf/aria2.conf --log=/log/aria2_log.txt --rpc-listen-port="${RPCPORT}" --rpc-secret="${RPCSECRET}"

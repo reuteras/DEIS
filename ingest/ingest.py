@@ -20,6 +20,13 @@ if not Path("./extracted/sha256").is_dir():
 
 headers = {"content-type": "application/cbor"}
 success_list = [200, 201]
+INDEX = "leakdata-index-000001"
+
+# What happened to a single file, for the summary at the end of a run.
+SKIPPED = "skipped"  # bookkeeping file, never meant to be indexed
+INDEXED = "indexed"  # sent to Elasticsearch during this run
+PRESENT = "present"  # a document for this content already existed
+FAILED = "failed"  # could not be indexed, will be retried on the next run
 
 
 def read_configuration(config_file):
@@ -51,8 +58,19 @@ def get_filehash(filename):
     return sha256_hash.hexdigest()
 
 
+def hash_link_exists(hash_value):
+    """Return True if this hash has already been ingested successfully."""
+    return Path("extracted/sha256/" + str(hash_value)).is_symlink()
+
+
 def create_hash_link(hash_value, filename):
-    """Create link from hash to file."""
+    """Create link from hash to file.
+
+    Only called once Elasticsearch has confirmed the document, so the symlink
+    doubles as the "this file is done" marker for later runs. Creating it
+    earlier would mean a crash between the symlink and the upload leaves the
+    file marked as done but never indexed - it would then be skipped forever.
+    """
     sha256_link = Path("extracted/sha256/" + str(hash_value))
     if sha256_link.is_symlink():
         return False
@@ -62,14 +80,6 @@ def create_hash_link(hash_value, filename):
         if not sha256_link.is_symlink():
             print("ERROR: Could not create symlink for file:", filename, flush=True)
     return True
-
-
-def remove_sha256(hash_value):
-    sha256_link = Path("extracted/sha256/" + str(hash_value))
-    try:
-        sha256_link.unlink()
-    except (FileExistsError, OSError, RuntimeError):
-        print("ERROR: Could not remove link extraced/sha256/" + hash_value)
 
 
 def request_retry(url, data, num_retries=5):
@@ -84,6 +94,11 @@ def request_retry(url, data, num_retries=5):
             time.sleep(15)
         except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
             time.sleep(60)
+        except requests.exceptions.RequestException as error:
+            # Anything else requests can raise (SSL errors, malformed URLs,
+            # too many redirects, ...). Retry rather than killing the worker.
+            print("ERROR: Request to Elastic failed:", error, flush=True)
+            time.sleep(15)
     return None
 
 
@@ -106,62 +121,133 @@ def send_elastic(filename, content, hash_value, message):
     }
 
     return request_retry(
-        "http://elastic:"
-        + password
-        + "@"
-        + elastic_host
-        + ":9200/leakdata-index-000001/_doc/"
-        + hash_value
-        + "?pipeline=cbor-attachment",
+        index_url() + "/_doc/" + hash_value + "?pipeline=cbor-attachment",
         data=cbor2.dumps(doc),
     )
 
 
+def index_url():
+    """Return the base URL of the index, credentials included."""
+    return "http://elastic:" + password + "@" + elastic_host + ":9200/" + INDEX
+
+
+def elastic_document_count():
+    """Return how many documents the index holds, or None if it can't be read.
+
+    Refresh first, otherwise documents indexed moments ago are not counted yet.
+    """
+    try:
+        requests.post(index_url() + "/_refresh", timeout=30)
+        response = requests.get(index_url() + "/_count", timeout=30)
+        if response.status_code not in success_list:
+            return None
+        return int(response.json()["count"])
+    except (requests.exceptions.RequestException, ValueError, KeyError):
+        return None
+
+
 def handle_file(fname: Path):
-    """Handle files."""
+    """Handle files.
+
+    Returns (status, sha256, error) so process_files() can both report failures
+    and account for every file in the summary. Nothing raises out of here: a
+    single unreadable or unusual file must not abort the whole batch, since
+    every worker shares one ProcessPoolExecutor.
+    """
     if str(fname) in ["extracted/files/done", "extracted/files/path.txt"]:
-        return
-    sha256 = get_filehash(fname)
-    if len(sha256) != 64:
-        print("ERROR: Could not get sha256 for file: ", fname)
-        return
-    if not create_hash_link(sha256, fname):
-        # Same hash has been added already
-        return
-    if Path(fname).stat().st_size > max_size:
-        content = ""
-        message = "to large"
-    else:
-        with open(fname, "rb") as f:
-            content = f.read()
-        message = "ok"
-    response = send_elastic(fname, content, sha256, message)
-    if response is None:
-        print("Error sending file to Elastic (Null returned):", fname)
-        remove_sha256(sha256)
-        return
-    if response.status_code == 400:
-        response = send_elastic(fname, "", sha256, response.text)
+        return (SKIPPED, None, None)
+    try:
+        sha256 = get_filehash(fname)
+        if sha256 is None or len(sha256) != 64:
+            return (FAILED, None, f"ERROR: Could not get sha256 for file: {fname}")
+        if hash_link_exists(sha256):
+            # This content is already indexed, by an earlier run or by an
+            # identical copy of the file elsewhere in the tree.
+            return (PRESENT, sha256, None)
+        if fname.stat().st_size > max_size:
+            content = ""
+            message = "to large"
+        else:
+            with open(fname, "rb") as f:
+                content = f.read()
+            message = "ok"
+        response = send_elastic(fname, content, sha256, message)
+        if response is None:
+            return (FAILED, sha256, f"Error sending file to Elastic (Null returned): {fname}")
         if response.status_code == 400:
-            print("Error sending file to Elastic (second 400 returned):", fname)
-            remove_sha256(sha256)
-        elif response.status_code not in success_list:
-            print("Error sending file to Elastic (second try returned):", fname, "Code:", response.status_code)
-            remove_sha256(sha256)
-    return
+            # Tika could not parse it. Index it again without the content so
+            # the file is still findable by name/hash, with the parser error
+            # kept in "message".
+            response = send_elastic(fname, "", sha256, response.text)
+            if response is None:
+                return (FAILED, sha256, f"Error sending file to Elastic (Null returned): {fname}")
+            if response.status_code not in success_list:
+                return (
+                    FAILED,
+                    sha256,
+                    f"Error sending file to Elastic (second try returned): {fname} Code: {response.status_code}",
+                )
+        # Only now is the file really done, so mark it for the next run.
+        create_hash_link(sha256, fname)
+    except Exception as error:  # noqa: BLE001 - one bad file must not stop the batch
+        return (FAILED, None, f"ERROR: Failed to ingest {fname}: {error!r}")
+    return (INDEXED, sha256, None)
+
+
+def print_summary(results, directory):
+    """Account for every file that was looked at.
+
+    Far fewer documents than files is normal and expected - identical files
+    share one document, because the document id is the sha256 - but without
+    this breakdown the difference looks like data went missing.
+    """
+    statuses = [status for status, _, _ in results]
+    errors = [error for _, _, error in results if error]
+    # Files that are represented by a document, whether this run wrote it or not.
+    covered = {sha256 for status, sha256, _ in results if status in (INDEXED, PRESENT)}
+    counted = statuses.count(INDEXED) + statuses.count(PRESENT)
+
+    for error in errors:
+        print(error)
+
+    print()
+    print("Ingest summary")
+    print("--------------")
+    print(f"  files looked at:      {len(results)}")
+    print(f"  internal files:       {statuses.count(SKIPPED)}")
+    print(f"  unique files:         {len(covered)}")
+    print(f"  duplicate copies:     {counted - len(covered)}")
+    print(f"  indexed this run:     {statuses.count(INDEXED)}")
+    print(f"  already indexed:      {statuses.count(PRESENT)}")
+    print(f"  failed:               {statuses.count(FAILED)}")
+
+    documents = elastic_document_count()
+    if documents is None:
+        print("  in Elasticsearch:     could not be read")
+    else:
+        print(f"  in Elasticsearch:     {documents}")
+        if documents < len(covered):
+            print(f"  WARNING: {len(covered) - documents} unique file(s) have no document in Elasticsearch.")
+        elif documents > len(covered):
+            print(f"  Note: {documents - len(covered)} document(s) come from files no longer in {directory}.")
+    print(flush=True)
+
+    return statuses.count(FAILED)
 
 
 def process_files(directory: Path):
-    """Process all files in parallel (number of CPUs)."""
+    """Process all files in parallel (number of CPUs).
+
+    Returns the number of files that failed, so the caller can decide whether
+    the run counts as finished.
+    """
     with ProcessPoolExecutor() as executor:
         files = get_files(directory)
         files_list = list(files)
         files_count = len(files_list)
         files = iter(files_list)
         results = list(tqdm(executor.map(handle_file, files), total=files_count, desc="Processing files", unit="files"))
-        for r in results:
-            if r:
-                print(r)
+        return print_summary(results, directory)
 
 
 cfg = read_configuration("./deis.cfg")
@@ -181,6 +267,11 @@ else:
 
 
 if __name__ == "__main__":
-    process_files(Path(cfg.get("ingest", "files")))
+    failed = process_files(Path(cfg.get("ingest", "files")))
+    if failed:
+        # Files that failed have no sha256 symlink, so they are picked up again
+        # on the next run - but only if this run isn't marked as done.
+        print("Ingest incomplete. Re-run with 'docker compose restart ingest' to retry the failed files.")
+        sys.exit(1)
     Path("./extracted/ingest_done").touch()
     print("Ingest done.")

@@ -30,12 +30,11 @@ WORKDIR /home
 # hadolint ignore=DL3018
 RUN rm -f ./500retry.patch ./slowretry.patch ./removeconnlimit.patch ./connclosed.patch ./install-release.sh && \
     rm -rf ./aria2 && \
-    apk add --update --no-cache python3 py3-stem && \
-    mkdir -p creatorrc
+    apk add --update --no-cache python3 py3-stem
 
+# Vendored rather than fetched at build time - see creatorrc/VENDORED.md.
 WORKDIR /home/creatorrc
-RUN aria2c https://raw.githubusercontent.com/hephaest0s/creatorrc/master/creatorrc.py && \
-    aria2c https://raw.githubusercontent.com/hephaest0s/creatorrc/master/guard_country_resolver.py
+COPY creatorrc/creatorrc.py creatorrc/guard_country_resolver.py ./
 
 RUN addgroup -g 1000 -S aria2 && adduser -u 1000 -S aria2 -G aria2
 

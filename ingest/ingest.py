@@ -11,6 +11,7 @@ import sys
 import time
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -284,6 +285,25 @@ def process_batch(items):
     return results
 
 
+def log_results(results):
+    """Appends one line per interesting outcome to logs/ingest.log, matching
+    unpack/start.sh's logs/unpack.log: never truncated, timestamped, and
+    only outcomes worth knowing about later - not every already-indexed file
+    on every run, the same way unpack's log() is never called for content
+    that was already there.
+    """
+    try:
+        with open("/logs/ingest.log", "a", encoding="utf-8") as f:
+            now = datetime.now(UTC).isoformat()
+            for status, sha256, error in results:
+                if status == INDEXED:
+                    f.write(f"{now} [INDEXED] sha256={sha256}\n")
+                elif status == FAILED:
+                    f.write(f"{now} [FAILED] {error}\n")
+    except OSError as error:
+        print("ERROR: Could not write to /logs/ingest.log:", error, flush=True)
+
+
 def print_summary(results, directory):
     """Account for every file that was looked at.
 
@@ -297,6 +317,7 @@ def print_summary(results, directory):
     covered = {sha256 for status, sha256, _ in results if status in (INDEXED, PRESENT)}
     counted = statuses.count(INDEXED) + statuses.count(PRESENT)
 
+    log_results(results)
     for error in errors:
         print(error)
 

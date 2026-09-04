@@ -41,6 +41,8 @@ Ingest files to search into [Elasticsearch][els] with the [attachment processor]
 
 I've incorporated the [docker-elk][del] repository setup and run Elasticsearch and Kibana but have removed Logstash.
 
+Newly indexed and failed files are logged to `logs/ingest.log`; a summary prints at the end of every run.
+
 ### Search
 
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].
@@ -53,7 +55,9 @@ it explains what the pipeline currently does not extract or detect.
 
 ## Requirements
 
-You must increase the RAM that Docker can use to 18 GB or more. Otherwise Elasticsearch will not start if you don't lower the memory specified in the file docker-compose.yml.
+You must increase the RAM that Docker can use to 18 GB or more. If you don't want to raise it
+that high - for example when working with a small dump - lower **ES_JAVA_OPTS** in *.env*
+instead (default `-Xms2g -Xmx16g`).
 
 ## Install and configure
 

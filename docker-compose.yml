@@ -124,6 +124,7 @@ services:
       - ./extracted:/extracted
       - ./deis.cfg:/deis.cfg
       - ./db:/db
+      - ./logs:/logs
     environment:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
     networks:
@@ -143,7 +144,7 @@ services:
       - 127.0.0.1:9300:9300
     environment:
       node.name: elasticsearch
-      ES_JAVA_OPTS: -Xms2g -Xmx16g
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms2g -Xmx16g}
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
       discovery.type: single-node
     networks:

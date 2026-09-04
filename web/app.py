@@ -208,12 +208,14 @@ async def view_file(sha256: str):
     return f"""<!doctype html>
 <html>
 <head><meta charset="utf-8"><title>{display_name}</title></head>
-<body style="font-family: sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem;">
+<body style="font-family: sans-serif; max-width: 60rem; margin: 3rem auto; padding: 0 1rem;">
 <h1 style="font-size: 1.1rem; word-break: break-word;">{display_name}</h1>
 <p>
-<a href="/convert/{sha256}" target="_blank" style="margin-right: 1.5rem;">Preview in browser</a>
+<a href="/convert/{sha256}" target="_blank" style="margin-right: 1.5rem;">Full-screen preview</a>
 <a href="/file/{sha256}?disposition=attachment">Download original</a>
 </p>
+<iframe src="/convert/{sha256}" title="Document preview"
+    style="width: 100%; height: 80vh; border: 1px solid #ccc; margin-top: 1rem;"></iframe>
 </body>
 </html>
 """

@@ -135,8 +135,8 @@ services:
       - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro,Z
       - elasticsearch:/usr/share/elasticsearch/data
     ports:
-      - 9200:9200
-      - 9300:9300
+      - 127.0.0.1:9200:9200
+      - 127.0.0.1:9300:9300
     environment:
       node.name: elasticsearch
       ES_JAVA_OPTS: -Xms2g -Xmx16g
@@ -155,7 +155,7 @@ services:
     volumes:
       - ./kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro,Z
     ports:
-      - 5601:5601
+      - 127.0.0.1:5601:5601
     environment:
       KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
     networks:
@@ -167,11 +167,14 @@ services:
 
   notebook:
     image: reuteras/container-notebook
-    command: "start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
     ports:
-      - 8888:8888
+      - 127.0.0.1:8888:8888
     environment:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      # Jupyter can run arbitrary code and reads the leaked files, so it is
+      # never started without a token. Log in at http://127.0.0.1:8888/?token=
+      # followed by this value.
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:?JUPYTER_TOKEN must be set in .env}
     volumes:
       - ./notebook:/home/jovyan/work
       - ./.jupyter:/home/jovyan/.jupyter
@@ -186,13 +189,19 @@ services:
   gotenberg:
     image: gotenberg/gotenberg
     ports:
-      - 3000:3000
+      - 127.0.0.1:3000:3000
     networks:
       - web
     restart: unless-stopped
 
 
+  # Nothing in the DEIS pipeline feeds Logstash - ingest.py writes to
+  # Elasticsearch directly. It is kept for the optional extensions in
+  # extensions/, behind a profile so that it no longer starts by default.
+  # Start it with: docker compose --profile logstash up -d
   logstash:
+    profiles:
+      - logstash
     build:
       context: logstash/
       args:
@@ -201,10 +210,10 @@ services:
       - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro,Z
       - ./logstash/pipeline:/usr/share/logstash/pipeline:ro,Z
     ports:
-      - 5044:5044
-      - 50000:50000/tcp
-      - 50000:50000/udp
-      - 9600:9600
+      - 127.0.0.1:5044:5044
+      - 127.0.0.1:50000:50000/tcp
+      - 127.0.0.1:50000:50000/udp
+      - 127.0.0.1:9600:9600
     environment:
       LS_JAVA_OPTS: -Xms256m -Xmx256m
       LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}

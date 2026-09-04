@@ -3,6 +3,7 @@
 .jupyter/migrated
 .venv/
 **/privoxy*.conf
+.env
 deis.cfg
 downloader/conf/aria2.session
 downloader/conf/nginx.conf

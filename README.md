@@ -51,9 +51,15 @@ cd DEIS
 
 Configure DEIS by changing three files:
 
-- Modify passwords in *.env*. If the downloaded files are password protected you must set the **ZIP_PASSWORD**.
+- Copy *.env.default* to *.env* and modify the passwords in it. Set **JUPYTER_TOKEN** to a
+  random value (`openssl rand -hex 32`) - JupyterLab will not start without one. If the
+  downloaded files are password protected you must also set the **ZIP_PASSWORD**. *.env* is
+  not tracked by git, so your passwords stay on your machine.
 - Add a list of URLs (one per line) for files to download to a file in the *urls* directory.
 - Copy *deis.cfg.default* to *deis.cfg* and update the settings described in the file.
+
+`.onion` URLs are downloaded over TOR and everything else is downloaded directly, which is
+much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR instead.
 
 Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
 
@@ -89,14 +95,16 @@ just progress
 
 Press CTRL-C to exit the progress display.
 
-The following web services are available:
+The following web services are available. All of them listen on 127.0.0.1 only, so they are
+not reachable from other machines on your network:
 
 - [http://127.0.0.1:3000/](http://127.0.0.1:3000/) - Gotenberg server
 - [http://127.0.0.1:5601/](http://127.0.0.1:5601/) - Elastic/Kibana
 - [http://127.0.0.1:8080/](http://127.0.0.1:8080/) - AriaNg
 - [http://127.0.0.1:8081/file/<sha256>](http://127.0.0.1:8081/file/) - Download file based on sha256
 - [http://127.0.0.1:8081/convert/<sha256>](http://127.0.0.1:8081/convert/) - Convert file to PDF (if possible) and download file based on sha256
-- [http://127.0.0.1:8888/](http://127.0.0.1:8888/) - JupyterLab
+- [http://127.0.0.1:8081/view/<sha256>](http://127.0.0.1:8081/view/) - Preview a file and download the original
+- [http://127.0.0.1:8888/](http://127.0.0.1:8888/) - JupyterLab, log in with the **JUPYTER_TOKEN** from *.env*
 
 ## Only run a subset of the steps
 

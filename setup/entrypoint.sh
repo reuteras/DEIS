@@ -162,6 +162,43 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 }
 ' > /dev/null && sublog 'Done'
 
+log 'Add leakdata index template (top_folder runtime field)'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata?pretty" -H 'Content-Type: application/json' -d'
+{
+    "index_patterns" : ["leakdata-*"],
+    "template" : {
+        "mappings" : {
+            "runtime" : {
+                "top_folder" : {
+                    "type" : "keyword",
+                    "script" : {
+                        "source" : "def parts = doc['"'"'filename.keyword'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
+                    }
+                }
+            }
+        }
+    }
+}
+' > /dev/null && sublog 'Done'
+
+# The template above only applies to indices created from now on. Also patch
+# the runtime field onto the index directly, so it shows up for data already
+# ingested before this template existed (adding a runtime field to an
+# existing index's mapping doesn't require a reindex).
+log 'Backfill top_folder runtime field onto the existing leakdata index'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
+{
+    "runtime" : {
+        "top_folder" : {
+            "type" : "keyword",
+            "script" : {
+                "source" : "def parts = doc['"'"'filename.keyword'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
+            }
+        }
+    }
+}
+' > /dev/null && sublog 'Done'
+
 kibana_host="${KIBANA_HOST:-kibana}"
 while ! curl -s -m5 "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/" > /dev/null; do
     sleep 1

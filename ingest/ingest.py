@@ -91,8 +91,19 @@ def create_hash_link(hash_value, filename):
 
 
 def index_url():
-    """Return the base URL of the index, credentials included."""
-    return "http://elastic:" + password + "@" + elastic_host + ":9200/" + INDEX
+    """Return the base URL of the index.
+
+    Credentials are never embedded here - passed separately via requests'
+    auth= parameter (see elastic_auth()) instead, so a password can't end up
+    in a request's URL and leak into an exception message, a printed error,
+    or /logs/ingest.log the way it would if it were part of the URL string.
+    """
+    return "http://" + elastic_host + ":9200/" + INDEX
+
+
+def elastic_auth():
+    """Return the (username, password) tuple for requests' auth= parameter."""
+    return ("elastic", password)
 
 
 def elastic_document_count():
@@ -101,8 +112,8 @@ def elastic_document_count():
     Refresh first, otherwise documents indexed moments ago are not counted yet.
     """
     try:
-        requests.post(index_url() + "/_refresh", timeout=30)
-        response = requests.get(index_url() + "/_count", timeout=30)
+        requests.post(index_url() + "/_refresh", auth=elastic_auth(), timeout=30)
+        response = requests.get(index_url() + "/_count", auth=elastic_auth(), timeout=30)
         if response.status_code not in success_list:
             return None
         return int(response.json()["count"])
@@ -215,7 +226,7 @@ def bulk_request(items, num_retries=5):
     body = build_bulk_body(items)
     for _ in range(num_retries):
         try:
-            response = requests.post(url, data=body, headers=headers, timeout=120)
+            response = requests.post(url, data=body, headers=headers, auth=elastic_auth(), timeout=120)
             if response.status_code in success_list:
                 return response.json()["items"]
             time.sleep(15)

@@ -4,9 +4,16 @@ members = ["bin", "ingest", "web"]
 [tool.ruff]
 # Allow lines to be as long as 120 characters.
 line-length = 120
+# Vendored third-party scripts (see docs/IMPROVEMENTS.md item 10) - not ours
+# to reformat.
+extend-exclude = ["downloader/creatorrc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
     "pip>=26.2.1",
+    "pytest>=8.3.4",
     "ruff>=0.16.5",
 ]

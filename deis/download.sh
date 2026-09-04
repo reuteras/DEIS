@@ -40,7 +40,7 @@ while true; do
         --argjson offset "${offset}" \
         --argjson num "${page_size}" \
         '{jsonrpc: "2.0", id: $id, method: "aria2.tellStopped",
-          params: [$secret, $offset, $num, ["gid", "status", "errorMessage", "files"]]}')")"
+        params: [$secret, $offset, $num, ["gid", "status", "errorMessage", "files"]]}')")"
     entries="$(echo "${page}" | jq -c '.result[]?')"
     [[ -z "${entries}" ]] && break
     stopped+="${entries}"$'\n'
@@ -90,7 +90,7 @@ if [[ -n "${pending}" ]]; then
             --arg id "${RANDOM}" \
             --arg gid "${gid}" \
             '{jsonrpc: "2.0", id: $id, method: "aria2.tellStatus",
-              params: [$secret, $gid, ["gid", "status", "errorMessage", "files"]]}')")"
+            params: [$secret, $gid, ["gid", "status", "errorMessage", "files"]]}')")"
         uri="$(echo "${status}" | jq -r '.result.files[0].uris[0].uri // "unknown URL"')"
         state="$(echo "${status}" | jq -r '.result.status // "unknown"')"
         stalled+="${gid} ${uri} -> still ${state} after ${elapsed}s"$'\n'

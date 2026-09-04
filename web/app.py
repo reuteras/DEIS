@@ -63,9 +63,16 @@ def validate_sha256_and_get_symlink_path(sha256: str) -> str:
     Returns:
         Path string verified to be within SYMLINKS_DIR and safe for file operations
     """
-    # Step 1: Strict regex validation - only allow 64 lowercase hex characters
-    # Anything else is rejected immediately
-    if not re.match(r"^[a-f0-9]{64}$", sha256):
+    # Step 1: Strict regex validation - only allow 64 lowercase hex characters.
+    # fullmatch(), not match() with a ^...$ anchor: re.match's $ also matches
+    # just before a single trailing newline, so "<64 hex chars>\n" would
+    # otherwise pass this check (found by tests/test_web_app.py). basename()
+    # and normpath() below don't treat \n as a separator and don't strip it,
+    # so this never escaped SYMLINKS_DIR - it just fails harmlessly further
+    # down (no real file has a newline in its name) - but the whole point of
+    # this line is exact validation, so anything that isn't should be
+    # rejected here, not depend on later checks.
+    if not re.fullmatch(r"[a-f0-9]{64}", sha256):
         raise HTTPException(status_code=400, detail="Invalid SHA256 format")
 
     # Step 2: Extract only the validated filename component using os.path.basename()
@@ -165,9 +172,7 @@ def convert_html_to_pdf(file_path: str) -> bytes:
             # Gotenberg's chromium module requires the uploaded HTML file to be
             # named index.html; the tuple form lets us send that name in the
             # multipart request independent of the temp file's real path.
-            response = requests.post(
-                GOTENBERG_HTML_URL, files={"file": ("index.html", f, "text/html")}, timeout=60
-            )
+            response = requests.post(GOTENBERG_HTML_URL, files={"file": ("index.html", f, "text/html")}, timeout=60)
     response.raise_for_status()
     return response.content
 

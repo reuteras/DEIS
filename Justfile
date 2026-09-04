@@ -75,3 +75,8 @@ requires: _venv-dir
 
 progress: python-bin
     {{virtualenv}}/bin/python3 bin/progress.py
+
+test: _venv-dir
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run pytest

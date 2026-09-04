@@ -138,6 +138,18 @@ just ingest
 .venv/bin/python3 ingest/ingest.py
 ```
 
+## Development
+
+The per-service scripts (`web/app.py`'s path validation, `ingest/ingest.py`'s hashing/dedup
+logic, `bin/pathfix.py`'s hashing) have a test suite under `tests/`, run with:
+
+```bash
+just test
+```
+
+This also runs `ruff check`/`ruff format --check`. CI runs the same checks on every push and
+pull request (`.github/workflows/tests.yml`).
+
 ## Search tips
 
 Disable collection by Elastic by opening [http://127.0.0.1:5601/app/management/kibana/settings](http://127.0.0.1:5601/app/management/kibana/settings), click on **Global Settings** and scroll down and click **off** on **Share usage with Elastic**.

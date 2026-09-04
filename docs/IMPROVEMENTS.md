@@ -56,6 +56,7 @@ Two properties should drive prioritization, because they follow from what the to
 | 35 | Password in the connection URL, hardcoded/duplicated index name, and a full-corpus pull for the word cloud | `a6fef83` |
 | 38 | `ES_JAVA_OPTS` was hardcoded, forcing the 18 GB Docker requirement on everyone regardless of dump size | `3f3cf9b` |
 | 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
+| 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
@@ -461,26 +462,41 @@ venv and how `bin/progress.py` is invoked elsewhere in the same README. Verified
 the repo root with `ELASTIC_PASSWORD` exported, it connects to `127.0.0.1:9200` (ingest.py's
 own host/container detection) and completes a normal run against the live stack.
 
-### 41. Identical files can be indexed multiple times on first ingest (more pronounced after item 24)
+### 41. Identical files could be indexed multiple times on first ingest (fixed)
 
-A consequence of the fix for item 1: the marker is only written after Elasticsearch confirms,
-so multiple copies of a file that has never been ingested can all be sent before any of their
-markers exists. Harmless - the document id is the sha256, so it is the same document written
-repeatedly - but it wastes an upload and a Tika parse per collision.
+A consequence of the fix for item 1: the marker was only written after Elasticsearch
+confirmed, so multiple copies of a file that had never been ingested could all be sent before
+any of their markers existed. Harmless - the document id is the sha256, so it was the same
+document written repeatedly - but it wasted an upload and a Tika parse per collision. Item
+24's bulk batching widened the window rather than narrowing it: a marker was only written
+once an entire batch (up to 200 documents) flushed, not after each file's own request, so
+more duplicate copies had time to pile up as "not yet marked" first. Measured before this
+fix: 4 identical copies produced 3 redundant sends before item 24; after item 24,
+deliberately removing 250 markers from a corpus with 124 known duplicate pairs produced 366
+index operations for 250 unique files.
 
-Item 24's bulk batching widened this window rather than narrowing it: a marker is now only
-written once an entire batch (up to 200 documents) flushes, not after each file's own
-individual request, so more duplicate copies have time to pile up as "not yet marked" before
-any of them completes. Observed directly: four identical copies produced three redundant
-sends before item 24 (a small, already-accepted cost); after item 24, deliberately removing
-250 markers from a corpus with 124 known duplicate pairs produced 366 index operations for 250
-unique files - a much larger overcount, though still fully correct (verified: final document
-count, content, and markers all landed right).
+Fixed differently than originally planned here (an `O_EXCL`-claimed marker file, promoted on
+success, removed on failure) - that design still needs its own crash-recovery story for a
+claim left behind by a killed process, which is real added complexity. Simpler and
+sufficient: `ProcessPoolExecutor.map()` is documented to yield results in input order, not
+completion order (confirmed directly, since this was the one assumption load-bearing enough
+to verify rather than trust: a small reproduction script run inside the actual container
+image), so `process_files()`'s single-threaded consumer loop can deduplicate by sha256 as
+results arrive, entirely in-memory, with no locking and nothing written to disk that could be
+left in a bad state by a crash. The first file with a given sha256 in a run is queued
+normally; every later one is deferred and resolved afterward against whatever the first
+one's outcome turned out to be, without a second upload.
 
-The fix is unchanged and now more clearly worth doing: an atomic claim-before-send marker
-(claim with `O_EXCL` before uploading, promote on success, remove on failure) would get the
-crash-safety of item 1 without any of this duplicate work, at any batch size.
-*Effort: S. Impact: was low/efficiency-only; item 24 raises it to worth prioritizing.*
+Getting this verified took an extra round: the first two container test runs still showed
+the old duplicate counts even after rebuilding the image, which briefly looked like the fix
+itself was wrong. It wasn't - `docker compose restart` reuses whatever container already
+exists rather than recreating it from a freshly built image, so those two runs were silently
+executing the pre-fix code. Confirmed by comparing the running container's image hash against
+the newly built one (they differed) and by running the identical code manually with `docker
+run` (always a fresh container), which gave the correct, expected result immediately. Redone
+with `docker compose up -d --force-recreate` from there: the 4-copy case produced exactly one
+`[INDEXED]` line, and the 250-marker case produced exactly 250 - both matched the fixture,
+with zero duplicate sha256 values remaining in `logs/ingest.log`.
 
 ## S — Search
 
@@ -689,9 +705,8 @@ that `web` cannot write into the shared directory.
 5. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
    is the question the tool exists to answer.
 
-Housekeeping items (10's v2ray remainder, 41) are individually small and can be picked up
-whenever the surrounding code is being touched anyway - 41 is worth prioritizing sooner than
-"whenever," though, since item 24 made its cost more visible.
+Housekeeping items (10's v2ray remainder) are individually small and can be picked up
+whenever the surrounding code is being touched anyway.
 
 ## Verification approach
 

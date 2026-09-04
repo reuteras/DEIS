@@ -154,6 +154,32 @@ def prepare_file(fname: Path):
     return {"status": "ready", "fname": fname, "sha256": sha256, "content": content, "message": message}
 
 
+def load_sha256_set(path):
+    """Reads a file of one sha256 per line into a set, or an empty set if it
+    doesn't exist (e.g. unpack hasn't run, or ran before this file existed).
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip()}
+    except FileNotFoundError:
+        return set()
+
+
+def extraction_status(hash_value):
+    """Whether unpack could extract this file's content, if it was ever an
+    archive at all - "encrypted"/"corrupt" mean the document's content is
+    the opaque original, not what was inside it. Kibana's "File without text
+    content" search already showed files with no content; this says why,
+    for files unpack itself flagged rather than a still-unclassified case
+    (an image, a format Tika doesn't parse, etc.) - see item 34.
+    """
+    if hash_value in still_encrypted:
+        return "encrypted"
+    if hash_value in still_corrupt:
+        return "corrupt"
+    return "ok"
+
+
 def build_bulk_body(items):
     """Builds the newline-delimited JSON body for one _bulk request.
 
@@ -172,6 +198,7 @@ def build_bulk_body(items):
             "data": base64.b64encode(item["content"]).decode("ascii"),
             "mtime": int(item["fname"].stat().st_mtime),
             "message": item["message"],
+            "extraction_status": extraction_status(item["sha256"]),
         }
         lines.append(json.dumps(doc))
     return ("\n".join(lines) + "\n").encode("utf-8")
@@ -334,6 +361,8 @@ def process_files(directory: Path):
 cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
 use_sqlite = cfg.getboolean("ingest", "use_sqlite")
+still_encrypted = load_sha256_set("extracted/still_encrypted.txt")
+still_corrupt = load_sha256_set("extracted/still_corrupt.txt")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:

@@ -142,6 +142,12 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 }
 ' > /dev/null && sublog 'Done'
 
+# attachment.content.fielddata is needed for the notebook's word-cloud
+# aggregation (a plain terms aggregation over an analyzed text field
+# requires it). The cost is real - fielddata loads every distinct term into
+# heap - but it scales with vocabulary size, not corpus size, which is a lot
+# smaller than pulling every document's full content client-side, the
+# alternative this replaced.
 log 'Add leakdata index template (top_folder runtime field, explicit mapping)'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata?pretty" -H 'Content-Type: application/json' -d'
 {
@@ -156,9 +162,13 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
             "properties" : {
                 "sha256" : { "type" : "keyword" },
                 "filename" : { "type" : "keyword" },
+                "extraction_status" : { "type" : "keyword" },
                 "attachment" : {
                     "properties" : {
-                        "content" : { "type" : "text" }
+                        "content" : {
+                            "type" : "text",
+                            "fielddata" : true
+                        }
                     }
                 }
             },
@@ -202,9 +212,20 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
 # existing index's mapping doesn't require a reindex). This index's filename
 # field is still text+keyword (see above), so its script still reads
 # filename.keyword, unlike the template's version above.
-log 'Backfill top_folder runtime field onto the existing leakdata index'
+log 'Backfill top_folder runtime field, extraction_status and content fielddata onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {
+    "properties" : {
+        "extraction_status" : { "type" : "keyword" },
+        "attachment" : {
+            "properties" : {
+                "content" : {
+                    "type" : "text",
+                    "fielddata" : true
+                }
+            }
+        }
+    },
     "runtime" : {
         "top_folder" : {
             "type" : "keyword",
@@ -213,6 +234,20 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
             }
         }
     }
+}
+' > /dev/null && sublog 'Done'
+
+# Documents indexed before extraction_status existed have no value for it at
+# all (a mapping update only affects documents indexed after it, same
+# reasoning as the field-type changes above), so the "Extraction status"
+# dashboard panel would show nothing for them. Backfill "ok" onto every
+# document missing the field - unpack only ever explicitly flags
+# encrypted/corrupt content, so anything not flagged already meant "ok".
+log 'Backfill extraction_status=ok onto documents indexed before this field existed'
+curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_update_by_query?conflicts=proceed&pretty" -H 'Content-Type: application/json' -d'
+{
+    "query" : { "bool" : { "must_not" : { "exists" : { "field" : "extraction_status" } } } },
+    "script" : { "source" : "ctx._source.extraction_status = '"'"'ok'"'"'" }
 }
 ' > /dev/null && sublog 'Done'
 

@@ -4,6 +4,7 @@ set -u
 
 LOG=/logs/unpack.log
 STILL_ENCRYPTED=/extracted/still_encrypted.txt
+STILL_CORRUPT=/extracted/still_corrupt.txt
 MAX_DEPTH_DEFAULT=6
 PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
 
@@ -159,7 +160,7 @@ process_zip_like() {
         return
     fi
 
-    rmdir "${dest}" 2>/dev/null
+    rm -rf "${dest}" 2>/dev/null
     [[ -n "${resultfile}" ]] && echo "${EXTRACT_RESULT}" > "${resultfile}"
     # A file discovered inside a parent's extraction directory is already at
     # a real, correctly namespaced path under /extracted/files - copying it
@@ -174,10 +175,11 @@ process_zip_like() {
             log COPIED "Not an archive, left/copied as-is: ${path}"
             ;;
         encrypted)
-            echo "${path}" >> "${STILL_ENCRYPTED}"
+            echo "${sha}" >> "${STILL_ENCRYPTED}"
             log ENCRYPTED "Still encrypted after trying ${#PASSWORDS[@]} password(s), left/copied as-is: ${path}"
             ;;
         corrupt)
+            echo "${sha}" >> "${STILL_CORRUPT}"
             log CORRUPT "Could not extract (corrupt or unsupported), left/copied as-is: ${path} - $(grep -m1 -iE 'unexpected|error' <<< "${EXTRACT_ERR}")"
             ;;
     esac
@@ -199,9 +201,10 @@ process_pst() {
         queue_new_files "${dest}"
         dispose_of_original "${path}" pst
     else
-        rmdir "${dest}" 2>/dev/null
+        rm -rf "${dest}" 2>/dev/null
         [[ -n "${resultfile}" ]] && echo "corrupt" > "${resultfile}"
         [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+        echo "${sha}" >> "${STILL_CORRUPT}"
         log CORRUPT "Could not extract PST (corrupt or unsupported), left/copied as-is: ${path}"
     fi
 }
@@ -223,11 +226,12 @@ apply_known_result() {
             ;;
         encrypted)
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
-            echo "${path}" >> "${STILL_ENCRYPTED}"
+            echo "${sha}" >> "${STILL_ENCRYPTED}"
             log ENCRYPTED "Still encrypted (same content already checked this round), left/copied as-is: ${path}"
             ;;
         corrupt)
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            echo "${sha}" >> "${STILL_CORRUPT}"
             log CORRUPT "Could not extract (same content already checked this round), left/copied as-is: ${path}"
             ;;
         *)
@@ -240,7 +244,7 @@ apply_known_result() {
 }
 
 # Entry point for a round's parallel worker process (see dispatch_round).
-# Everything this needs - functions and WORKDIR/LOG/STILL_ENCRYPTED - is
+# Everything this needs - functions and WORKDIR/LOG/STILL_ENCRYPTED/STILL_CORRUPT - is
 # exported into the environment before xargs -P spawns these. Takes only the
 # path and re-derives sha/kind/resultfile itself (dispatch_round's grouping
 # loop computes the same values the same way) rather than having the caller
@@ -356,8 +360,9 @@ dispatch_round() {
 # hide an archive from this at all.
 unpack() {
     : > "${STILL_ENCRYPTED}"
+    : > "${STILL_CORRUPT}"
     WORKDIR="$(mktemp -d)"
-    export WORKDIR LOG STILL_ENCRYPTED
+    export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT
     build_password_list | awk '!seen[$0]++' > "${WORKDIR}/passwords.list"
 
     local -a current

@@ -43,6 +43,15 @@ Two properties should drive prioritization, because they follow from what the to
 | 17 | Wrong password, corrupt, and not-an-archive were indistinguishable and all logged the same misleading message | `996f479` |
 | 25 | Nothing reconciled files on disk against documents indexed | `8e6bbdf` |
 | 26 | A run marked itself complete even when files had failed | `8e6bbdf` |
+| 19 | `unpack/start.sh` extracted one archive at a time regardless of available CPU cores | `010903c` |
+| 20 | Config reading in `unpack/start.sh` used substring matching instead of being section-aware | `010903c` |
+| 22 | The index mapping was entirely dynamic; `sha256`/`filename` were analyzed as text and the cluster was permanently `yellow` | `c8b0f59` |
+| 24 | Every ingested file was a separate `PUT /_doc`, not batched via `_bulk` | `c8b0f59` |
+| 27 | `use_sqlite=True` failed immediately in the container, and its own database's own producer used a different path | `c8b0f59` |
+| 28 | `bin/pathfix.py` read whole files into memory instead of streaming | `c8b0f59` |
+| 29 (partly) | The unused `attachment` ingest pipeline was created alongside the one actually used | `c8b0f59` |
+| 30 | README's "only run ingest" command referenced a script that does not exist | `c8b0f59` |
+| 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
@@ -261,27 +270,46 @@ archive stalls the serial pipeline indefinitely. `web/app.py` has careful path-t
 defenses; the extract stage, which is the part actually handling adversary-supplied
 archives, has none. *Effort: M. Impact: high.*
 
-### 19. Extraction is fully serial
+### 19. Extraction was fully serial (fixed)
 
-`ingest.py` uses a `ProcessPoolExecutor`, but `unpack/start.sh` processes one archive at a
-time with no parallelism, no progress bar, no timestamps and no log file — just bare `echo`.
-On a multi-hundred-GB dump this is the pipeline's wall-clock bottleneck, and the operator
-sees almost nothing while it runs. *Effort: M. Impact: high.*
+`ingest.py` used a `ProcessPoolExecutor`, but `unpack/start.sh` processed one archive at a
+time with no parallelism, no progress bar, no timestamps and no log file - the timestamps
+and log file were already fixed by items 14-17 (`logs/unpack.log`); parallelism is fixed here.
 
-### 20. Fragile shell mechanics in `unpack/start.sh` (partly fixed)
+Each round (see item 14) now dedupes by content first - files sharing a sha256 within the
+same round are grouped, and only one representative per group ("primary") actually runs
+7-Zip/readpst, since two files with identical bytes are guaranteed to succeed or fail
+identically, so extracting both is wasted work at best and, run truly concurrently, a real
+race (two processes writing into the same destination directory at once). Primaries are then
+dispatched to up to `PARALLELISM` (`.env`, default: CPU cores available to the container)
+parallel workers via `xargs -P`; every duplicate is handled afterward by replaying its
+primary's already-known outcome rather than repeating the attempt.
 
-Two of the three problems here were fixed as a direct consequence of the 14-17 rewrite: file
-discovery is null-delimited throughout now (`find -print0` / `mapfile -d ''` at every step,
-including the newly unified top-level pass, verified against a filename containing a literal
-newline), and a failed extraction always cleans up its speculative sha256-named directory
-rather than leaving an empty one behind.
+Workers are genuinely separate processes (spawned by `xargs -P`, not backgrounded subshells),
+so they cannot share this script's in-memory state directly - passwords are written to a file
+once and read back per worker, and each worker's newly-discovered files are written to its
+own output file (`$$`-named) and merged by the parent once the round's whole batch completes.
 
-Still open: config is read with substring matching (`grep "^unpack=true" /deis.cfg`), which
-is not section-aware and would false-positive on a key like `not_unpack=true`. Left alone
-deliberately - the new `max_depth` key added for item 14 uses the same mechanism for
-consistency with every other key in the file, so fixing this now would mean either fixing it
-everywhere in the same change or introducing two different config-reading styles in one file.
-*Effort: S.*
+Verified with a stress fixture designed to try to trigger exactly the races this design
+avoids: 40 distinct archives plus 6 clusters of 5 identical duplicates each (70 files, 46
+unique contents) dispatched in one round at `PARALLELISM=16`. Every one of the 46 pieces of
+content came back byte-correct with no cross-contamination between concurrent workers'
+output, exactly 46 "Extracted" log lines (no duplicate re-extracted its content), and all 70
+originals correctly disposed of (30 duplicates disambiguated via the same `-dup2` mechanism
+as item 17, since two unrelated originals can share a basename here too). The full 14-17
+regression fixture, including the embedded-newline filename and cross-round duplicate-name
+collision cases, was re-run against the parallel implementation with no change in outcome.
+
+### 20. Fragile shell mechanics in `unpack/start.sh` (fixed)
+
+Three problems: config was read with substring matching (`grep "^unpack=true" /deis.cfg`),
+not section-aware and would false-positive on a key like `not_unpack=true`; file discovery
+was inconsistently null-delimited; and a failed extraction could leave an empty sha256-named
+directory behind. The latter two were fixed as a side effect of the 14-17 rewrite. Config
+reading is now genuinely section-aware, via a small `awk` reader scoped to `[unpack]` -
+verified with a decoy `deis.cfg` containing `unpack=true` under `[ingest]` and `[other]`
+sections and a `not_unpack=true` key under `[unpack]` itself: `config_true unpack` correctly
+read `false` from the right section, unfooled by either trap.
 
 ### 21. More extractors
 
@@ -302,15 +330,30 @@ Roughly in order of real-world value for leak dumps:
 
 ## I — Ingest
 
-### 22. Define an explicit index template instead of relying on dynamic mapping
+### 22. Define an explicit index template instead of relying on dynamic mapping (fixed, partly deferred)
 
-The mapping is entirely dynamic today. `sha256` and `filename` should be `keyword` — a hash
-analyzed as English prose is wasted work and tokenizes oddly. `attachment.content` should not
-carry a `.keyword` multi-field. Set `index.mapping.total_fields.limit` to bound mapping
-explosion from hostile documents, set `highlight.max_analyzed_offset` in the template so the
-README's manual Dev Tools workaround disappears, and set `number_of_replicas: 0` for the
-single-node default so the cluster is green rather than permanently yellow with an unassigned
-replica. *Effort: M. Impact: high.*
+The mapping was entirely dynamic. `setup/entrypoint.sh`'s `leakdata` index template (already
+existed for the `top_folder` runtime field) now also declares `sha256` and `filename` as
+`keyword` - a hash analyzed as English prose was wasted work and tokenized oddly - drops
+`attachment.content`'s unused `.keyword` multi-field, and sets `index.mapping.total_fields.limit`
+(2000), `highlight.max_analyzed_offset` and `number_of_replicas: 0` as template defaults.
+
+Elasticsearch cannot change an already-mapped field's type in place without a reindex, so the
+`sha256`/`filename` retyping and dropping `attachment.content.keyword` only take effect on an
+index created **after** this template exists - and nothing currently creates a new
+`leakdata-*` index (that needs item 23's rollover), so **that half of this fix has no effect
+yet** on the live index. The settings (replicas, total_fields.limit, max_analyzed_offset) are
+dynamic and were also applied directly to the existing index, which does take effect
+immediately - the cluster went from `yellow` (one permanently unassigned replica shard, no
+benefit on a single node) to `green`, and README's manual Dev Tools step for
+`max_analyzed_offset` is gone.
+
+Verified: Elasticsearch's own `_index_template/_simulate_index` API confirms a new index would
+get exactly the intended mapping and settings; the live index's settings were confirmed
+applied and cluster health confirmed `green`; the `top_folder` runtime field (whose script
+reads `filename.keyword` on the live index, but `filename` directly in the template, since the
+two now have different types) still resolves correctly on both; and a full ingest run against
+the live, newly-templated index completed with no change in behavior.
 
 ### 23. Add ILM and rollover, or drop the `-000001` pretence
 
@@ -318,48 +361,116 @@ The index name implies rollover, but `ingest.py` writes to a hardcoded
 `leakdata-index-000001` with no alias and no ILM policy. Writing through an alias would keep
 large investigations manageable and make "one index set per case" natural. *Effort: M.*
 
-### 24. Use the `_bulk` API
+### 24. Use the `_bulk` API (fixed)
 
-Every file is a separate `PUT /_doc/<sha>` from a worker process. Bulk batching is the
-standard order-of-magnitude win, and it reduces the pressure that makes the retry paths
-trigger in the first place. *Effort: M. Impact: high on large dumps.*
+Every file was a separate `PUT /_doc/<sha>` from a worker process. `ingest.py` now splits
+hashing/reading (still CPU/IO-parallel across worker processes, unchanged) from sending: a
+worker's prepared file is queued in the main process and flushed as one `_bulk` request once a
+batch reaches 200 documents or 20 MB, whichever comes first. The crash-safety property from
+item 1 (a file's sha256 marker is written only once Elasticsearch actually confirms it) is
+preserved per-document, driven by each item's own status in the bulk response, not the whole
+batch's.
 
-### 27. `use_sqlite=True` is broken in the container
+One real cost, worth knowing: the `_bulk` endpoint only accepts JSON, not the CBOR the
+single-document `PUT` used to carry raw file bytes with (`_bulk` rejects
+`Content-Type: application/cbor` outright) - confirmed against the live cluster before
+committing to this design. File content is base64-encoded into the JSON body instead, which
+the ingest attachment processor still decodes correctly (also confirmed live), at the cost of
+~33% more bytes on the wire for the content field specifically. Given this corpus's realistic
+file sizes (a few hundred KB on average), that trade is worth it for the reduction in HTTP
+round-trips. The now-unused `cbor2` dependency is removed from `ingest/pyproject.toml`.
 
-`sqlite3.connect("db/file_hashes.db")` resolves to `/db/file_hashes.db` because the working
-directory is `/`, and the `ingest` service mounts no such volume, so it fails immediately.
-The database is only ever populated by the manual `bin/pathfix.py`, whose `DB_PATH` is a
-different relative path. Either wire it up properly, agreeing on one path and mounting
-`./db`, or remove the option. *Effort: S.*
+Verified against the live stack, not just in isolation: a normal full run (nothing to do)
+reconciles exactly as before; removing 5 markers and re-running sent them through one real
+bulk batch, each recovering the correct filename via the (now also fixed, item 27) sqlite
+lookup path, each attachment correctly Tika-parsed via the base64-encoded content; blocking
+writes on the index mid-batch correctly failed every item in that batch with no markers
+created and exit code 1, and unblocking and retrying recovered cleanly; and removing 250
+markers (forcing at least two separate `_bulk` batches, since that exceeds the 200-document
+cap) reconciled back to the correct count with zero failures.
 
-### 28. `bin/pathfix.py` reads whole files into memory
+One consequence surfaced by that last test, worth recording honestly: item 41's redundant
+duplicate-content sends got measurably more pronounced under this change, not less. Deferring
+every marker write until an entire batch (up to 200 documents) flushes, instead of after each
+individual file's own request, widens the race window duplicate copies of the same content can
+fall into before any of them is marked done - observed directly: removing 250 markers (with
+124 known duplicate copies in this corpus) produced 366 bulk index operations for what should
+have been 250 unique ones, rather than the much smaller overcounts item 41 originally
+documented. Still fully correct - same document id, idempotent overwrite, final counts and
+content all verified correct - purely wasted work, but this raises the case for actually
+implementing item 41's suggested fix (an atomic claim-before-send marker) rather than leaving
+it as an accepted trade-off.
 
-`compute_sha256` calls `f.read()` on the entire file, which will OOM on any large archive or
-disk image. `ingest.py` already streams in 4 KB blocks; reuse that. *Effort: S.*
+### 27. `use_sqlite=True` was broken in the container (fixed)
 
-### 29. Dead ingest pipeline and stale boilerplate
+`sqlite3.connect("db/file_hashes.db")` resolved to `/db/file_hashes.db` because the working
+directory is `/`, and the `ingest` service mounted no such volume, so it failed immediately.
+`bin/pathfix.py`, the only thing that ever populates the database, also used a different
+relative path (`file_hashes.db`, relative to wherever it happened to be invoked from), so
+even fixing the container mount alone would not have made the two agree.
 
-The `attachment` pipeline is created by `setup/entrypoint.sh` but never referenced — only
-`cbor-attachment` is used. `kibana/config/kibana.yml` carries a full Fleet and Elastic Agent
-configuration block for services that do not exist here, and `setup/export.ndjson` ships
-dozens of unrelated stock `system-*` and `elastic_agent-*` dashboards that clutter the
-saved-objects list. *Effort: S. Impact: medium, clarity.*
+`docker-compose.yml` now mounts `./db:/db` on the `ingest` service, and `bin/pathfix.py`'s
+`DB_PATH` is `db/file_hashes.db` - both relative to the repo root, which is where
+`ingest.py`'s container cwd (`/`) and `pathfix.py`'s expected invocation (`.venv/bin/python3
+bin/pathfix.py ...` from the repo root) now agree. Verified end to end: ran `pathfix.py`
+against a file named `Original Name With Spaces.txt`, then ran `ingest.py` with
+`use_sqlite=True` pointed at the resulting sha-bucketed tree, and confirmed the indexed
+document's `filename` field is the original name recovered from the database, not the
+sha-based path on disk - the feature's actual purpose, which had never worked before.
 
-### 30. `README.md` references `./bin/ingest.sh`, which does not exist
+### 28. `bin/pathfix.py` read whole files into memory (fixed)
 
-The documented "only run ingest" path is broken. *Effort: S.*
+`compute_sha256` called `f.read()` on the entire file, which would OOM on any large archive
+or disk image. Now streams in 64 KB blocks, the same technique `ingest.py` already used (it
+uses a smaller 4 KB block size; pathfix.py's files are typically larger, so a bigger block
+trades a little more peak memory for fewer read() calls).
 
-### 41. Identical files can be indexed twice on first ingest
+### 29. Dead ingest pipeline (fixed) - the rest of this item was a mischaracterization
 
-A consequence of the fix for item 1: the marker is now written only after Elasticsearch
-confirms, so two workers hashing identical copies of a file that has never been ingested can
-both upload it before either marker exists. It is harmless — the document id is the sha256,
-so it is the same document written twice — but it wastes an upload and a Tika parse per
-collision. Observed in testing: removing the marker for a file with four identical copies and
-re-running produced three indexing operations for two removed documents. The fix is a
-two-phase marker: claim it atomically with `O_EXCL` before uploading, promote it on success,
-remove it on failure. That gets the crash-safety of item 1 without the duplicate work.
-*Effort: S. Impact: low, efficiency only.*
+The `attachment` pipeline, created by `setup/entrypoint.sh` but never referenced (only
+`cbor-attachment` is used - `ingest.py` posts CBOR, not JSON, so the JSON-only `attachment`
+pipeline was never reachable regardless), is removed.
+
+The other two things this item called stale boilerplate are not: `kibana/config/kibana.yml`'s
+Fleet and Elastic Agent configuration block is the documented pre-configuration for the
+optional `extensions/fleet/` overlay - that extension's own README explicitly points at this
+exact file for its pre-configured Agent Policy. And `setup/export.ndjson`'s `system-*` and
+`elastic_agent-*` saved objects follow Elastic's own ID-prefixing convention for the stock
+dashboards Filebeat/Metricbeat's `system` module and the Fleet `elastic_agent` integration
+ship with - consistent with this repo's `extensions/filebeat/`, `extensions/metricbeat/` and
+`extensions/fleet/` overlays, not orphaned cruft. Left alone; deleting either would have
+broken a real, documented, optional feature. (Compare item 9, where a similar
+looks-dead-but-isn't read turned out to be wrong in the same way, and was corrected the same
+way: verify before deleting, and correct the finding when it turns out to be wrong.)
+
+### 30. `README.md` referenced `./bin/ingest.sh`, which does not exist (fixed)
+
+The documented "only run ingest" path was broken. Replaced with
+`.venv/bin/python3 ingest/ingest.py`, which matches how `just ingest` already prepares the
+venv and how `bin/progress.py` is invoked elsewhere in the same README. Verified: run from
+the repo root with `ELASTIC_PASSWORD` exported, it connects to `127.0.0.1:9200` (ingest.py's
+own host/container detection) and completes a normal run against the live stack.
+
+### 41. Identical files can be indexed multiple times on first ingest (more pronounced after item 24)
+
+A consequence of the fix for item 1: the marker is only written after Elasticsearch confirms,
+so multiple copies of a file that has never been ingested can all be sent before any of their
+markers exists. Harmless - the document id is the sha256, so it is the same document written
+repeatedly - but it wastes an upload and a Tika parse per collision.
+
+Item 24's bulk batching widened this window rather than narrowing it: a marker is now only
+written once an entire batch (up to 200 documents) flushes, not after each file's own
+individual request, so more duplicate copies have time to pile up as "not yet marked" before
+any of them completes. Observed directly: four identical copies produced three redundant
+sends before item 24 (a small, already-accepted cost); after item 24, deliberately removing
+250 markers from a corpus with 124 known duplicate pairs produced 366 index operations for 250
+unique files - a much larger overcount, though still fully correct (verified: final document
+count, content, and markers all landed right).
+
+The fix is unchanged and now more clearly worth doing: an atomic claim-before-send marker
+(claim with `O_EXCL` before uploading, promote on success, remove on failure) would get the
+crash-safety of item 1 without any of this duplicate work, at any batch size.
+*Effort: S. Impact: was low/efficiency-only; item 24 raises it to worth prioritizing.*
 
 ## S — Search
 
@@ -472,14 +583,22 @@ from closed issue #1. `syslog/` is mounted into filebeat but referenced by no in
 and the `modules.d` glob points at a directory that does not exist. Either finish the wiring
 or remove it, and document `evtx2json` as the manual side tool it currently is. *Effort: S.*
 
-### 43. Two separate sha256 symlink trees
+### 43. Two separate sha256 symlink trees (fixed)
 
-`ingest.py` writes its dedup markers to `extracted/sha256` on the host, while the `web`
-container has its own `deis_shasum` volume, populated independently by `web/startup.sh`
-rehashing every file at startup. Two sources of truth for the same mapping, kept in sync by
-nothing, which is what made the miscount described under "Live reconciliation" possible.
-Pick one: either mount the host directory into `web`, or have `web` treat the volume as a
-cache it rebuilds only when empty. *Effort: S. Impact: medium.*
+`ingest.py` wrote its dedup markers to `extracted/sha256` on the host, while `web` had its
+own `deis_shasum` named volume, populated independently by `web/startup.sh` rehashing every
+file at startup. Two sources of truth for the same mapping, kept in sync by nothing, which is
+what made the miscount described under "Live reconciliation" possible.
+
+`web` now bind-mounts the same host directory (`./extracted/sha256:/extracted/sha256:ro`)
+ingest.py already writes to, instead of the separate volume - one source of truth, read-only
+from `web`'s side so a compromised `web` container cannot tamper with ingest's markers. The
+`deis_shasum` volume and `web/startup.sh`'s entire rehash-on-empty block are gone; a link
+served by `web` now only ever reflects what has actually been indexed, rather than
+potentially including files `web` rehashed on its own before ingest ever got to them, which
+is a real (if minor) correctness improvement, not just a wash. Verified: recreated `web`
+against the new mount and confirmed `/view/<sha256>` still resolves and serves correctly, and
+that `web` cannot write into the shared directory.
 
 ## Suggested sequencing
 
@@ -490,14 +609,17 @@ cache it rebuilds only when empty. *Effort: S. Impact: medium.*
    and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested
    passwords, distinct failure states) are done; this is what is left of the extraction
    correctness gap.
-3. **Index quality and scale** (22, 23, 24): explicit template, bulk indexing, ILM.
+3. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that
+   would make item 22's field-type changes actually take effect on a real index. 22 and 24
+   (explicit template, bulk indexing) are done.
 4. **The CLI**, once the underlying states are reportable — it is a facade over the items
    above, and building it first would mean building it twice.
 5. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
    is the question the tool exists to answer.
 
-Housekeeping items (10's v2ray remainder, 27, 28, 29, 30, 41, 43) are individually small and
-can be picked up whenever the surrounding code is being touched anyway.
+Housekeeping items (10's v2ray remainder, 41) are individually small and can be picked up
+whenever the surrounding code is being touched anyway - 41 is worth prioritizing sooner than
+"whenever," though, since item 24 made its cost more visible.
 
 ## Verification approach
 

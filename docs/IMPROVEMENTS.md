@@ -52,6 +52,8 @@ Two properties should drive prioritization, because they follow from what the to
 | 29 (partly) | The unused `attachment` ingest pipeline was created alongside the one actually used | `c8b0f59` |
 | 30 | README's "only run ingest" command referenced a script that does not exist | `c8b0f59` |
 | 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
+| 34 (partly) | No Kibana-visible signal existed for "still encrypted"/"corrupt", only plain files on disk | `a6fef83` |
+| 35 | Password in the connection URL, hardcoded/duplicated index name, and a full-corpus pull for the word cloud | `a6fef83` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
@@ -311,6 +313,12 @@ verified with a decoy `deis.cfg` containing `unpack=true` under `[ingest]` and `
 sections and a `not_unpack=true` key under `[unpack]` itself: `config_true unpack` correctly
 read `false` from the right section, unfooled by either trap.
 
+Correction: the third problem was described here as fixed by the 14-17 rewrite (`rmdir`
+cleaning up the speculative directory on failure), but that was only verified for the *empty*
+case. Item 34's testing found the real, worse case: `rmdir` only removes empty directories,
+and 7-Zip can leave partial output behind even on a reported failure - so a non-empty leftover
+silently survived. Actually fixed (`rmdir` -> `rm -rf`) under item 34, not here.
+
 ### 21. More extractors
 
 Roughly in order of real-world value for leak dumps:
@@ -498,19 +506,67 @@ Leak dumps are full of near-identical documents: mail threads, template letters,
 files. Exact sha256 dedup already exists; fuzzy clustering with SimHash or MinHash, or a
 `fingerprint` analyzer on content, would cut the volume a person has to read. *Effort: M.*
 
-### 34. Surface the failure states in the dashboard
+### 34. Surface the failure states in the dashboard (fixed, partly)
 
-Panels for files that failed extraction, archives that are still encrypted, zero-content
-files (this one exists), and the ingest reconciliation counts. Someone needs to know what the
-search results do **not** cover before concluding "not found". *Effort: S. Impact: high, it
-directly counters false negatives.*
+This needed more than a panel: `unpack.log` and `still_encrypted.txt` are plain files on
+disk, not in Elasticsearch, so Kibana had nothing to show a panel from - there was no
+Kibana-visible signal for "still encrypted" or "corrupt" at all before this.
 
-### 35. Notebook hardening
+`unpack/start.sh` now also writes `extracted/still_corrupt.txt` (sha256 per line, mirroring
+`still_encrypted.txt`), and `ingest.py` tags every document with an `extraction_status` field
+(`ok`/`encrypted`/`corrupt`) by checking a file's sha256 against those two lists at ingest
+time - a small, surgical addition that keeps everything in the existing `leakdata-*` index
+rather than standing up a second one (`unpack` has no network route to Elasticsearch at all,
+so posting from unpack directly was not an option without wiring that up too). The dashboard
+gained an "Extraction status" donut and a "Files needing attention" saved search
+(`extraction_status: (encrypted or corrupt)`). Documents indexed before this field existed
+are backfilled to `ok` by `setup/entrypoint.sh`, the same pattern already used for
+`top_folder`. Zero-content files (`attachment.content_length: 0`) already had a saved search;
+still true, and distinct from this - a file can have zero content for reasons unrelated to
+unpack ever flagging it (an image, a format Tika doesn't parse).
 
-The Elasticsearch password is embedded in the connection URL string. The word cloud pulls the
-entire corpus with `match_all` and `size=10000`, which is fine at a few hundred documents and
-fatal at scale — use aggregations or `significant_text`. The index name is hardcoded, and
-duplicates the one in `ingest.py`. *Effort: M.*
+Testing this surfaced a real, unrelated bug from the item 14-17 work, fixed here rather than
+carried forward: on a failed extraction, cleanup used `rmdir`, which only removes *empty*
+directories - but 7-Zip can leave partial output behind even on a reported failure (observed
+directly: a wrong-password attempt left a 0-byte placeholder; a deliberately truncated
+"corrupt" archive left the *complete, correct* file content, recovered from the still-intact
+early part of the archive despite the reported error). `rmdir` silently no-opped on this
+non-empty leftover, so the untrusted fragment survived alongside the safe fallback copy of
+the original - meaning it could be picked up and indexed as if it were a second, separate
+file. Changed to `rm -rf`, which cannot fail this way; verified the leftover fragment is now
+correctly gone in both cases.
+
+Ingest reconciliation counts (item 25) print to the container log, not into Elasticsearch,
+so they are not Kibana-visible either - still open, and now the clearer remaining half of
+this item. *Effort remaining: S.*
+
+### 35. Notebook hardening (fixed)
+
+The Elasticsearch password was embedded in the connection URL string; now passed via the
+client's `basic_auth` parameter instead, so it no longer ends up in that process's URL string
+or connection logs. The index name was hardcoded (and duplicated the one in `ingest.py`,
+which was the actual complaint - not that a literal string appeared once, but that it could
+drift from ingest.py's without anyone noticing); now a single `INDEX` constant, referenced by
+every cell that queries Elasticsearch.
+
+The word cloud pulled the entire corpus into Python with `match_all` and `size=10000` -
+fine at a few hundred documents, fatal at scale, exactly as this item said. `significant_text`
+(suggested here) turned out to be the wrong tool, confirmed by testing against the live
+cluster before committing to an approach: it scores terms by how much more they appear in a
+foreground subset than a background sample, and against an unfiltered `match_all` query the
+two are identical by construction, so nothing ever scored as significant - empty buckets
+every time, regardless of `min_doc_count`. Used a plain `terms` aggregation on
+`attachment.content` instead (the other option this item named), which needs `fielddata`
+enabled on that field - added to the index template and backfilled onto the live index, with
+the memory trade-off noted in `setup/entrypoint.sh`: it scales with vocabulary size, not
+corpus size, a much smaller bound than pulling every document's content client-side.
+
+Verified by executing the whole notebook end to end in the live kernel (`jupyter nbconvert
+--execute` against the running notebook container, not just reading the diff): every cell
+completed with no errors, the document search cell correctly returned real hits using the
+new `INDEX` constant and `basic_auth` connection, and a diagnostic cell confirmed the
+word-cloud path produced 891 real term/count pairs and a genuine rendered PNG - not merely
+"no exception," but the actual expected output.
 
 ### 36. Result quality
 
@@ -602,9 +658,11 @@ that `web` cannot write into the shared directory.
 
 ## Suggested sequencing
 
-1. **Make losses visible** (34, 39): failure dashboards and structured logging. Both the
-   ingest and extraction sides now have this (`logs/unpack.log`, `still_encrypted.txt`);
-   34 (surfacing it in the Kibana dashboard) is what remains.
+1. **Make losses visible** (39): structured logging is now real (`logs/unpack.log`,
+   `still_encrypted.txt`/`still_corrupt.txt`), and extraction failure states are Kibana-visible
+   (item 34's `extraction_status` field and dashboard panels). What remains of 34 is the ingest
+   reconciliation counts specifically, which print to the container log rather than being
+   indexed anywhere Kibana can see.
 2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio
    and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested
    passwords, distinct failure states) are done; this is what is left of the extraction

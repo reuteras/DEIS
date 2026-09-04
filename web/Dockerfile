@@ -19,7 +19,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /usr/share/doc && \
     rm -rf /usr/local/share/man /var/cache/debconf/*-old && \
-    useradd -m -u 1000 -s /bin/bash web
+    useradd -m -u 1000 -s /bin/bash web && \
+    mkdir -p /extracted/sha256 && \
+    chown web:web /extracted/sha256
 
 USER web
 

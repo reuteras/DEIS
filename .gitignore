@@ -9,5 +9,6 @@ downloader/conf/nginx.conf
 downloader/conf/torrc
 downloader/data/*
 downloader/log/*
+logs/*
 controller/www/index.html
 notebook/.ipynb_checkpoints

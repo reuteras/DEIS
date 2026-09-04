@@ -3,12 +3,14 @@
 
 import os
 import re
+import tempfile
 from pathlib import Path
 
 import magic
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 app = FastAPI()
 
@@ -163,12 +165,30 @@ def convert_to_pdf(file_path: str) -> bytes:
 
 def convert_html_to_pdf(file_path: str) -> bytes:
     """Send the file to Gotenberg for conversion to PDF."""
-    destination = Path("index.html")
-    destination.write_bytes(Path(file_path).read_bytes())
-    with open(str(destination), "rb") as f:
-        response = requests.post(GOTENBERG_HTML_URL, files={"file": f}, timeout=60)
+    with tempfile.NamedTemporaryFile(suffix=".html") as tmp:
+        tmp.write(Path(file_path).read_bytes())
+        tmp.flush()
+        with open(tmp.name, "rb") as f:
+            # Gotenberg's chromium module requires the uploaded HTML file to be
+            # named index.html; the tuple form lets us send that name in the
+            # multipart request independent of the temp file's real path.
+            response = requests.post(
+                GOTENBERG_HTML_URL, files={"file": ("index.html", f, "text/html")}, timeout=60
+            )
     response.raise_for_status()
     return response.content
+
+
+def pdf_response(pdf_content: bytes) -> FileResponse:
+    """Write converted PDF bytes to a temp file and stream it back.
+
+    Using a per-request temp file (instead of a fixed "index.pdf" in the cwd)
+    avoids both the permission error of writing into the app's non-writable
+    working directory and concurrent requests overwriting each other's output.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_content)
+    return FileResponse(tmp.name, media_type="application/pdf", background=BackgroundTask(os.remove, tmp.name))
 
 
 @app.get("/file/{sha256}")
@@ -251,17 +271,14 @@ async def convert_file(sha256: str):
     if mime_type == "text/html":
         try:
             pdf_content = convert_html_to_pdf(target_file_str)
-            Path("index.pdf").write_bytes(pdf_content)
-
-            return FileResponse("index.pdf", media_type="application/pdf")
+            return pdf_response(pdf_content)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 
     if mime_type != "application/pdf" and mime_type not in DONT_CONVERT_MIME:
         try:
             pdf_content = convert_to_pdf(target_file_str)
-            Path("index.pdf").write_bytes(pdf_content)
-            return FileResponse("index.pdf", media_type="application/pdf")
+            return pdf_response(pdf_content)
         except requests.RequestException as e:
             raise HTTPException(status_code=500, detail=f"Conversion Error: {e}") from e
 

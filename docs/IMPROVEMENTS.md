@@ -17,10 +17,8 @@ developers, and it handles stolen data containing other people's personal inform
 
 Two properties should drive prioritization, because they follow from what the tool is:
 
-1. Silent data loss is the worst failure mode. Someone asking "does this leak contain my
-   friend's personal data?" gets a wrong answer if a file was skipped and nobody noticed.
-2. The data is toxic and the operator may be a target, so defaults matter more here than
-   in a normal side project.
+1. Silent data loss is the worst failure mode. Someone asking "does this leak contain my friend's personal data?" gets a wrong answer if a file was skipped and nobody noticed.
+2. The data is toxic and the operator may be a target, so defaults matter more here than in a normal side project.
 
 ## Already fixed
 
@@ -58,6 +56,7 @@ Two properties should drive prioritization, because they follow from what the to
 | 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
 | 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
+| 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | 931e508 |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
 and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
@@ -625,14 +624,52 @@ a tool you can hand to a friend.*
 
 ## Cross-cutting
 
-### 37. No tests at all
+### 37. No tests at all (fixed)
 
-There is no test suite, and CI runs only super-linter and osv-scanner. The best targets are
-pure functions with real security weight and no infrastructure needs: `web/app.py`'s path
-validation, which has already been the subject of CodeQL findings, the sha256 and dedup
-logic, config parsing, and a zip-slip and bomb fixture set once item 18 exists. A compose
-smoke test that ingests a tiny fixture dump and asserts the reconciliation counts end to end
-would catch the whole class of problem this document opens with. *Effort: M. Impact: high.*
+There was no test suite, and CI ran only super-linter and osv-scanner. Added a `tests/`
+suite (pytest) covering the pure, security-relevant functions that don't need the
+containerized environment: `web/app.py`'s path validation (`validate_sha256_and_get_symlink_path`,
+`resolve_and_verify_target_file` - the functions already flagged by CodeQL alert #103),
+`ingest/ingest.py`'s hashing and sha256-marker dedup logic (items 1 and 41 both depend on
+`create_hash_link` being a true no-op the second time), `extraction_status` classification
+(item 34), and `bin/pathfix.py`'s streaming sha256 (item 28). 36 tests, all passing.
+
+`web/app.py` and `ingest/ingest.py` aren't packages, and `ingest.py` has module-level
+side effects (config loading, `sqlite3.connect`, directory creation) that make them awkward
+to import directly - `tests/conftest.py` loads each as a module via
+`importlib.util.spec_from_file_location` and points its side effects at a `tmp_path` via
+`monkeypatch`. `ingest.py`'s dedup tests substitute `ThreadPoolExecutor` for
+`ProcessPoolExecutor`, since a dynamically-loaded module can't be re-imported by name in a
+spawned worker process - `prepare_file()` is plain I/O with no shared state, so this doesn't
+change what's under test.
+
+Writing the `web/app.py` tests found a real gap: `validate_sha256_and_get_symlink_path` used
+`re.match(r"^[a-f0-9]{64}$", sha256)`, and `re.match`'s trailing `$` also matches just before
+a single trailing newline, so a hash with `\n` appended passed this check. Traced by hand
+before fixing it: `basename()`/`normpath()` downstream don't strip `\n` and no real file has
+one in its name, so this never actually escaped `SYMLINKS_DIR` - but it defeated the point of
+an exact-format check. Fixed with `re.fullmatch(r"[a-f0-9]{64}", sha256)`, which doesn't have
+this gap; verified against the live `web` container that a normal `/view/<sha256>` still
+returns 200 and a hash with `%0A` appended now correctly returns 400.
+
+Wired into `.github/workflows/tests.yml` (new): `uv sync --dev`, `ruff check`/`ruff format
+--check`, then `pytest`, on every push/PR to `main`. Added `just test` to run the same
+locally. Checking CI also turned up two things unrelated to this item but caught by the same
+"always green" pass: the existing Linter workflow was failing on `main` independent of this
+work (EDITORCONFIG/PYTHON_ISORT/PYTHON_RUFF findings, almost entirely in the vendored,
+third-party `downloader/creatorrc/*.py` - now excluded from super-linter and from this
+repo's own `ruff` config rather than reformatted, since they aren't ours to restyle; the rest
+were pre-existing findings in files this session had touched, fixed directly), and two
+CodeQL alerts (#104, #105) on `ingest.py`'s `index_url()`, which built request URLs with the
+Elasticsearch password embedded (`http://elastic:<password>@host:9200/...`) - a password
+embedded in a URL string can leak into an exception message, a printed error, or
+`logs/ingest.log` the moment anything downstream logs or prints that URL or a `request`
+exception raised against it. Fixed by moving the credential to `requests`' `auth=` parameter
+instead (`elastic_auth()`), matching the approach `Elastic.ipynb` already used for the ES
+Python client (item 35). Verified against the live stack: rebuilt and ran `ingest.py`
+directly against the running Elasticsearch (399 files looked at, 273 already indexed, 0
+failed, in Elasticsearch: 273) and confirmed `logs/ingest.log` contains no trace of the
+password either way.
 
 ### 38. Make resource limits configurable (fixed)
 
@@ -688,22 +725,11 @@ that `web` cannot write into the shared directory.
 
 ## Suggested sequencing
 
-1. **Make losses visible** — done for logging (39: every stage now has a real per-file log)
-   and for extraction failures (34's `extraction_status` field and dashboard panels). What
-   remains is the ingest reconciliation counts specifically, which print to the container log
-   rather than being indexed anywhere Kibana can see, and unifying the three still-different
-   log file formats.
-2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio
-   and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested
-   passwords, distinct failure states) are done; this is what is left of the extraction
-   correctness gap.
-3. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that
-   would make item 22's field-type changes actually take effect on a real index. 22 and 24
-   (explicit template, bulk indexing) are done.
-4. **The CLI**, once the underlying states are reportable — it is a facade over the items
-   above, and building it first would mean building it twice.
-5. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
-   is the question the tool exists to answer.
+1. **Make losses visible** — done for logging (39: every stage now has a real per-file log) and for extraction failures (34's `extraction_status` field and dashboard panels). What remains is the ingest reconciliation counts specifically, which print to the container log rather than being indexed anywhere Kibana can see, and unifying the three still-different log file formats.
+2. **Finish extraction correctness** (18): hostile-archive guards - zip-slip, expansion-ratio and output-size caps, timeouts. 14-17 (recursion, content-based detection, nested passwords, distinct failure states) are done; this is what is left of the extraction correctness gap.
+3. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that would make item 22's field-type changes actually take effect on a real index. 22 and 24 (explicit template, bulk indexing) are done.
+4. **The CLI**, once the underlying states are reportable — it is a facade over the items above, and building it first would mean building it twice.
+5. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it is the question the tool exists to answer.
 
 Housekeeping items (10's v2ray remainder) are individually small and can be picked up
 whenever the surrounding code is being touched anyway.

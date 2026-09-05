@@ -126,38 +126,6 @@ files. Exact sha256 dedup already exists; fuzzy clustering with SimHash or MinHa
 Highlighted snippets rather than raw content, a saved search per detected entity type, and
 export of a result set as CSV or JSON for reporting back to whoever asked. *Effort: M.*
 
-## CLI — one command for non-technical operators
-
-Today the documented path requires copying and editing `.env` and `deis.cfg`, running
-`docker compose --profile setup up -d`, watching `docker logs deis-setup-1 -f`, running
-`docker compose --profile deis up -d`, then `just venv` and `just progress` — and, when a
-search fails, pasting two JSON blobs into Kibana's Dev Tools console. That is a lot of
-surface for the intended audience. `bin/progress.py` is a good seed: it already uses `rich`
-and infers state from the marker files.
-
-A single `deis` command, built on stdlib `argparse` plus `rich` to keep the dependency
-footprint small, wrapping the existing scripts rather than replacing them:
-
-- `deis init` — interactive first run: generate real passwords into an untracked `.env`,
-  create `deis.cfg`, check Docker's memory allocation against the 18 GB requirement, and fail
-  early with a plain-language message instead of an Elasticsearch OOM ten minutes later.
-- `deis doctor` — preflight and diagnosis: Docker reachable, memory sufficient, disk space
-  against expected dump size, the TOR routing check from item 42, Elasticsearch and Kibana
-  health, and a plain-English explanation of any crash-looping container. This one command
-  would have surfaced four of the seven original P0 items on its own.
-- `deis add-urls <file|url>` — validate schemes, deduplicate, report exactly what was queued.
-- `deis run [--only download,extract,ingest]` — replaces the profile incantations.
-- `deis status` — `progress.py` plus counts at each boundary, so the funnel is visible by
-  default rather than on request.
-- `deis search <term>` — terminal search for people who never open Kibana.
-- `deis report` — what was found, and what could not be processed.
-- `deis clean` / `deis reset` — wrap the `Justfile` targets behind a confirmation prompt,
-  since they delete evidence.
-
-Keep `just` for developer tasks such as linting and exporting requirements; the CLI is for
-operators. *Effort: L. Impact: high — it is the difference between a pipeline you can run and
-a tool you can hand to a friend.*
-
 ### Cross-cutting
 
 #### 40. Decide the fate of the log-ingest scaffolding
@@ -169,10 +137,9 @@ or remove it, and document `evtx2json` as the manual side tool it currently is. 
 
 ## Suggested sequencing
 
-1. **The CLI**, once the underlying states are reportable - it is a facade over the items
-    above, and building it first would mean building it twice.
-2. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
-    is the question the tool exists to answer.
+1. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
+    is the question the tool exists to answer. The CLI (previously step 1 here) is done; see
+    "Already fixed".
 
 Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
 scaffolding, 36's result-quality polish) are individually small and can be picked up whenever
@@ -227,6 +194,7 @@ the surrounding code is being touched anyway.
 | 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 | 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | `931e508` |
+| CLI | Running DEIS meant memorizing docker compose profile incantations and checking four marker-file directories by hand | 065c714 |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
 and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
@@ -687,6 +655,62 @@ completed with no errors, the document search cell correctly returned real hits 
 new `INDEX` constant and `basic_auth` connection, and a diagnostic cell confirmed the
 word-cloud path produced 891 real term/count pairs and a genuine rendered PNG - not merely
 "no exception," but the actual expected output.
+
+### CLI (fixed)
+
+Running DEIS meant editing `.env`/`deis.cfg` by hand, chaining `docker compose --profile X up
+-d` incantations from memory, tailing `docker logs deis-setup-1 -f`, and - when something was
+wrong - knowing to check four different marker-file directories or paste JSON into Kibana's
+Dev Tools console. `bin/deis.py` (stdlib `argparse` + `rich`, matching this project's
+minimize-dependencies posture; no new dependency needed since `rich` was already a `bin`
+dependency) wraps the existing scripts rather than replacing them, invoked via a thin
+executable wrapper, `bin/deis` (named to avoid colliding with the existing `deis/` service
+directory at the repo root):
+
+- `deis init` - bootstraps `.env` (every `changeme` replaced with a real generated secret) and
+  `deis.cfg` from their `.default` templates if they don't already exist (idempotent -
+  verified it leaves both alone untouched on a second run), and checks Docker's configured
+  memory against the README's 18 GB guidance.
+- `deis doctor` - Docker reachability, Elasticsearch/Kibana health, and any container in a
+  genuinely concerning state (`restarting`, or `exited` with a non-zero exit code - **not**
+  simply `exited`, since `setup`/`unpack`/`ingest` are one-shot containers that exit 0 when
+  their work is done; the first version of this check flagged those as errors on every run
+  until caught by testing against the live stack, not by reading the code). Does not implement
+  a TOR egress leak test - that's item 42, not built yet - and says so explicitly.
+- `deis run [--only {download,extract,ingest}]` - maps directly onto existing compose
+  profiles (no compose changes needed): no `--only` → `--profile deis`; `--only download` →
+  `--profile download`; `--only extract` → `--profile unpack`; `--only ingest` →
+  `--profile ingest`.
+- `deis status` - a one-shot snapshot of marker-file stage status plus funnel counts (files
+  downloaded, files extracted, unique sha256, Elasticsearch document count, failed count from
+  the latest `deis-ingest-runs` document - item 25's index, now useful outside Kibana too).
+  Deliberately doesn't duplicate `bin/progress.py`'s live-updating loop (still `just
+  progress`'s job); adds the counts that didn't have anywhere to live before.
+- `deis search <term>` - the same `match` query on `attachment.content` the notebook runs,
+  rendered as a table with each hit's filename and `/view/<sha256>` link.
+- `deis report` - the latest ingest run's full breakdown plus counts from
+  `still_encrypted.txt`/`still_corrupt.txt`/`still_unsafe.txt` - a text rendering of what item
+  34's dashboard panels already show, for someone who never opens Kibana.
+- `deis add-urls <url-or-file>` - validates scheme (the same allowlist `deis/urls.sh` already
+  enforces) before ever queueing, so a bad URL is rejected immediately with a reason instead of
+  only surfacing later in `logs/download_errors.log`; deduplicates against what's already
+  queued.
+- `deis clean` / `deis reset` - confirmation-gated (`y/N`, refuses on anything but `yes`)
+  wrappers around `just clean` / `just dist-clean`, since both delete evidence.
+
+Verified against the live stack for everything that needs one: `doctor` correctly
+distinguished the always-on `deis` orchestrator container (legitimately `exited`) from the
+one-shot containers that had simply finished; `status`/`report` matched the numbers already
+confirmed under "Live reconciliation" (273 unique, 273 in Elasticsearch, 0 failed); `search
+megawork` returned 269 real hits with correct filenames and links (verified `megawork` was
+actually a top term via the same aggregation the notebook's word cloud uses, since `search
+secret` legitimately found nothing in this Portuguese-language corpus); `run --only ingest`
+started exactly the right container. `add-urls` and `init` were verified against scratch
+copies of `urls/`/`.env`/`deis.cfg`, not the real ones, so testing never queued a real
+download or touched the real live instance's config; `clean`/`reset` were verified by
+answering "n" and confirming the destructive command never actually ran. Added
+`tests/test_deis_cli.py` (17 tests) for the pure logic (URL scheme validation, `.env`
+parsing, marker-file status computation) that doesn't need a live stack.
 
 ### Cross-cutting (fixed)
 

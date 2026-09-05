@@ -95,14 +95,6 @@ Roughly in order of real-world value for leak dumps:
 - **Encrypted archives**: at minimum list them so they are not forgotten; optionally attempt
   a wordlist.
 
-### I — Ingest
-
-#### 23. Add ILM and rollover, or drop the `-000001` pretence
-
-The index name implies rollover, but `ingest.py` writes to a hardcoded
-`leakdata-index-000001` with no alias and no ILM policy. Writing through an alias would keep
-large investigations manageable and make "one index set per case" natural. *Effort: M.*
-
 ### S — Search
 
 #### 31. PII and personnummer detection
@@ -177,11 +169,9 @@ or remove it, and document `evtx2json` as the manual side tool it currently is. 
 
 ## Suggested sequencing
 
-1. **Index quality and scale** (23): ILM/rollover - the one remaining piece, and the one that
-    would make item 22's field-type changes actually take effect on a real index.
-2. **The CLI**, once the underlying states are reportable - it is a facade over the items
+1. **The CLI**, once the underlying states are reportable - it is a facade over the items
     above, and building it first would mean building it twice.
-3. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
+2. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
     is the question the tool exists to answer.
 
 Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
@@ -467,7 +457,7 @@ silently survived. Actually fixed (`rmdir` -> `rm -rf`) under item 34, not here.
 
 ### I — Ingest (fixed)
 
-#### 22. Define an explicit index template instead of relying on dynamic mapping (fixed, partly deferred)
+#### 22. Define an explicit index template instead of relying on dynamic mapping (fixed)
 
 The mapping was entirely dynamic. `setup/entrypoint.sh`'s `leakdata` index template (already
 existed for the `top_folder` runtime field) now also declares `sha256` and `filename` as
@@ -477,12 +467,19 @@ existed for the `top_folder` runtime field) now also declares `sha256` and `file
 
 Elasticsearch cannot change an already-mapped field's type in place without a reindex, so the
 `sha256`/`filename` retyping and dropping `attachment.content.keyword` only take effect on an
-index created **after** this template exists - and nothing currently creates a new
-`leakdata-*` index (that needs item 23's rollover), so **that half of this fix has no effect
-yet** on the live index. The settings (replicas, total_fields.limit, max_analyzed_offset) are
-dynamic and were also applied directly to the existing index, which does take effect
-immediately - the cluster went from `yellow` (one permanently unassigned replica shard, no
-benefit on a single node) to `green`, and README's manual Dev Tools step for
+index created **after** this template exists, not on one that predates it - which is why these
+two were also backfilled/applied directly onto the *existing* index below, for the instance
+this was developed against. That instance-specific gap isn't a design problem, though: DEIS is
+one instance per leak, and the Elasticsearch data volume gets wiped and the stack recreated
+for each new leak (confirmed against this project's actual usage - the live instance had
+already been through this at least ten times). On any freshly recreated instance,
+`setup/entrypoint.sh` creates this template before `ingest.py` ever runs, so `leakdata-index-000001`
+is auto-created from it on first ingest and gets the correct mapping from the start - no
+rollover or alias needed to make that happen (see "Deliberately not doing" for why item 23,
+proposed for exactly that, isn't being done). The settings (replicas, total_fields.limit,
+max_analyzed_offset) are dynamic and were also applied directly to the existing index, which
+does take effect immediately - the cluster went from `yellow` (one permanently unassigned
+replica shard, no benefit on a single node) to `green`, and README's manual Dev Tools step for
 `max_analyzed_offset` is gone.
 
 Verified: Elasticsearch's own `_index_template/_simulate_index` API confirms a new index would
@@ -790,3 +787,4 @@ that `web` cannot write into the shared directory.
 | Item | Why not |
 |---|---|
 | 12 | Integrity verification against a published checksum. Leak sites essentially never publish hashes for their dumps, so it would sit unused. `ingest.py` already computes a real sha256 from the file as ingested, which catches corruption indirectly. |
+| 23 | ILM/rollover for `leakdata-*`. Solves an index growing unbounded across many cases sharing one long-lived cluster - not this project's model, which is one DEIS instance per leak, with the Elasticsearch volume wiped and the stack recreated for each new one. Item 22's mapping fix already takes effect from scratch on every freshly recreated instance without it; rollover would only add alias-management complexity (touching `ingest.py`, the notebook, and the dashboards) for a scenario that doesn't occur here. |

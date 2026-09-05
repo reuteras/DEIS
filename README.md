@@ -172,6 +172,7 @@ bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed
 bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
+bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
 ```
@@ -189,8 +190,19 @@ field, searchable in Kibana or via `bin/deis search`, and the "Leaked data" dash
 "Documents with personal identifiers" panel. Only unscanned documents are processed by
 default; pass `--rescan` to redo everything (for example after upgrading the detectors).
 Checksum validation cuts false positives sharply but doesn't eliminate them entirely - a
-numeric match still only needs to satisfy a 1-in-10 or 1-in-11 chance by coincidence, so treat
-a `pii-scan` hit as a strong lead worth checking, not absolute proof.
+personnummer or card number match still only needs to satisfy a 1-in-10 chance by coincidence,
+so treat a `pii-scan` hit as a strong lead worth checking, not absolute proof.
+
+`bin/deis dedupe-scan` clusters near-duplicate documents - mail threads, template letters, and
+recurring monthly reports that share most of their content without being byte-identical (exact
+sha256 dedup, always on, only catches files that are byte-for-byte the same). Uses SimHash: a
+64-bit fingerprint per document such that near-identical text produces a small Hamming distance
+between fingerprints. Unlike `pii-scan`/language detection, this always recomputes the whole
+corpus on every run (whether two documents cluster together depends on every other document
+too, not just themselves) - pass `--max-distance` to loosen or tighten how similar two
+documents need to be (default 10 of 64 bits). Results land in each clustered document's
+`duplicate_cluster` field (the representative member's sha256), and the "Leaked data"
+dashboard has a "Near-duplicate clusters" panel, sorted so each cluster's members sit together.
 
 Shell completion for subcommands (and `run --only`'s choices) is available for bash and zsh:
 

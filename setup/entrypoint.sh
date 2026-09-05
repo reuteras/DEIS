@@ -170,6 +170,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                 "filename" : { "type" : "keyword" },
                 "extraction_status" : { "type" : "keyword" },
                 "language" : { "type" : "keyword" },
+                "duplicate_cluster" : { "type" : "keyword" },
                 "attachment" : {
                     "properties" : {
                         "content" : {
@@ -233,12 +234,13 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
 # existing index's mapping doesn't require a reindex). This index's filename
 # field is still text+keyword (see above), so its script still reads
 # filename.keyword, unlike the template's version above.
-log 'Backfill top_folder runtime field, extraction_status, content fielddata, pii and language onto the existing leakdata index'
+log 'Backfill top_folder runtime field, extraction_status, content fielddata, pii, language and duplicate_cluster onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {
     "properties" : {
         "extraction_status" : { "type" : "keyword" },
         "language" : { "type" : "keyword" },
+        "duplicate_cluster" : { "type" : "keyword" },
         "attachment" : {
             "properties" : {
                 "content" : {

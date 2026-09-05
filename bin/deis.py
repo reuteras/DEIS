@@ -27,6 +27,7 @@ from rich.table import Table
 # the sibling import work either way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pii
+import simhash
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ES_URL = "http://127.0.0.1:9200"
@@ -47,6 +48,7 @@ SUBCOMMANDS = (
     "report",
     "add-urls",
     "pii-scan",
+    "dedupe-scan",
     "clean",
     "reset",
     "completion",
@@ -423,6 +425,83 @@ def cmd_pii_scan(args) -> int:
     return 0
 
 
+def cmd_dedupe_scan(args) -> int:
+    """Near-duplicate clustering (item 33) - a whole-corpus operation,
+    unlike pii-scan/language detection which are independent per-document
+    facts: whether a document belongs to a cluster depends on every other
+    document too, so this always recomputes from scratch on every run
+    rather than skipping already-tagged documents.
+    """
+    try:
+        es_request(
+            f"/{INDEX}/_update_by_query?conflicts=proceed",
+            method="POST",
+            body={
+                "query": {"exists": {"field": "duplicate_cluster"}},
+                "script": {"source": "ctx._source.remove('duplicate_cluster')"},
+            },
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Could not clear stale cluster assignments: {error}[/red]")
+        return 1
+
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": ["attachment.content"], "query": {"match_all": {}}},
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    fingerprints: dict[str, int] = {}
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+            for hit in hits:
+                content = hit.get("_source", {}).get("attachment", {}).get("content", "") or ""
+                if content:
+                    fingerprints[hit["_id"]] = simhash.fingerprint(content)
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    clusters = simhash.cluster(fingerprints, max_distance=args.max_distance)
+
+    actions = []
+    for doc_id, representative in clusters.items():
+        actions.append({"update": {"_index": INDEX, "_id": doc_id}})
+        actions.append({"doc": {"duplicate_cluster": representative}})
+    for i in range(0, len(actions), 400):
+        es_bulk(actions[i : i + 400])
+
+    cluster_sizes: dict[str, int] = {}
+    for representative in clusters.values():
+        cluster_sizes[representative] = cluster_sizes.get(representative, 0) + 1
+
+    console.print(
+        f"Scanned {len(fingerprints)} document(s) with content, "
+        f"{len(clusters)} in {len(cluster_sizes)} near-duplicate cluster(s)."
+    )
+    if cluster_sizes:
+        table = Table(title="Largest clusters")
+        table.add_column("Representative sha256")
+        table.add_column("Members")
+        for representative, size in sorted(cluster_sizes.items(), key=lambda kv: -kv[1])[:10]:
+            table.add_row(representative, str(size))
+        console.print(table)
+    return 0
+
+
 def cmd_add_urls(args) -> int:
     target = args.target
     candidates = [target] if "://" in target else Path(target).read_text(encoding="utf-8").splitlines()
@@ -576,6 +655,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
     p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
     p_pii.set_defaults(func=cmd_pii_scan)
+
+    p_dedupe = sub.add_parser("dedupe-scan", help="cluster near-duplicate documents")
+    p_dedupe.add_argument(
+        "--max-distance",
+        type=int,
+        default=10,
+        dest="max_distance",
+        help="max Hamming distance (of 64 bits) to consider two documents near-duplicates (default: 10)",
+    )
+    p_dedupe.set_defaults(func=cmd_dedupe_scan)
 
     sub.add_parser("clean", help="wrap 'just clean' behind a confirmation prompt").set_defaults(func=cmd_clean)
     sub.add_parser("reset", help="wrap 'just dist-clean' behind a confirmation prompt").set_defaults(func=cmd_reset)

@@ -118,6 +118,37 @@ for user in "${!users_passwords[@]}"; do
 done
 
 elasticsearch_host="${ELASTICSEARCH_HOST:-elasticsearch}"
+
+# Item 32's language detection, stored once and referenced by id from both
+# places that need it: the cbor-attachment pipeline below (tagging documents
+# as they are indexed) and the _update_by_query backfill further down
+# (tagging documents indexed before the pipeline existed). Those two ran
+# identical ~1.5 KB copies of this logic inline before, which had to stay
+# byte-for-byte in sync by hand or the backfill would quietly start
+# disagreeing with the pipeline.
+#
+# The two call sites differ only in where the document lives: an ingest
+# processor's ctx *is* the source, while _update_by_query's ctx wraps it in
+# ctx._source. Resolving that here with a containsKey check is what lets one
+# script serve both.
+#
+# It is a stopword *presence* count, not a frequency count - ten distinctive
+# function words per language, one point each, needing more than two hits to
+# claim a language at all. Deliberately crude: it only has to separate
+# English from Swedish well enough to pick a stopword list and drive a
+# Kibana filter, and anything it is unsure about lands in "unknown", which
+# is a correct and useful answer for the numeric/tabular documents that make
+# up much of a leak dump. See docs/IMPROVEMENTS.md item 32.
+log 'Add language-detection stored script'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_scripts/deis-detect-language?pretty" -H 'Content-Type: application/json' -d'
+{
+    "script" : {
+        "lang" : "painless",
+        "source" : "def doc = ctx.containsKey(\"_source\") ? ctx._source : ctx; if (doc.attachment == null || doc.attachment.content == null) { doc.language = \"unknown\"; return; } String content = \" \" + ((String) doc.attachment.content).toLowerCase() + \" \"; def english = [\"the\", \"and\", \"that\", \"with\", \"for\", \"this\", \"from\", \"have\", \"are\", \"was\"]; def swedish = [\"och\", \"det\", \"att\", \"som\", \"med\", \"inte\", \"den\", \"vara\", \"har\", \"till\"]; int en = 0; int sv = 0; for (def word : english) { if (content.contains(\" \" + word + \" \")) { en++; } } for (def word : swedish) { if (content.contains(\" \" + word + \" \")) { sv++; } } if (en >= sv && en > 2) { doc.language = \"english\"; } else if (sv >= en && sv > 2) { doc.language = \"swedish\"; } else { doc.language = \"unknown\"; }"
+    }
+}
+' > /dev/null && sublog 'Done'
+
 # Only cbor-attachment is used - ingest.py posts CBOR-encoded documents, not
 # JSON, so a JSON-only "attachment" pipeline would never be reachable anyway.
 log 'Add cbor-attachment pipeline'
@@ -140,8 +171,8 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
         },
         {
             "script" : {
-                "description" : "item 32: tag detected language via stopword-frequency scoring, so the notebook can stop applying both stopword lists indiscriminately and Kibana can filter by language",
-                "source" : "if (ctx.attachment == null || ctx.attachment.content == null) { ctx.language = \"unknown\"; } else { String content = \" \" + ((String) ctx.attachment.content).toLowerCase() + \" \"; int en = 0; int sv = 0; if (content.contains(\" the \")) en++; if (content.contains(\" and \")) en++; if (content.contains(\" that \")) en++; if (content.contains(\" with \")) en++; if (content.contains(\" for \")) en++; if (content.contains(\" this \")) en++; if (content.contains(\" from \")) en++; if (content.contains(\" have \")) en++; if (content.contains(\" are \")) en++; if (content.contains(\" was \")) en++; if (content.contains(\" och \")) sv++; if (content.contains(\" det \")) sv++; if (content.contains(\" att \")) sv++; if (content.contains(\" som \")) sv++; if (content.contains(\" med \")) sv++; if (content.contains(\" inte \")) sv++; if (content.contains(\" den \")) sv++; if (content.contains(\" vara \")) sv++; if (content.contains(\" har \")) sv++; if (content.contains(\" till \")) sv++; if (en >= sv && en > 2) { ctx.language = \"english\"; } else if (sv >= en && sv > 2) { ctx.language = \"swedish\"; } else { ctx.language = \"unknown\"; } }"
+                "description" : "item 32: tag detected language by stopword presence, so the notebook can stop applying both stopword lists indiscriminately and Kibana can filter by language",
+                "id" : "deis-detect-language"
             }
         }
     ]
@@ -290,15 +321,15 @@ curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/l
 ' > /dev/null && sublog 'Done'
 
 # Same reasoning as extraction_status above: the cbor-attachment pipeline's
-# new language-detection processor (item 32) only tags documents indexed
-# after it existed. Re-runs the identical detection logic as an
-# _update_by_query script instead of reindexing, so pre-existing documents
-# get a language tag too.
+# language-detection processor (item 32) only tags documents indexed after
+# it existed. Runs the same stored script by id instead of reindexing, so
+# pre-existing documents get a language tag too - and so the backfill cannot
+# drift away from what the pipeline does.
 log 'Backfill language onto documents indexed before language detection existed'
 curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_update_by_query?conflicts=proceed&pretty" -H 'Content-Type: application/json' -d'
 {
     "query" : { "bool" : { "must_not" : { "exists" : { "field" : "language" } } } },
-    "script" : { "source" : "if (ctx._source.attachment == null || ctx._source.attachment.content == null) { ctx._source.language = \"unknown\"; } else { String content = \" \" + ((String) ctx._source.attachment.content).toLowerCase() + \" \"; int en = 0; int sv = 0; if (content.contains(\" the \")) en++; if (content.contains(\" and \")) en++; if (content.contains(\" that \")) en++; if (content.contains(\" with \")) en++; if (content.contains(\" for \")) en++; if (content.contains(\" this \")) en++; if (content.contains(\" from \")) en++; if (content.contains(\" have \")) en++; if (content.contains(\" are \")) en++; if (content.contains(\" was \")) en++; if (content.contains(\" och \")) sv++; if (content.contains(\" det \")) sv++; if (content.contains(\" att \")) sv++; if (content.contains(\" som \")) sv++; if (content.contains(\" med \")) sv++; if (content.contains(\" inte \")) sv++; if (content.contains(\" den \")) sv++; if (content.contains(\" vara \")) sv++; if (content.contains(\" har \")) sv++; if (content.contains(\" till \")) sv++; if (en >= sv && en > 2) { ctx._source.language = \"english\"; } else if (sv >= en && sv > 2) { ctx._source.language = \"swedish\"; } else { ctx._source.language = \"unknown\"; } }" }
+    "script" : { "id" : "deis-detect-language" }
 }
 ' > /dev/null && sublog 'Done'
 

@@ -49,6 +49,20 @@ config_true() {
     [[ "$(read_cfg "$1")" == "true" ]]
 }
 
+# Same as config_true, but distinguishes "key set to something other than
+# true" from "key not in the file at all", falling back to $2 in the latter
+# case. deis.cfg is gitignored and 'deis init' deliberately leaves an
+# existing one alone, so a key added to deis.cfg.default later never appears
+# in the config of anyone who set the project up before it existed - and
+# config_true reads that absence as "false", silently disabling a feature
+# documented as on by default. read_cfg already exits non-zero when the key
+# is missing, which is what makes the distinction available here.
+config_true_default() {
+    local value
+    value="$(read_cfg "$1")" || { [[ "$2" == "true" ]]; return; }
+    [[ "${value}" == "true" ]]
+}
+
 config_int() {
     local value
     value="$(read_cfg "$1")"
@@ -230,7 +244,10 @@ try_extract() {
 # rather than attempted here).
 maybe_ocr() {
     local final_path="$1" mime ocr_languages ocr_timeout text
-    config_true ocr || return 0
+    # Defaults to on when "ocr" is absent entirely, so an existing deis.cfg
+    # written before item 21 gets the behaviour README documents as the
+    # default rather than silently skipping OCR forever.
+    config_true_default ocr true || return 0
     mime="$(file --mime-type -b -- "${final_path}" 2>/dev/null)"
     case "${mime}" in
     image/*) ;;
@@ -425,7 +442,7 @@ process_one_file() {
     fi
 }
 
-export -f log read_cfg config_true config_int load_passwords dispose_of_original \
+export -f log read_cfg config_true config_true_default config_int load_passwords dispose_of_original \
     queue_new_files check_archive_safety maybe_ocr try_extract process_zip_like process_pst \
     apply_known_result worker_entrypoint process_one_file
 

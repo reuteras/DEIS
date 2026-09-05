@@ -78,14 +78,11 @@ opsec check, because it fails loudly instead of leaking quietly. *Effort: M. Imp
 
 ### E — Extract
 
-#### 21. More extractors
+#### 21. More extractors (OCR done - see "Already fixed"; the rest is still open)
 
 Roughly in order of real-world value for leak dumps:
 
 - **Email beyond PST**: `.msg`, `.eml`, `.mbox`, `.ost`. Only `.pst` is handled today.
-- **OCR for image-only documents**, via tesseract or Tika's tesseract integration. A scanned
-  passport or invoice currently indexes with `content_length: 0` and is invisible to every
-  content search. This is the largest recall gap in the tool.
 - **Structured data as rows rather than blobs**: `.csv`, `.xlsx`, `.sql` dumps and SQLite
   files are where personal data actually lives in these leaks. Tika flattens them to text;
   parsing them into per-record documents would turn "is my friend in here?" into a precise
@@ -97,23 +94,19 @@ Roughly in order of real-world value for leak dumps:
 
 ### S — Search
 
-#### 31. PII and personnummer detection
+#### 32. Entity extraction - names, organisations, locations (language detection is done; see "Already fixed")
 
-The origin story of this project is "does this leak contain my friend's personal data", yet
-the only way to answer it is free-text KQL. Detect Swedish personnummer and samordningsnummer
-with checksum validation, plus emails, phone numbers, IBAN and card numbers, and national IDs
-for other locales, either as an ingest-time enrichment or a post-pass. Index them as
-structured fields so an analyst can filter on a value and get a definitive answer, and so a
-dashboard can show which documents contain personal identifiers at all. *Effort: L. Impact:
-very high — this is the feature that most directly serves the use case.*
-
-#### 32. Entity extraction and language detection
-
-Names, organisations and locations as structured fields turn the corpus from a text blob into
-something pivotable. The notebook's word cloud already hand-maintains English, Swedish and
-Portuguese stopword lists; automatic language detection would replace that and enable
-per-language analyzers, which materially improves recall on non-English dumps. *Effort: L.
-Impact: high.*
+Names, organisations and locations as structured fields would turn the corpus from a text blob
+into something pivotable - real named-entity recognition (NER), not the regex/heuristic
+approach items 18/31 use for archive safety and PII, since there is no checksum or fixed shape
+to validate a person's name against. Deliberately not attempted here: doing this properly
+needs a real NLP model (spaCy's per-language models are hundreds of MB each; Elasticsearch's
+own inference API needs a hosted model uploaded via Eland, a separate ML toolchain). That is a
+genuine new-dependency decision this project's minimize-dependencies posture says is worth
+raising explicitly rather than picking unilaterally - and a low-quality regex-based
+"NER" (e.g. flagging every capitalized phrase as an entity) would likely be worse than nothing,
+cluttering search results with noise on a tool whose whole premise is trustworthy answers.
+*Effort: L. Impact: high, but blocked on a dependency decision.*
 
 #### 33. Near-duplicate detection and clustering
 
@@ -137,9 +130,12 @@ or remove it, and document `evtx2json` as the manual side tool it currently is. 
 
 ## Suggested sequencing
 
-1. **Analytical power** (31, then OCR from 21, then 32, 33): PII detection first, because it
-    is the question the tool exists to answer. The CLI (previously step 1 here) is done; see
-    "Already fixed".
+1. **Analytical power, continued** (33, near-duplicate detection). PII detection (31), OCR
+    (the highest-value part of 21), and language detection (the tractable half of 32) are
+    done; see "Already fixed". The CLI (originally step 1) is also done. Entity extraction
+    (the rest of 32) is blocked on a dependency decision (spaCy vs. Elasticsearch's inference
+    API), not effort. The rest of 21 (email formats beyond PST, structured data as rows,
+    disk/VM images, mobile backups, encrypted-archive listing) is still open, lower priority.
 
 Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
 scaffolding, 36's result-quality polish) are individually small and can be picked up whenever
@@ -195,6 +191,9 @@ the surrounding code is being touched anyway.
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 | 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | `931e508` |
 | CLI | Running DEIS meant memorizing docker compose profile incantations and checking four marker-file directories by hand | 065c714 |
+| 31 | The only way to answer "does this leak contain my friend's personal data" was free-text KQL | 23ac2e8 |
+| 21 (OCR only) | A scanned passport or invoice saved as a plain image indexed with no searchable text at all | 23ac2e8 |
+| 32 (language detection only) | The notebook hand-applied both stopword lists at once instead of detecting which language a document is actually in | 23ac2e8 |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
 and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
@@ -423,6 +422,50 @@ case. Item 34's testing found the real, worse case: `rmdir` only removes empty d
 and 7-Zip can leave partial output behind even on a reported failure - so a non-empty leftover
 silently survived. Actually fixed (`rmdir` -> `rm -rf`) under item 34, not here.
 
+#### 21. More extractors - OCR only (fixed; the rest of item 21 is still open)
+
+Only the OCR bullet, the one this item called "the largest recall gap in the tool" - a scanned
+passport or invoice saved as a plain image indexed with `content_length: 0` and was invisible
+to every content search. The rest of item 21 (email formats beyond PST, structured data as
+rows, disk/VM images, mobile backups, encrypted-archive listing) is unrelated work, still open.
+
+Deliberately **not** done via Elasticsearch's own `ingest-attachment`/Tika pipeline, despite
+that being the more "native" place for it. Researched first, not assumed: enabling Tesseract
+inside Tika's embedded copy there is unsupported and, per multiple Elastic forum/GitHub
+threads, requires disabling Elasticsearch's seccomp sandboxing entirely just so Tika can fork
+a `tesseract` subprocess - and even then, several reports describe it not working reliably.
+That's a real security regression (the ES process's own syscall sandbox, disabled cluster-wide)
+for an unreliable result, not a trade worth making.
+
+Instead, OCR runs where 7-Zip/`readpst` already run without any sandboxing concern: inside
+`unpack`. `unpack/start.sh`'s `maybe_ocr()` runs after a file is determined not to be an
+archive (the same `not-archive` outcome a plain image already produced) - if `file
+--mime-type` says `image/*`, `tesseract` runs against it (`deis.cfg`'s `ocr`/`ocr_languages`,
+default `eng`; `tesseract-ocr-eng`/`swe` are installed in the `unpack` image, matching this
+project's existing English/Swedish precedent from the notebook's word cloud).
+Found text is written to a `<name>.ocr.txt` sidecar next to the image - a **separate**
+document, not merged into the original image's own Elasticsearch document: merging would mean
+teaching `ingest.py` about a second text source for one document, touching the already
+crash-safety-tuned bulk/marker flow items 1 and 41 depend on, for content that has nothing to
+do with the sha256-confirmed-before-marked guarantee that flow provides. The sidecar is picked
+up by `ingest.py`'s existing directory walk exactly like any other file, with its own sha256,
+so it needs no changes there at all. Scoped to image files only for now - scanned PDFs (a
+whole-page image with no text layer) would need PDF rasterization tooling first, a real gap
+left open rather than attempted here.
+
+Verified against the live stack (not just `tesseract --version`): a real 700x220 PNG rendered
+with three lines of Arial text ("CONFIDENTIAL DOCUMENT", a personnummer, an email address) was
+run through the actual `unpack/start.sh` flow via isolated volume overrides (not the live
+pipeline's real `/files`/`/extracted`) - `not-archive` was correctly logged for the image, an
+`[OCR]` line followed, and the resulting `scan.png.ocr.txt` sidecar's content matched the
+rendered text exactly, including the personnummer and email (both of which item 31's detectors
+would in turn find in it, once ingested). Confirmed `ocr=false` produces zero `.ocr.txt` files
+and zero `[OCR]` log lines against the same fixture; confirmed a plain (non-image) text file
+alongside the same image produces no sidecar for itself while the image still gets one,
+confirming the mime-type gate is doing its job rather than OCR running unconditionally on
+every non-archive file. The dashboard gained an "OCR-extracted text" saved search
+(`filename: *.ocr.txt`).
+
 ### I — Ingest (fixed)
 
 #### 22. Define an explicit index template instead of relying on dynamic mapping (fixed)
@@ -584,6 +627,123 @@ with `docker compose up -d --force-recreate` from there: the 4-copy case produce
 with zero duplicate sha256 values remaining in `logs/ingest.log`.
 
 ### S — Search (fixed)
+
+#### 31. PII and personnummer detection (fixed)
+
+The origin story of this project is "does this leak contain my friend's personal data", yet
+the only way to answer it was free-text KQL. Built as a post-pass (`bin/deis pii-scan`), not
+an ingest-time enrichment: detection needs the Tika-extracted text, which only exists once
+Elasticsearch's own ingest pipeline has parsed a document - `ingest.py` itself only ever
+handles the original file's raw bytes, so there was nothing useful to scan at ingest time
+without duplicating Tika's own parsing there.
+
+`bin/pii.py` (pure functions, no network) finds and **checksum-validates** every numeric
+identifier before counting it - a bare regex-shape match would produce constant false
+positives against this corpus's dense financial/numeric content (amounts, dates, account
+numbers):
+
+- Swedish personnummer/samordningsnummer, via the real Skatteverket mod-10 checksum (day+60
+  identifies a samordningsnummer; the checksum formula doubles every odd 1-indexed digit from
+  the left, over all 10 digits including the check digit itself, valid iff the total is a
+  multiple of 10).
+- IBAN, via the ISO 7064 mod-97 checksum.
+- Card numbers, via the standard Luhn checksum.
+- Emails and phone numbers, which have no universal checksum, so these are pattern-matched
+  only (phone numbers deliberately conservative - requires a `+`-prefixed country code or a
+  recognizable Swedish mobile format, not just "any long digit run", for the same false-positive
+  reason as above).
+
+Scoped to Swedish identifiers and locale-agnostic ones (email, IBAN, card number) - not other
+national IDs, even though this project's actual corpus turned out to be Brazilian financial
+data (see item 32's language-detection write-up) where a Brazilian CPF detector would have
+found real matches. Deliberately not added: this project's own scope is Swedish personal data
+("does this leak contain my friend's personal data", where "friend" means Sweden), and adding
+detectors for every locale a leak might happen to be in is unbounded scope creep the item
+never actually asked for by name - "national IDs for other locales" was the item's own
+speculative extension, not the core ask.
+
+All-same-digit numbers (`0000000000000000`, ...) are explicitly excluded even when they'd
+otherwise pass a checksum, since they're common placeholders, never a real identifier. Results
+land in each document's `pii` field (`personnummer`/`emails`/`phone_numbers`/`ibans`/
+`card_numbers` as keyword arrays, plus a `has_pii` boolean) - added to the index template and
+backfilled onto the live index, same pattern as `extraction_status`. Only unscanned documents
+(`pii.has_pii` missing) are processed by default; `--rescan` redoes everything. The dashboard
+gained a "Documents with personal identifiers" saved search (`pii.has_pii: true`).
+
+Verified with `tests/test_pii.py` (21 tests): personnummer fixtures are constructed by
+computing the correct check digit ourselves (`compute_personnummer_check_digit`) rather than
+trusting a memorized "real" example number, so a mistaken memory can't silently make a test
+meaningless; IBAN/card-number fixtures use widely published standard test/example values
+(Wikipedia's IBAN example, the ubiquitous Visa test card number) rather than anything real.
+Verified against the live stack: `pii-scan` against the real 273-document corpus found 12
+documents with at least one identifier (20 card numbers, 5 emails, 1 personnummer), re-running
+with no flag scanned 0 documents (already tagged - confirmed idempotent), and `--rescan`
+reproduced the identical breakdown. Spot-checked individual hits rather than trusting the
+aggregate count: the card-number matches were 14-digit codes in a spreadsheet named for
+Brazil's Alelo corporate meal-card benefit system (`ALELO REFEIÇÃO`) - a genuine-looking
+identifier, not coincidence, even though it isn't the kind of identifier this detector set was
+built for. The single personnummer hit, by contrast, was inside a Brazilian boleto (payment
+slip) PDF dense with barcode/numeric codes - plausibly a coincidental checksum pass rather than
+a real Swedish personnummer showing up in Portuguese-language data, which is exactly the class
+of false positive a 1-in-10 checksum can't fully rule out and is called out as a known
+limitation in the README rather than glossed over.
+
+#### 32. Language detection (fixed; entity extraction is unrelated work, still open)
+
+Only the language-detection half of this item - see item 32 above (in "Open items") for why
+entity extraction (names/organisations/locations) is unrelated work, deliberately not
+attempted here.
+
+Scoped to Swedish and English, the two languages this project actually cares about (see item
+31's PII write-up for the same scoping decision), not general-purpose language ID - even
+though the live corpus turned out to be Brazilian Portuguese financial data (see verification
+below), which a from-scratch design might have added Portuguese support for. Deliberately not
+done: that would be scope creep past what this project is actually for.
+
+Implemented ingest-time, not as a post-pass like items 25/31: added as a third processor in
+the `cbor-attachment` ingest pipeline, right after the existing `attachment`/`date`
+processors, so every future document gets tagged automatically with no separate scan step
+needed. A stopword-frequency heuristic (Painless, ~10 distinctive words per language - "the",
+"and", "was" for English; "och", "det", "har" for Swedish - counted via plain substring
+`contains(" word ")` checks, deliberately not regex: Painless disables regex by default behind
+a cluster-wide `script.painless.regex.enabled` setting, and substring checks on space-padded
+content are simple enough here not to need it), whichever language scores highest wins (a tie,
+or both under a threshold of 3, resolves to `unknown` - correctly the common case for this
+corpus's numeric/tabular financial content, and for non-English/Swedish text generally, which
+is expected given the intentional scope). `attachment.content` also gained two per-language
+analyzed sub-fields (`.english`/`.swedish`, using Elasticsearch's own built-in `english`/
+`swedish` stemming analyzers) - these don't need language detection at all, since both are
+always computed regardless of which language a given document turns out to be, trading some
+extra indexing cost for not having to get detection right before indexing. Both added to the
+index template and backfilled onto the live index/existing documents (`_mapping` PUT for the
+new fields, `_update_by_query` running the identical detection logic for the `language` field
+itself, both mirroring the `extraction_status` precedent). The notebook's word cloud cell now
+calls `detect_corpus_languages()` (a terms aggregation on `language`, languages present in at
+least 3 documents, "+"-joined, falling back to English) instead of a hardcoded
+`wordcloud_language`. The dashboard gained a "Language" donut panel, cloned from the existing
+"Extraction status" one.
+
+Verified via Elasticsearch's own `_ingest/pipeline/_simulate` API before ever touching the
+live pipeline (the same category of tool as `_index_template/_simulate_index`, used
+previously for item 22): English and Swedish sample text each correctly identified, a
+Portuguese sample correctly fell through to `unknown` (confirming the scope decision actually
+takes effect, not just that Portuguese support was never written), and - caught by this
+testing, not by reading the code - a document with no `attachment.content` at all (a real,
+common case: files Tika extracts nothing from) threw a Painless `NullPointerException` in the
+first version, fixed with an explicit null guard before it ever reached the live cluster.
+Verified against the live stack: the real pipeline and both backfills ran cleanly through
+`setup`, the mapping shows `language` and the two analyzer sub-fields correctly, and the real
+corpus backfilled to 272 `unknown` / 1 `english` - consistent with this corpus being almost
+entirely Portuguese-language financial data (invisible to English/Swedish detection by design)
+plus numeric/tabular content, matching what item 31's PII findings already suggested about its
+Brazilian origin. The notebook was executed end-to-end in the live kernel (`jupyter nbconvert
+--execute`, matching item 35's verification standard): zero errors across every cell, and the
+word cloud's actual rendered output (a 440 KB base64 PNG, extracted from the executed
+notebook's saved widget state) confirmed `detect_corpus_languages()` drove real behavior (here,
+correctly falling back to English, since 1 document is below the 3-document threshold) rather
+than just returning without exception. A full `ingest.py` run against the live stack afterward
+reconciled to the same 273/0/0 counts as before, confirming the new pipeline processor doesn't
+disturb ingest.
 
 #### 34. Surface the failure states in the dashboard (fixed)
 

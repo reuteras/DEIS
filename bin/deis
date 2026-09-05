@@ -1,0 +1,11 @@
+#!/bin/bash
+set -eu
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ ! -x "${DIR}/.venv/bin/python3" ]]; then
+    echo "No .venv found - run 'just venv' first." >&2
+    exit 1
+fi
+
+exec "${DIR}/.venv/bin/python3" "${DIR}/bin/deis.py" "$@"

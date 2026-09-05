@@ -146,6 +146,28 @@ just ingest
 .venv/bin/python3 ingest/ingest.py
 ```
 
+## Command-line interface
+
+`bin/deis` wraps most of the above into a single command (requires `just venv` to have been
+run once, so `.venv` exists):
+
+```bash
+bin/deis init            # bootstrap .env and deis.cfg if they don't exist yet
+bin/deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
+bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
+bin/deis run --only ingest   # or just one stage: download, extract, or ingest
+bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
+bin/deis status          # snapshot of pipeline stage state and funnel counts
+bin/deis search <term>   # search indexed content from the terminal
+bin/deis report          # what was found, what could not be processed
+bin/deis clean           # wraps 'just clean' behind a confirmation prompt
+bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
+```
+
+`bin/deis doctor` does not yet include a TOR egress leak test (see
+[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) item 42) - it does not confirm downloads are
+actually routed through TOR.
+
 ## Development
 
 The per-service scripts (`web/app.py`'s path validation, `ingest/ingest.py`'s hashing/dedup

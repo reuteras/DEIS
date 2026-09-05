@@ -168,6 +168,16 @@ bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt 
 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) item 42) - it does not confirm downloads are
 actually routed through TOR.
 
+Shell completion for subcommands (and `run --only`'s choices) is available for bash and zsh:
+
+```bash
+# Bash - add to ~/.bashrc to persist:
+eval "$(bin/deis completion bash)"
+
+# Zsh - add to ~/.zshrc to persist, or drop into a directory already on $fpath:
+eval "$(bin/deis completion zsh)"
+```
+
 ## Development
 
 The per-service scripts (`web/app.py`'s path validation, `ingest/ingest.py`'s hashing/dedup

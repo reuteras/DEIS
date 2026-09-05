@@ -5,7 +5,10 @@ manually against the running stack instead - see docs/IMPROVEMENTS.md's CLI
 write-up.
 """
 
+import argparse
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -112,3 +115,70 @@ class TestCountFiles:
         (tmp_path / "done").touch()
         (tmp_path / "path.txt").touch()
         assert deis_module.count_files(tmp_path, exclude={"done", "path.txt"}) == 1
+
+
+class TestCompletionScripts:
+    """SUBCOMMANDS/RUN_ONLY_CHOICES are the single source of truth for both
+    build_parser() and the completion scripts - these tests catch the two
+    drifting apart, and (where the shell is available) that the generated
+    scripts are at least syntactically valid.
+    """
+
+    def test_subcommands_match_argparse(self, deis_module):
+        parser = deis_module.build_parser()
+        subparsers_action = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+        assert set(subparsers_action.choices) == set(deis_module.SUBCOMMANDS)
+
+    def test_bash_script_lists_every_subcommand(self, deis_module):
+        script = deis_module._bash_completion_script()
+        for subcommand in deis_module.SUBCOMMANDS:
+            assert subcommand in script
+
+    def test_zsh_script_lists_every_subcommand(self, deis_module):
+        script = deis_module._zsh_completion_script()
+        for subcommand in deis_module.SUBCOMMANDS:
+            assert subcommand in script
+
+    def test_bash_script_lists_run_only_choices(self, deis_module):
+        script = deis_module._bash_completion_script()
+        for choice in deis_module.RUN_ONLY_CHOICES:
+            assert choice in script
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+    def test_bash_script_is_syntactically_valid(self, deis_module, tmp_path):
+        script_path = tmp_path / "completion.bash"
+        script_path.write_text(deis_module._bash_completion_script())
+        subprocess.run(["bash", "-n", str(script_path)], check=True)
+
+    @pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not available")
+    def test_zsh_script_is_syntactically_valid(self, deis_module, tmp_path):
+        script_path = tmp_path / "completion.zsh"
+        script_path.write_text(deis_module._zsh_completion_script())
+        subprocess.run(["zsh", "-n", str(script_path)], check=True)
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+    def test_bash_completion_offers_subcommands_and_run_choices(self, deis_module, tmp_path):
+        script_path = tmp_path / "completion.bash"
+        script_path.write_text(deis_module._bash_completion_script())
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"""
+                source {script_path}
+                COMP_WORDS=(deis "")
+                COMP_CWORD=1
+                _deis_completions
+                echo "TOP:${{COMPREPLY[*]}}"
+                COMP_WORDS=(deis run --only "")
+                COMP_CWORD=3
+                _deis_completions
+                echo "ONLY:${{COMPREPLY[*]}}"
+            """,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "TOP:" + " ".join(deis_module.SUBCOMMANDS) in result.stdout
+        assert "ONLY:" + " ".join(deis_module.RUN_ONLY_CHOICES) in result.stdout

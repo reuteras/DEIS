@@ -29,6 +29,22 @@ RUNS_INDEX = "deis-ingest-runs"
 VIEW_URL = "http://127.0.0.1:8081/view"
 ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
 
+# Single source of truth for both build_parser() and the completion scripts
+# below, so the two can't silently drift apart.
+SUBCOMMANDS = (
+    "init",
+    "doctor",
+    "run",
+    "status",
+    "search",
+    "report",
+    "add-urls",
+    "clean",
+    "reset",
+    "completion",
+)
+RUN_ONLY_CHOICES = ("download", "extract", "ingest")
+
 console = Console()
 
 
@@ -358,6 +374,85 @@ def cmd_reset(_args) -> int:
     )
 
 
+def _bash_completion_script() -> str:
+    """A hand-written completion function, not argcomplete-generated: the
+    subcommand set is small and fixed, so this avoids adding a third-party
+    dependency just to complete ~9 fixed words. Registered for both the
+    'deis' and 'bin/deis' command names, since the documented invocation is
+    the latter but a user may also have added bin/ to PATH or aliased it.
+    """
+    subcommands = " ".join(SUBCOMMANDS)
+    only_choices = " ".join(RUN_ONLY_CHOICES)
+    return f"""\
+_deis_completions() {{
+    local cur prev
+    COMPREPLY=()
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+
+    if ((COMP_CWORD == 1)); then
+        mapfile -t COMPREPLY < <(compgen -W "{subcommands}" -- "${{cur}}")
+        return 0
+    fi
+
+    case "${{COMP_WORDS[1]}}" in
+    run)
+        if [[ "${{prev}}" == "--only" ]]; then
+            mapfile -t COMPREPLY < <(compgen -W "{only_choices}" -- "${{cur}}")
+        else
+            mapfile -t COMPREPLY < <(compgen -W "--only" -- "${{cur}}")
+        fi
+        ;;
+    completion)
+        mapfile -t COMPREPLY < <(compgen -W "bash zsh" -- "${{cur}}")
+        ;;
+    add-urls)
+        mapfile -t COMPREPLY < <(compgen -f -- "${{cur}}")
+        ;;
+    esac
+}}
+complete -F _deis_completions deis
+complete -F _deis_completions bin/deis
+"""
+
+
+def _zsh_completion_script() -> str:
+    subcommands = " ".join(SUBCOMMANDS)
+    only_choices = " ".join(RUN_ONLY_CHOICES)
+    return f"""\
+#compdef deis bin/deis
+
+_deis() {{
+    local -a subcommands
+    subcommands=({subcommands})
+
+    if ((CURRENT == 2)); then
+        _describe 'command' subcommands
+        return
+    fi
+
+    case ${{words[2]}} in
+    run)
+        _arguments '--only=[which stage to run]:stage:({only_choices})'
+        ;;
+    completion)
+        _values 'shell' bash zsh
+        ;;
+    add-urls)
+        _files
+        ;;
+    esac
+}}
+
+_deis "$@"
+"""
+
+
+def cmd_completion(args) -> int:
+    print(_bash_completion_script() if args.shell == "bash" else _zsh_completion_script())
+    return 0
+
+
 def _confirm_and_run(command: list[str], warning: str) -> int:
     console.print(f"[red]This will {warning}.[/red]")
     answer = input("Type 'yes' to continue: ")
@@ -392,6 +487,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("clean", help="wrap 'just clean' behind a confirmation prompt").set_defaults(func=cmd_clean)
     sub.add_parser("reset", help="wrap 'just dist-clean' behind a confirmation prompt").set_defaults(func=cmd_reset)
+
+    p_completion = sub.add_parser("completion", help="print a shell completion script")
+    p_completion.add_argument("shell", choices=["bash", "zsh"])
+    p_completion.set_defaults(func=cmd_completion)
 
     return parser
 

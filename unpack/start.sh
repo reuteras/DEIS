@@ -346,13 +346,14 @@ apply_known_result() {
             dispose_of_original "${path}" "${kind}"
             ;;
         not-archive)
-            local dup_final_path="${path}"
-            if [[ "${path}" != /extracted/files/* ]]; then
-                cp "${path}" /extracted/files/
-                dup_final_path="/extracted/files/$(basename -- "${path}")"
-            fi
+            # No maybe_ocr here, unlike process_zip_like's not-archive arm:
+            # this file is byte-identical to the primary that was already
+            # OCR'd this round, so Tesseract would produce the same text
+            # again, and ingest.py would then dedupe the resulting sidecar
+            # away by sha256 anyway. Re-running it would only cost a second
+            # OCR pass and leave an orphan .ocr.txt on disk per duplicate.
+            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
             log COPIED "Not an archive (same content already checked this round), left/copied as-is: ${path}"
-            maybe_ocr "${dup_final_path}"
             ;;
         encrypted)
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/

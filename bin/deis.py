@@ -120,6 +120,25 @@ def es_bulk(actions: list[dict]) -> dict:
         return json.load(response)
 
 
+def bulk_failures(response: dict) -> list[str]:
+    """Per-item failure reasons from a _bulk response, or [] if every item
+    succeeded. _bulk answers 200 OK even when every single update in it
+    failed (a mapping conflict, a version conflict, a missing document) -
+    the only signal is the top-level "errors" flag and the per-item "error"
+    objects. Both enrichment passes below check this: a scan that silently
+    wrote nothing while printing a full results table is the wrong failure
+    mode for a tool whose output gets treated as evidence.
+    """
+    if not response.get("errors"):
+        return []
+    reasons = []
+    for item in response.get("items", []):
+        for result in item.values():
+            if error := result.get("error"):
+                reasons.append(f"{result.get('_id', '?')}: {error.get('reason', error)}")
+    return reasons
+
+
 def is_valid_url(url: str) -> bool:
     """Same scheme allowlist deis/urls.sh already enforces before queueing
     a URL to aria2 - checked again here so a bad URL is rejected
@@ -192,7 +211,12 @@ def cmd_init(_args) -> int:
         content = env_default.read_text(encoding="utf-8")
         content = re.sub(r"=changeme$", lambda _: f"={secrets.token_hex(32)}", content, flags=re.MULTILINE)
         env_path.write_text(content, encoding="utf-8")
-        console.print("[green]Created .env with generated passwords.[/green]")
+        # Written with the default umask (0644 on a stock macOS/Linux
+        # account) otherwise - this file holds the Elasticsearch, Kibana and
+        # Jupyter secrets this command just generated, so it should not be
+        # readable by every other account on the machine.
+        env_path.chmod(0o600)
+        console.print("[green]Created .env with generated passwords (mode 0600).[/green]")
 
     if cfg_path.exists():
         console.print("[yellow]deis.cfg already exists, leaving it alone.[/yellow]")
@@ -384,6 +408,7 @@ def cmd_pii_scan(args) -> int:
     totals = dict.fromkeys(("personnummer", "emails", "phone_numbers", "ibans", "card_numbers"), 0)
     scanned = 0
     with_pii = 0
+    failures: list[str] = []
 
     try:
         while True:
@@ -404,7 +429,7 @@ def cmd_pii_scan(args) -> int:
                 actions.append({"doc": {"pii": result}})
 
             if actions:
-                es_bulk(actions)
+                failures.extend(bulk_failures(es_bulk(actions)))
 
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
@@ -422,6 +447,14 @@ def cmd_pii_scan(args) -> int:
     for key, count in totals.items():
         table.add_row(key, str(count))
     console.print(table)
+
+    if failures:
+        console.print(f"[red]{len(failures)} document(s) could not be updated - these results were NOT saved:[/red]")
+        for reason in failures[:10]:
+            console.print(f"  [red]{reason}[/red]")
+        if len(failures) > 10:
+            console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+        return 1
     return 0
 
 
@@ -457,6 +490,7 @@ def cmd_dedupe_scan(args) -> int:
 
     scroll_id = response.get("_scroll_id")
     fingerprints: dict[str, int] = {}
+    no_words = 0
     try:
         while True:
             hits = response.get("hits", {}).get("hits", [])
@@ -464,8 +498,15 @@ def cmd_dedupe_scan(args) -> int:
                 break
             for hit in hits:
                 content = hit.get("_source", {}).get("attachment", {}).get("content", "") or ""
-                if content:
-                    fingerprints[hit["_id"]] = simhash.fingerprint(content)
+                # None means "no alphabetic words at all" (see
+                # simhash.fingerprint) - a purely numeric/tabular document
+                # has nothing to compare, and treating it as a fingerprint
+                # would make every such document a perfect match for every
+                # other one. Counted and reported, not silently dropped.
+                if (value := simhash.fingerprint(content)) is None:
+                    no_words += 1
+                else:
+                    fingerprints[hit["_id"]] = value
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
     finally:
@@ -481,17 +522,25 @@ def cmd_dedupe_scan(args) -> int:
     for doc_id, representative in clusters.items():
         actions.append({"update": {"_index": INDEX, "_id": doc_id}})
         actions.append({"doc": {"duplicate_cluster": representative}})
+    # Chunked in pairs (each update is two lines), so 400 keeps every
+    # action line with its own document line.
+    failures: list[str] = []
     for i in range(0, len(actions), 400):
-        es_bulk(actions[i : i + 400])
+        failures.extend(bulk_failures(es_bulk(actions[i : i + 400])))
 
     cluster_sizes: dict[str, int] = {}
     for representative in clusters.values():
         cluster_sizes[representative] = cluster_sizes.get(representative, 0) + 1
 
     console.print(
-        f"Scanned {len(fingerprints)} document(s) with content, "
+        f"Scanned {len(fingerprints)} document(s) with comparable text, "
         f"{len(clusters)} in {len(cluster_sizes)} near-duplicate cluster(s)."
     )
+    if no_words:
+        console.print(
+            f"[yellow]{no_words} document(s) skipped: no alphabetic words to compare "
+            "(numeric/tabular content, or nothing Tika could extract).[/yellow]"
+        )
     if cluster_sizes:
         table = Table(title="Largest clusters")
         table.add_column("Representative sha256")
@@ -499,6 +548,14 @@ def cmd_dedupe_scan(args) -> int:
         for representative, size in sorted(cluster_sizes.items(), key=lambda kv: -kv[1])[:10]:
             table.add_row(representative, str(size))
         console.print(table)
+
+    if failures:
+        console.print(f"[red]{len(failures)} document(s) could not be updated - clusters were NOT saved:[/red]")
+        for reason in failures[:10]:
+            console.print(f"  [red]{reason}[/red]")
+        if len(failures) > 10:
+            console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+        return 1
     return 0
 
 

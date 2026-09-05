@@ -117,6 +117,46 @@ class TestCountFiles:
         assert deis_module.count_files(tmp_path, exclude={"done", "path.txt"}) == 1
 
 
+class TestBulkFailures:
+    """_bulk answers 200 OK even when every item in it failed, so the only
+    signal is the response body - see bin/deis.py's bulk_failures().
+    """
+
+    def test_no_errors_flag_is_success(self, deis_module):
+        assert deis_module.bulk_failures({"took": 3, "errors": False, "items": []}) == []
+
+    def test_reports_each_failed_item(self, deis_module):
+        response = {
+            "errors": True,
+            "items": [
+                {"update": {"_id": "aaa", "status": 200}},
+                {"update": {"_id": "bbb", "status": 409, "error": {"reason": "version conflict"}}},
+                {"update": {"_id": "ccc", "status": 400, "error": {"reason": "mapper_parsing_exception"}}},
+            ],
+        }
+        failures = deis_module.bulk_failures(response)
+        assert failures == ["bbb: version conflict", "ccc: mapper_parsing_exception"]
+
+    def test_missing_items_key_does_not_crash(self, deis_module):
+        assert deis_module.bulk_failures({"errors": True}) == []
+
+
+class TestInitEnvPermissions:
+    def test_generated_env_is_not_world_readable(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / ".env.default").write_text("ELASTIC_PASSWORD=changeme\nKIBANA_PASSWORD=changeme\n")
+        (tmp_path / "deis.cfg.default").write_text("[unpack]\nunpack=true\n")
+
+        deis_module.cmd_init(argparse.Namespace())
+
+        env_path = tmp_path / ".env"
+        assert env_path.stat().st_mode & 0o077 == 0
+        # And the placeholder really was replaced, with a distinct secret per line.
+        values = deis_module.read_env(env_path)
+        assert "changeme" not in values.values()
+        assert values["ELASTIC_PASSWORD"] != values["KIBANA_PASSWORD"]
+
+
 class TestCompletionScripts:
     """SUBCOMMANDS/RUN_ONLY_CHOICES are the single source of truth for both
     build_parser() and the completion scripts - these tests catch the two

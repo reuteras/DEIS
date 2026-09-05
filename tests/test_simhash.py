@@ -36,9 +36,21 @@ traditional methods passed down through generations of family cooking.
 """
 
 
+# Purely numeric/tabular content - no alphabetic words at all, which is
+# what the real corpus is largely made of (amounts, dates, account numbers).
+NUMBERS_ONLY_A = "1234,5678,9012\n2024-01-01,500.00\n2024-02-01,750.25"
+NUMBERS_ONLY_B = "9999,1111,2222\n2023-05-05,17.50\n2023-06-05,88.10"
+
+
 class TestFingerprint:
-    def test_empty_text_returns_zero(self):
-        assert simhash.fingerprint("") == 0
+    def test_empty_text_returns_none(self):
+        assert simhash.fingerprint("") is None
+
+    def test_text_with_no_alphabetic_words_returns_none(self):
+        # Regression: these used to return 0, which made every numeric
+        # document a distance-0 match for every other one.
+        assert simhash.fingerprint(NUMBERS_ONLY_A) is None
+        assert simhash.fingerprint("### --- ***") is None
 
     def test_deterministic(self):
         assert simhash.fingerprint(LETTER_V1) == simhash.fingerprint(LETTER_V1)
@@ -107,6 +119,26 @@ class TestCluster:
 
     def test_empty_input(self):
         assert simhash.cluster({}) == {}
+
+    def test_unrelated_numeric_documents_are_not_clustered(self):
+        """The bug this guards against: two unrelated numeric/tabular
+        documents both fingerprinting to 0, and so landing in one bogus
+        "near-duplicate" cluster together with every other such document.
+        Callers are expected to drop the None fingerprints (see
+        bin/deis.py's cmd_dedupe_scan) rather than store them.
+        """
+        fingerprints = {
+            doc_id: value
+            for doc_id, value in {
+                "numbers_a": simhash.fingerprint(NUMBERS_ONLY_A),
+                "numbers_b": simhash.fingerprint(NUMBERS_ONLY_B),
+                "punctuation": simhash.fingerprint("### --- ***"),
+                "letter": simhash.fingerprint(LETTER_V1),
+            }.items()
+            if value is not None
+        }
+        assert set(fingerprints) == {"letter"}
+        assert simhash.cluster(fingerprints, max_distance=10) == {}
 
     def test_transitive_chain_forms_one_cluster(self):
         # a-b close, b-c close, a-c not directly close enough on their own -

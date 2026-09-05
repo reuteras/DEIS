@@ -60,7 +60,7 @@ Newly indexed and failed files are logged to `logs/ingest.log`; a summary prints
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].
 
 Every document is tagged with a detected `language` (`english`/`swedish`/`unknown`, via a
-stopword-frequency heuristic run server-side at ingest time) - filterable in Kibana, and used
+stopword-presence heuristic run server-side at ingest time) - filterable in Kibana, and used
 by the notebook's word cloud to pick the right stopword list automatically instead of needing
 it set by hand. `attachment.content` also carries per-language analyzed sub-fields
 (`.english`/`.swedish`, using Elasticsearch's built-in stemming analyzers) for better recall on

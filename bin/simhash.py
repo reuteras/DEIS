@@ -42,7 +42,7 @@ def _shingle_hash(shingle: str) -> int:
     return int.from_bytes(digest, "big")
 
 
-def fingerprint(text: str) -> int:
+def fingerprint(text: str) -> int | None:
     """Computes a FINGERPRINT_BITS-bit SimHash: for each bit position, sums
     +1/-1 across every shingle's hash (weighted by how often a shingle
     repeats, which is exactly what should make a document's fingerprint
@@ -50,6 +50,15 @@ def fingerprint(text: str) -> int:
     positive. Two documents sharing most of their shingles end up with
     fingerprints differing in only a handful of bits, regardless of
     unrelated edits elsewhere in the text.
+
+    Returns None - not 0 - for text that yields no shingles at all, i.e.
+    that contains no alphabetic words: _shingles() strips digits and
+    punctuation out of the tokens themselves, so a purely numeric/tabular
+    document (a CSV of amounts and dates, very common in this corpus)
+    reduces to nothing. Those documents have no measurable content to
+    compare, and returning 0 made every one of them a distance-0 match for
+    every other, collapsing them into a single bogus "near-duplicate"
+    cluster. None forces the caller to exclude them explicitly.
     """
     bit_totals = [0] * FINGERPRINT_BITS
     shingle_count = 0
@@ -63,7 +72,7 @@ def fingerprint(text: str) -> int:
                 bit_totals[bit] -= 1
 
     if shingle_count == 0:
-        return 0
+        return None
 
     result = 0
     for bit in range(FINGERPRINT_BITS):
@@ -85,6 +94,14 @@ def cluster(fingerprints: dict[str, int], max_distance: int = 10) -> dict[str, s
     Returns {id: cluster_representative_id} for every id that ended up in a
     cluster of size > 1 - ids with no near-duplicate are omitted entirely,
     so the caller can tell "not clustered" apart from "its own cluster".
+
+    Clustering is transitive, which is a deliberate trade but worth knowing
+    when reading a result: a chain of documents each within max_distance of
+    the next merges into one cluster even though its two ends can be far
+    further apart than max_distance. That is what makes "same template,
+    edited repeatedly over months" land in a single cluster; it also means a
+    large cluster's members are not all pairwise near-duplicates of each
+    other. Lower --max-distance if a cluster looks like it chained too far.
 
     The default (10 of FINGERPRINT_BITS=64 bits) is empirically calibrated,
     not guessed: a short multi-paragraph letter with one name changed

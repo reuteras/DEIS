@@ -21,6 +21,13 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+# bin/ is only guaranteed to be on sys.path when this file is run directly as
+# a script (python adds the script's own directory automatically); loaded
+# dynamically the way tests/test_deis_cli.py does, it isn't - so this makes
+# the sibling import work either way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pii
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ES_URL = "http://127.0.0.1:9200"
 KIBANA_URL = "http://127.0.0.1:5601"
@@ -39,6 +46,7 @@ SUBCOMMANDS = (
     "search",
     "report",
     "add-urls",
+    "pii-scan",
     "clean",
     "reset",
     "completion",
@@ -90,6 +98,23 @@ def es_request(path: str, method: str = "GET", body: dict | None = None, timeout
     if data is not None:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.load(response)
+
+
+def es_bulk(actions: list[dict]) -> dict:
+    """POSTs a _bulk request. Separate from es_request(): _bulk needs
+    newline-delimited JSON (one compact line per action/doc, no wrapping
+    array or indentation) and a different content-type, not the single
+    pretty-printable JSON body es_request() sends.
+    """
+    body = ("\n".join(json.dumps(line, separators=(",", ":")) for line in actions) + "\n").encode("utf-8")
+    password = elastic_password()
+    if not password:
+        raise RuntimeError("ELASTIC_PASSWORD is not set (check .env, or run 'deis init').")
+    req = urllib.request.Request(ES_URL + "/_bulk", data=body, method="POST")
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode("ascii"))
+    req.add_header("Content-Type", "application/x-ndjson")
+    with urllib.request.urlopen(req, timeout=60) as response:
         return json.load(response)
 
 
@@ -335,6 +360,69 @@ def cmd_report(_args) -> int:
     return 0
 
 
+def cmd_pii_scan(args) -> int:
+    """A post-pass (item 31), not an ingest-time enrichment: it runs
+    against attachment.content, which only exists once Elasticsearch's own
+    ingest pipeline has already Tika-parsed a document - ingest.py itself
+    only ever sees the original file's raw bytes, never the extracted
+    text, so detection can't happen any earlier than this.
+    """
+    query = {"match_all": {}} if args.rescan else {"bool": {"must_not": {"exists": {"field": "pii.has_pii"}}}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": ["attachment.content"], "query": query},
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    totals = dict.fromkeys(("personnummer", "emails", "phone_numbers", "ibans", "card_numbers"), 0)
+    scanned = 0
+    with_pii = 0
+
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            actions = []
+            for hit in hits:
+                content = hit.get("_source", {}).get("attachment", {}).get("content", "") or ""
+                result = pii.detect_all(content)
+                scanned += 1
+                if result["has_pii"]:
+                    with_pii += 1
+                for key in totals:
+                    totals[key] += len(result[key])
+                actions.append({"update": {"_index": INDEX, "_id": hit["_id"]}})
+                actions.append({"doc": {"pii": result}})
+
+            if actions:
+                es_bulk(actions)
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    console.print(f"Scanned {scanned} document(s), {with_pii} with at least one identifier found.")
+    table = Table(title="Identifiers found")
+    table.add_column("Type")
+    table.add_column("Count")
+    for key, count in totals.items():
+        table.add_row(key, str(count))
+    console.print(table)
+    return 0
+
+
 def cmd_add_urls(args) -> int:
     target = args.target
     candidates = [target] if "://" in target else Path(target).read_text(encoding="utf-8").splitlines()
@@ -484,6 +572,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add-urls", help="queue a URL, or a file of URLs, for download")
     p_add.add_argument("target", help="a single URL, or a path to a file of URLs (one per line)")
     p_add.set_defaults(func=cmd_add_urls)
+
+    p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
+    p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
+    p_pii.set_defaults(func=cmd_pii_scan)
 
     sub.add_parser("clean", help="wrap 'just clean' behind a confirmation prompt").set_defaults(func=cmd_clean)
     sub.add_parser("reset", help="wrap 'just dist-clean' behind a confirmation prompt").set_defaults(func=cmd_reset)

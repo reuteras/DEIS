@@ -215,6 +215,37 @@ try_extract() {
     return 1
 }
 
+# OCR for image-only content (item 21/31's origin story: a scanned
+# passport or invoice indexes with content_length: 0 and is invisible to
+# every content search). Runs against a file already at its final resting
+# place under /extracted/files, not the pre-copy source path. Writes a
+# "<name>.ocr.txt" sidecar - picked up by ingest.py's normal directory walk
+# as its own independently indexed document - rather than merging OCR text
+# into the same Elasticsearch document as the original image, which would
+# mean touching ingest.py's already crash-safety-tuned bulk/marker flow for
+# a text source (Tesseract, forked as a subprocess) that has nothing to do
+# with the sha256-confirmed-before-marked guarantee that flow provides.
+# Scoped to image files only for now, not scanned PDFs (which would need
+# PDF rasterization tooling too - a real gap, left as a known limitation
+# rather than attempted here).
+maybe_ocr() {
+    local final_path="$1" mime ocr_languages ocr_timeout text
+    config_true ocr || return 0
+    mime="$(file --mime-type -b -- "${final_path}" 2>/dev/null)"
+    case "${mime}" in
+    image/*) ;;
+    *) return 0 ;;
+    esac
+    ocr_languages="$(read_cfg ocr_languages)"
+    [[ -z "${ocr_languages}" ]] && ocr_languages="eng"
+    ocr_timeout="$(config_int extract_timeout "${EXTRACT_TIMEOUT_DEFAULT}")"
+    text="$(timeout "${ocr_timeout}" tesseract -l "${ocr_languages}" "${final_path}" stdout 2>/dev/null)"
+    if [[ -n "${text//[[:space:]]/}" ]]; then
+        printf '%s\n' "${text}" > "${final_path}.ocr.txt"
+        log OCR "Extracted OCR text: ${final_path}.ocr.txt"
+    fi
+}
+
 # Runs the real extraction for one sha256 group's representative file
 # ("primary" - see dispatch_round below). $3, if given, is the group's
 # result-file name; every other file sharing this group's content reuses
@@ -253,10 +284,15 @@ process_zip_like() {
     # collisions namespacing by the archive's own sha256 exists to avoid.
     # Only a genuinely top-level /files/* entry needs to be placed for the
     # first time.
-    [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+    local final_path="${path}"
+    if [[ "${path}" != /extracted/files/* ]]; then
+        cp "${path}" /extracted/files/
+        final_path="/extracted/files/$(basename -- "${path}")"
+    fi
     case "${EXTRACT_RESULT}" in
         not-archive)
             log COPIED "Not an archive, left/copied as-is: ${path}"
+            maybe_ocr "${final_path}"
             ;;
         encrypted)
             echo "${sha}" >> "${STILL_ENCRYPTED}"
@@ -310,8 +346,13 @@ apply_known_result() {
             dispose_of_original "${path}" "${kind}"
             ;;
         not-archive)
-            [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
+            local dup_final_path="${path}"
+            if [[ "${path}" != /extracted/files/* ]]; then
+                cp "${path}" /extracted/files/
+                dup_final_path="/extracted/files/$(basename -- "${path}")"
+            fi
             log COPIED "Not an archive (same content already checked this round), left/copied as-is: ${path}"
+            maybe_ocr "${dup_final_path}"
             ;;
         encrypted)
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
@@ -384,7 +425,7 @@ process_one_file() {
 }
 
 export -f log read_cfg config_true config_int load_passwords dispose_of_original \
-    queue_new_files check_archive_safety try_extract process_zip_like process_pst \
+    queue_new_files check_archive_safety maybe_ocr try_extract process_zip_like process_pst \
     apply_known_result worker_entrypoint process_one_file
 
 # Extracts one round of files in parallel (up to $PARALLELISM at a time).

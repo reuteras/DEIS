@@ -24,3 +24,11 @@ max_depth=6
 max_extract_bytes=10737418240
 max_compression_ratio=200
 extract_timeout=1800
+# OCR for image files (docs/IMPROVEMENTS.md item 21) - a scanned passport or
+# invoice saved as a plain image otherwise indexes with no searchable text
+# at all. Writes a "<name>.ocr.txt" sidecar next to the image, indexed as
+# its own document. ocr_languages is passed straight to tesseract's -l flag
+# (tesseract-ocr-eng/swe are installed in the image); "+"-combine multiple,
+# e.g. eng+swe.
+ocr=true
+ocr_languages=eng

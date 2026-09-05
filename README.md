@@ -42,6 +42,10 @@ every password below has been tried are listed in `extracted/still_encrypted.txt
   `extracted/still_unsafe.txt`. A single archive's extraction is also capped at
   `extract_timeout` seconds (default 1800) so one hung `7-Zip`/`readpst` run can't stall the
   pipeline indefinitely.
+- OCR for image files (`deis.cfg`'s `ocr`/`ocr_languages`, on by default with `eng`; also
+  installed: `swe`) - a scanned passport or invoice saved as a plain image otherwise has
+  no searchable text at all. Writes a `<name>.ocr.txt` file next to the image, indexed as its
+  own separate document.
 
 ### Ingest
 
@@ -54,6 +58,13 @@ Newly indexed and failed files are logged to `logs/ingest.log`; a summary prints
 ### Search
 
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].
+
+Every document is tagged with a detected `language` (`english`/`swedish`/`unknown`, via a
+stopword-frequency heuristic run server-side at ingest time) - filterable in Kibana, and used
+by the notebook's word cloud to pick the right stopword list automatically instead of needing
+it set by hand. `attachment.content` also carries per-language analyzed sub-fields
+(`.english`/`.swedish`, using Elasticsearch's built-in stemming analyzers) for better recall on
+Swedish text.
 
 ### Known limitations and planned work
 
@@ -160,6 +171,7 @@ bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with va
 bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed
+bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
 ```
@@ -167,6 +179,18 @@ bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt 
 `bin/deis doctor` does not yet include a TOR egress leak test (see
 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) item 42) - it does not confirm downloads are
 actually routed through TOR.
+
+`bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already
+Tika-extracted text and looks for Swedish personnummer/samordningsnummer, emails, phone
+numbers, IBANs and card numbers, validating each numeric one against its real
+checksum before counting it (so a random 9- or 10-digit number in a spreadsheet isn't reported
+as a personnummer just because it has the right shape). Results land in each document's `pii`
+field, searchable in Kibana or via `bin/deis search`, and the "Leaked data" dashboard has a
+"Documents with personal identifiers" panel. Only unscanned documents are processed by
+default; pass `--rescan` to redo everything (for example after upgrading the detectors).
+Checksum validation cuts false positives sharply but doesn't eliminate them entirely - a
+numeric match still only needs to satisfy a 1-in-10 or 1-in-11 chance by coincidence, so treat
+a `pii-scan` hit as a strong lead worth checking, not absolute proof.
 
 Shell completion for subcommands (and `run --only`'s choices) is available for bash and zsh:
 

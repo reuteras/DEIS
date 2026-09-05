@@ -137,6 +137,12 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
             "formats" : ["UNIX"],
             "timezone" : "UTC"
             }
+        },
+        {
+            "script" : {
+                "description" : "item 32: tag detected language via stopword-frequency scoring, so the notebook can stop applying both stopword lists indiscriminately and Kibana can filter by language",
+                "source" : "if (ctx.attachment == null || ctx.attachment.content == null) { ctx.language = \"unknown\"; } else { String content = \" \" + ((String) ctx.attachment.content).toLowerCase() + \" \"; int en = 0; int sv = 0; if (content.contains(\" the \")) en++; if (content.contains(\" and \")) en++; if (content.contains(\" that \")) en++; if (content.contains(\" with \")) en++; if (content.contains(\" for \")) en++; if (content.contains(\" this \")) en++; if (content.contains(\" from \")) en++; if (content.contains(\" have \")) en++; if (content.contains(\" are \")) en++; if (content.contains(\" was \")) en++; if (content.contains(\" och \")) sv++; if (content.contains(\" det \")) sv++; if (content.contains(\" att \")) sv++; if (content.contains(\" som \")) sv++; if (content.contains(\" med \")) sv++; if (content.contains(\" inte \")) sv++; if (content.contains(\" den \")) sv++; if (content.contains(\" vara \")) sv++; if (content.contains(\" har \")) sv++; if (content.contains(\" till \")) sv++; if (en >= sv && en > 2) { ctx.language = \"english\"; } else if (sv >= en && sv > 2) { ctx.language = \"swedish\"; } else { ctx.language = \"unknown\"; } }"
+            }
         }
     ]
 }
@@ -163,12 +169,27 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                 "sha256" : { "type" : "keyword" },
                 "filename" : { "type" : "keyword" },
                 "extraction_status" : { "type" : "keyword" },
+                "language" : { "type" : "keyword" },
                 "attachment" : {
                     "properties" : {
                         "content" : {
                             "type" : "text",
-                            "fielddata" : true
+                            "fielddata" : true,
+                            "fields" : {
+                                "english" : { "type" : "text", "analyzer" : "english" },
+                                "swedish" : { "type" : "text", "analyzer" : "swedish" }
+                            }
                         }
+                    }
+                },
+                "pii" : {
+                    "properties" : {
+                        "personnummer" : { "type" : "keyword" },
+                        "emails" : { "type" : "keyword" },
+                        "phone_numbers" : { "type" : "keyword" },
+                        "ibans" : { "type" : "keyword" },
+                        "card_numbers" : { "type" : "keyword" },
+                        "has_pii" : { "type" : "boolean" }
                     }
                 }
             },
@@ -212,17 +233,32 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
 # existing index's mapping doesn't require a reindex). This index's filename
 # field is still text+keyword (see above), so its script still reads
 # filename.keyword, unlike the template's version above.
-log 'Backfill top_folder runtime field, extraction_status and content fielddata onto the existing leakdata index'
+log 'Backfill top_folder runtime field, extraction_status, content fielddata, pii and language onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {
     "properties" : {
         "extraction_status" : { "type" : "keyword" },
+        "language" : { "type" : "keyword" },
         "attachment" : {
             "properties" : {
                 "content" : {
                     "type" : "text",
-                    "fielddata" : true
+                    "fielddata" : true,
+                    "fields" : {
+                        "english" : { "type" : "text", "analyzer" : "english" },
+                        "swedish" : { "type" : "text", "analyzer" : "swedish" }
+                    }
                 }
+            }
+        },
+        "pii" : {
+            "properties" : {
+                "personnummer" : { "type" : "keyword" },
+                "emails" : { "type" : "keyword" },
+                "phone_numbers" : { "type" : "keyword" },
+                "ibans" : { "type" : "keyword" },
+                "card_numbers" : { "type" : "keyword" },
+                "has_pii" : { "type" : "boolean" }
             }
         }
     },
@@ -248,6 +284,19 @@ curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/l
 {
     "query" : { "bool" : { "must_not" : { "exists" : { "field" : "extraction_status" } } } },
     "script" : { "source" : "ctx._source.extraction_status = '"'"'ok'"'"'" }
+}
+' > /dev/null && sublog 'Done'
+
+# Same reasoning as extraction_status above: the cbor-attachment pipeline's
+# new language-detection processor (item 32) only tags documents indexed
+# after it existed. Re-runs the identical detection logic as an
+# _update_by_query script instead of reindexing, so pre-existing documents
+# get a language tag too.
+log 'Backfill language onto documents indexed before language detection existed'
+curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_update_by_query?conflicts=proceed&pretty" -H 'Content-Type: application/json' -d'
+{
+    "query" : { "bool" : { "must_not" : { "exists" : { "field" : "language" } } } },
+    "script" : { "source" : "if (ctx._source.attachment == null || ctx._source.attachment.content == null) { ctx._source.language = \"unknown\"; } else { String content = \" \" + ((String) ctx._source.attachment.content).toLowerCase() + \" \"; int en = 0; int sv = 0; if (content.contains(\" the \")) en++; if (content.contains(\" and \")) en++; if (content.contains(\" that \")) en++; if (content.contains(\" with \")) en++; if (content.contains(\" for \")) en++; if (content.contains(\" this \")) en++; if (content.contains(\" from \")) en++; if (content.contains(\" have \")) en++; if (content.contains(\" are \")) en++; if (content.contains(\" was \")) en++; if (content.contains(\" och \")) sv++; if (content.contains(\" det \")) sv++; if (content.contains(\" att \")) sv++; if (content.contains(\" som \")) sv++; if (content.contains(\" med \")) sv++; if (content.contains(\" inte \")) sv++; if (content.contains(\" den \")) sv++; if (content.contains(\" vara \")) sv++; if (content.contains(\" har \")) sv++; if (content.contains(\" till \")) sv++; if (en >= sv && en > 2) { ctx._source.language = \"english\"; } else if (sv >= en && sv > 2) { ctx._source.language = \"swedish\"; } else { ctx._source.language = \"unknown\"; } }" }
 }
 ' > /dev/null && sublog 'Done'
 

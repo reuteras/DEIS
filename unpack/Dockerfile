@@ -16,6 +16,9 @@ RUN apt-get update && \
         ca-certificates \
         file \
         pst-utils \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-swe \
         wget \
         xz-utils && \
     /install.sh && \

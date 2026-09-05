@@ -38,18 +38,6 @@ Far fewer documents than files is normal: the document id **is** the sha256, so 
 files collapse into one document. Here 151 hashes appear once, 122 appear more than once,
 and 124 duplicate copies are folded in (151 + 122 = 273 unique; 273 + 124 = 397 files).
 
-**Correction to an earlier version of this document.** It claimed two files were being
-silently lost, based on a symlink count of 274 against 272 documents. That was wrong on two
-counts. The two extra hashes belonged to `path.txt` and `done`, bookkeeping files that
-`ingest.py` has deliberately skipped since commit `29474d9` (Jan 2024), and their symlinks
-were orphans left from before that guard existed. The count also came from the wrong place:
-there are **two separate sha256 symlink trees** — `ingest.py` writes its markers to
-`extracted/sha256` on the host, while the `web` container has its own `deis_shasum` volume
-built independently by `web/startup.sh`. Comparing the second one against Elasticsearch
-compares two things that were never meant to match. No data had been lost. The underlying
-ordering bug in item 1 was real and is fixed, but this was not evidence of it. The
-duplicated symlink tree was itself cleaned up; see item 43 in "Already fixed".
-
 ## Open items
 
 ### D — Download

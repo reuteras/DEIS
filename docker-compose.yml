@@ -17,11 +17,6 @@ services:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
       LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
       KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
-      METRICBEAT_INTERNAL_PASSWORD: ${METRICBEAT_INTERNAL_PASSWORD:-}
-      FILEBEAT_INTERNAL_PASSWORD: ${FILEBEAT_INTERNAL_PASSWORD:-}
-      HEARTBEAT_INTERNAL_PASSWORD: ${HEARTBEAT_INTERNAL_PASSWORD:-}
-      MONITORING_INTERNAL_PASSWORD: ${MONITORING_INTERNAL_PASSWORD:-}
-      BEATS_SYSTEM_PASSWORD: ${BEATS_SYSTEM_PASSWORD:-}
     networks:
       - elk
     depends_on:
@@ -201,9 +196,12 @@ services:
 
 
   # Nothing in the DEIS pipeline feeds Logstash - ingest.py writes to
-  # Elasticsearch directly. It is kept for the optional extensions in
-  # extensions/, behind a profile so that it no longer starts by default.
-  # Start it with: docker compose --profile logstash up -d
+  # Elasticsearch directly. It used to be justified by the optional
+  # extensions in extensions/, which item 40 removed as never-wired-up, so
+  # it now has no consumer at all and is a candidate for removal in its own
+  # right - left in place here only because item 40's scope was the
+  # log-ingest scaffolding, not this. Behind a profile, so it does not start
+  # by default: docker compose --profile logstash up -d
   logstash:
     profiles:
       - logstash

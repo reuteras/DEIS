@@ -7,7 +7,6 @@ deis.cfg.default
 docker-compose.yml
 downloader/
 elasticsearch/
-extensions/
 extracted/
 files/
 kibana/

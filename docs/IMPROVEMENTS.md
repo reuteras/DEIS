@@ -697,6 +697,10 @@ directory at the repo root):
   queued.
 - `deis clean` / `deis reset` - confirmation-gated (`y/N`, refuses on anything but `yes`)
   wrappers around `just clean` / `just dist-clean`, since both delete evidence.
+- `deis completion {bash,zsh}` - prints a shell completion script for the commands above,
+  hand-written (not `argcomplete`-generated - avoids a new dependency for ~9 fixed words) and
+  kept in sync with `build_parser()` by a single `SUBCOMMANDS` tuple both read from, checked
+  by a test that fails if the two ever diverge.
 
 Verified against the live stack for everything that needs one: `doctor` correctly
 distinguished the always-on `deis` orchestrator container (legitimately `exited`) from the
@@ -708,9 +712,15 @@ secret` legitimately found nothing in this Portuguese-language corpus); `run --o
 started exactly the right container. `add-urls` and `init` were verified against scratch
 copies of `urls/`/`.env`/`deis.cfg`, not the real ones, so testing never queued a real
 download or touched the real live instance's config; `clean`/`reset` were verified by
-answering "n" and confirming the destructive command never actually ran. Added
-`tests/test_deis_cli.py` (17 tests) for the pure logic (URL scheme validation, `.env`
-parsing, marker-file status computation) that doesn't need a live stack.
+answering "n" and confirming the destructive command never actually ran. `completion bash`'s
+output was `shellcheck`-clean and functionally exercised in a real bash subprocess (simulated
+`COMP_WORDS`/`COMP_CWORD`, confirmed the right completions came back for the bare command and
+for `run --only`); `completion zsh`'s output was confirmed syntactically valid (`zsh -n`) and
+loads without error, though zsh's completion-system builtins (`_describe`/`_arguments`) aren't
+practically driven end-to-end outside an interactive shell the way bash's `COMPREPLY` is.
+Added `tests/test_deis_cli.py` (24 tests) for the pure logic (URL scheme validation, `.env`
+parsing, marker-file status computation, and the completion scripts' consistency/syntax/
+behavior) that doesn't need a live stack.
 
 ### Cross-cutting (fixed)
 

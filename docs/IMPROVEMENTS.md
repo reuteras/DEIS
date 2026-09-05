@@ -108,12 +108,6 @@ raising explicitly rather than picking unilaterally - and a low-quality regex-ba
 cluttering search results with noise on a tool whose whole premise is trustworthy answers.
 *Effort: L. Impact: high, but blocked on a dependency decision.*
 
-#### 33. Near-duplicate detection and clustering
-
-Leak dumps are full of near-identical documents: mail threads, template letters, versioned
-files. Exact sha256 dedup already exists; fuzzy clustering with SimHash or MinHash, or a
-`fingerprint` analyzer on content, would cut the volume a person has to read. *Effort: M.*
-
 #### 36. Result quality
 
 Highlighted snippets rather than raw content, a saved search per detected entity type, and
@@ -130,16 +124,18 @@ or remove it, and document `evtx2json` as the manual side tool it currently is. 
 
 ## Suggested sequencing
 
-1. **Analytical power, continued** (33, near-duplicate detection). PII detection (31), OCR
-    (the highest-value part of 21), and language detection (the tractable half of 32) are
-    done; see "Already fixed". The CLI (originally step 1) is also done. Entity extraction
-    (the rest of 32) is blocked on a dependency decision (spaCy vs. Elasticsearch's inference
-    API), not effort. The rest of 21 (email formats beyond PST, structured data as rows,
-    disk/VM images, mobile backups, encrypted-archive listing) is still open, lower priority.
+All of the "analytical power" sequencing from earlier revisions of this document is now done:
+PII detection (31), OCR (the highest-value part of 21), language detection (the tractable half
+of 32), and near-duplicate clustering (33) - see "Already fixed". The CLI (originally step 1)
+is also done. What remains is smaller and lower-priority:
 
-Housekeeping items (10's v2ray remainder, 42's preflight leak test, 40's log-ingest
-scaffolding, 36's result-quality polish) are individually small and can be picked up whenever
-the surrounding code is being touched anyway.
+1. Entity extraction (the rest of 32) is blocked on a dependency decision (spaCy vs.
+    Elasticsearch's inference API), not effort - worth raising with whoever owns this project's
+    dependency posture before picking one.
+2. The rest of 21 (email formats beyond PST, structured data as rows, disk/VM images, mobile
+    backups, encrypted-archive listing), 36 (result quality), 40 (log-ingest scaffolding), 42
+    (preflight TOR leak test), and 10's v2ray remainder are each individually small and can be
+    picked up whenever the surrounding code is being touched anyway.
 
 ## Verification approach
 
@@ -194,6 +190,7 @@ the surrounding code is being touched anyway.
 | 31 | The only way to answer "does this leak contain my friend's personal data" was free-text KQL | 23ac2e8 |
 | 21 (OCR only) | A scanned passport or invoice saved as a plain image indexed with no searchable text at all | 23ac2e8 |
 | 32 (language detection only) | The notebook hand-applied both stopword lists at once instead of detecting which language a document is actually in | 23ac2e8 |
+| 33 | Mail threads, template letters, and versioned files that share most of their content had no way to be grouped short of exact sha256 matches | 4d94a47 |
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
 and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
@@ -744,6 +741,48 @@ correctly falling back to English, since 1 document is below the 3-document thre
 than just returning without exception. A full `ingest.py` run against the live stack afterward
 reconciled to the same 273/0/0 counts as before, confirming the new pipeline processor doesn't
 disturb ingest.
+
+#### 33. Near-duplicate detection and clustering (fixed)
+
+Exact sha256 dedup (item 41) only catches files that are byte-for-byte identical - a mail
+thread, a template letter sent to two people, or the same monthly report with one number
+changed all get their own separate, unrelated documents today.
+
+`bin/simhash.py` (pure functions, no network) implements SimHash: text is split into
+overlapping 4-word shingles (digits and punctuation stripped from the words themselves, so
+this corpus's amounts/dates/account numbers - which dominate the raw text - don't drown out
+what the shingles actually say about whether two documents are the same letter), each shingle
+hashed with `hashlib.blake2b` (not Python's built-in `hash()`, which is randomized per-process
+for strings and would make fingerprints meaningless across runs), and a 64-bit fingerprint
+built by a per-bit majority vote across every shingle's hash. Two documents sharing most of
+their shingles end up with fingerprints differing in only a handful of bits (Hamming distance),
+regardless of unrelated edits elsewhere in the text; two unrelated documents differ in roughly
+half the bits. `bin/deis dedupe-scan` (`--max-distance`, default 10 of 64 bits) fetches every
+document's content, computes fingerprints, and clusters them via union-find, writing the
+cluster's representative sha256 into each member's `duplicate_cluster` field. Unlike
+`pii-scan`/language detection, this always recomputes the **whole** corpus on every run rather
+than skipping already-processed documents - whether two documents cluster together depends on
+every other document too, not just themselves - clearing any stale `duplicate_cluster` values
+first so a corpus that changes between runs doesn't leave documents assigned to a cluster they
+no longer belong to. The dashboard gained a "Near-duplicate clusters" saved search, sorted by
+`duplicate_cluster` so each cluster's members sit together.
+
+Verified with `tests/test_simhash.py` (14 tests): near-identical short letters (one name
+changed) measured ~6 bits apart, the same letter with two more small edits ~8 bits, and a
+genuinely unrelated document ~41 bits - real numbers, not assumed, used to calibrate both the
+test assertions and `cluster()`'s default `max_distance`. Two real bugs were caught by running
+these tests, not by reading the code: `cluster()`'s union-find initialized every node's parent
+to `None` instead of itself (`dict.fromkeys(fingerprints)` defaults every value to `None`
+without a second argument - a `KeyError` on the very first union), and the first version of the
+"largest clusters" table in `bin/deis.py` double-counted each cluster's representative,
+inflating every size by one. Verified against the live stack: `dedupe-scan` against the real
+273-document corpus (272 with content) found 243 documents in 28 clusters - reproducibly
+(re-running produced the identical 243/28 breakdown) and tunably (`--max-distance 2` tightened
+it to 223/29). Spot-checked actual cluster members rather than trusting the aggregate count:
+the two largest clusters (31 and 29 members) turned out to be exactly the case this item
+describes - the same monthly insurance-forecast and life-insurance-provision templates,
+one file per month (`...UNIMED 072024.txt`, `...UNIMED 042024.txt`, `...UNIMED 052024.txt`,
+and so on) - genuine near-duplicates, not a false positive from generic spreadsheet structure.
 
 #### 34. Surface the failure states in the dashboard (fixed)
 

@@ -10,16 +10,14 @@
 
 set -u
 
+# Resolved at runtime inside the container; same suppression
+# setup/entrypoint.sh already uses for its own lib.sh.
+# shellcheck disable=SC1091
+source "${BASH_SOURCE[0]%/*}/lib.sh"
+
 url="${1}"
 
-# Pick the host out of the URL so that a clearnet link which merely mentions
-# ".onion" somewhere in its path isn't mistaken for a hidden service.
-host="${url#*://}"      # drop the scheme
-host="${host%%/*}"      # drop the path
-host="${host##*@}"      # drop any user:password@
-host="${host%%:*}"      # drop the port
-
-if [[ "${host}" == *.onion ]] || [[ "${FORCE_TOR:-false}" == "true" ]]; then
+if url_needs_tor "${url}"; then
     # Use the proxy from aria2.conf.
     options='{}'
 else

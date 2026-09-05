@@ -63,14 +63,6 @@ Still open: v2ray itself is installed by `downloader/install-release.sh`, a fetc
 that verifies its download only against a digest pulled from the same host it downloaded
 from — that has not been touched. *Effort: M.*
 
-#### 42. Preflight TOR leak test
-
-Fetch `check.torproject.org` through the configured proxy chain before any download starts
-and refuse to run if the answer is "not using TOR". With per-URL routing now in place this
-should assert the intended behaviour rather than blanket TOR use: `.onion` proxied, clearnet
-direct unless `FORCE_TOR` is set. For a non-expert operator this is the single most valuable
-opsec check, because it fails loudly instead of leaking quietly. *Effort: M. Impact: high.*
-
 ### E — Extract
 
 #### 21. More extractors (OCR done - see "Already fixed"; the rest is still open)
@@ -108,29 +100,27 @@ cluttering search results with noise on a tool whose whole premise is trustworth
 Highlighted snippets rather than raw content, a saved search per detected entity type, and
 export of a result set as CSV or JSON for reporting back to whoever asked. *Effort: M.*
 
-### Cross-cutting
-
-#### 40. Decide the fate of the log-ingest scaffolding
-
-`evtx2json/`, `evtx/`, `json/`, `syslog/` and the filebeat extension are a half-built path
-from closed issue #1. `syslog/` is mounted into filebeat but referenced by no input config,
-and the `modules.d` glob points at a directory that does not exist. Either finish the wiring
-or remove it, and document `evtx2json` as the manual side tool it currently is. *Effort: S.*
-
 ## Suggested sequencing
 
-All of the "analytical power" sequencing from earlier revisions of this document is now done:
-PII detection (31), OCR (the highest-value part of 21), language detection (the tractable half
-of 32), and near-duplicate clustering (33) - see "Already fixed". The CLI (originally step 1)
-is also done. What remains is smaller and lower-priority:
+All of the "analytical power" work is done: PII detection (31), OCR (the highest-value part of
+21), language detection (the tractable half of 32), near-duplicate clustering (33) and the CLI.
+So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR leak test) and
+40 (log-ingest scaffolding). What remains:
 
 1. Entity extraction (the rest of 32) is blocked on a dependency decision (spaCy vs.
-    Elasticsearch's inference API), not effort - worth raising with whoever owns this project's
-    dependency posture before picking one.
+    Elasticsearch's inference API), not effort - worth settling before picking one.
 2. The rest of 21 (email formats beyond PST, structured data as rows, disk/VM images, mobile
-    backups, encrypted-archive listing), 36 (result quality), 40 (log-ingest scaffolding), 42
-    (preflight TOR leak test), and 10's v2ray remainder are each individually small and can be
-    picked up whenever the surrounding code is being touched anyway.
+    backups, encrypted-archive listing), 36 (result quality), and 10's v2ray remainder are each
+    individually small and can be picked up whenever the surrounding code is being touched.
+
+Two smaller things worth recording rather than losing:
+
+- `logstash/` still has a compose profile but no consumer at all now that `extensions/` is
+  gone - it was only ever kept for those. A candidate for removal in its own right.
+- Two decisions from the post-review pass were deliberately left open: whether the `pii` field
+  should store full card numbers/personnummer or masked forms, and whether
+  `attachment.content`'s `.english`/`.swedish` sub-fields earn their index cost. Both need a
+  judgement call rather than a patch.
 
 ## Verification approach
 
@@ -182,6 +172,8 @@ is also done. What remains is smaller and lower-priority:
 | 37 | No test suite and CI ran only super-linter/osv-scanner; found and fixed a `re.match` gap in `web/app.py` and two CodeQL findings (embedded-credential URLs) in `ingest.py` along the way | `931e508` |
 | 38 | `ES_JAVA_OPTS` was hardcoded, forcing the 18 GB Docker requirement on everyone regardless of dump size | `3f3cf9b` |
 | 39 (ingest) | `ingest.py` had no per-file log, only an end-of-run summary | `3f3cf9b` |
+| 40 | `evtx2json/`, `evtx/`, `json/`, `syslog/` and `extensions/` were a half-built log-ingest path from closed issue #1, wired into nothing - and it silently created a credentialed `filebeat_internal` account with a write role on every instance | `c300891` |
+| 42 | Nothing verified that traffic meant for TOR actually left via TOR; a broken proxy chain would have downloaded in the clear without saying so | `TORCHECK_COMMIT` |
 | 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
 | 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |

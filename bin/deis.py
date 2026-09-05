@@ -282,12 +282,54 @@ def cmd_doctor(_args) -> int:
     except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
         console.print("[yellow]Could not read container status via docker compose ps.[/yellow]")
 
-    console.print(
-        "[yellow]Note: no TOR egress leak test yet (docs/IMPROVEMENTS.md item 42) - "
-        "this does not confirm downloads are actually routed through TOR.[/yellow]"
-    )
+    if not check_tor_egress():
+        ok = False
 
     return 0 if ok else 1
+
+
+def check_tor_egress() -> bool:
+    """Runs the same preflight deis/urls.sh runs before queueing a batch
+    (item 42), rather than a second implementation of it here. It has to
+    execute inside the deis container: v2ray is bound to 127.0.0.1 *inside*
+    the downloader container, so the proxy chain the check exercises is not
+    reachable from the host at all. Returns True when nothing is wrong -
+    including when the check could not be run, which is reported but is not
+    itself a finding.
+    """
+    try:
+        running = subprocess.check_output(
+            ["docker", "compose", "ps", "--status", "running", "--format", "{{.Service}}"],
+            cwd=REPO_ROOT,
+            text=True,
+        ).split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("[yellow]TOR egress: could not ask docker which containers are running.[/yellow]")
+        return True
+
+    if "deis" not in running or "downloader" not in running:
+        console.print(
+            "[yellow]TOR egress: not checked - the deis and downloader containers are not running. "
+            "Start them ('deis run --only download') and re-run doctor; the same check also runs "
+            "automatically before any URL is queued.[/yellow]"
+        )
+        return True
+
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "deis", "/deis/bin/torcheck.sh"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in (result.stdout + result.stderr).splitlines():
+        if line.strip():
+            console.print(f"  {line.strip()}")
+    if result.returncode != 0:
+        console.print("[red]TOR egress: FAILED - downloads meant for TOR would not go through TOR.[/red]")
+        return False
+    console.print("[green]TOR egress: OK.[/green]")
+    return True
 
 
 def cmd_run(args) -> int:

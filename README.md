@@ -17,6 +17,19 @@ This tool can be used to automate all of (or a selection of) the steps below.
 
 Download files automatically from leek sites using [TOR][tor]. I use a [forked][for] version of [aria2-onion-downloader][aod].
 
+`.onion` URLs go through TOR because nothing else resolves them; everything else is fetched
+directly, which is faster and costs nothing in privacy as long as you are on a VPN. Set
+**FORCE_TOR**`=true` in *.env* to push everything through TOR anyway.
+
+Before a single URL is queued, a preflight check asks `check.torproject.org` which address it
+actually sees, using the same proxy settings the real download would use - a broken proxy
+chain does not announce itself, it just quietly downloads in the clear. If the batch contains
+a `.onion` URL (or **FORCE_TOR** is set) and that traffic turns out **not** to be leaving via
+TOR, nothing is queued at all and the reason is written to `logs/download_errors.log`. A
+clearnet-only batch is not blocked - it never wanted TOR - but the exit address is still
+printed so you can confirm it is your VPN and not your own. `deis doctor` runs the same check
+on demand.
+
 ### Extract
 
 Automated extraction of compressed files with a simple container running [7-zip][7zz].

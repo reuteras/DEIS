@@ -35,9 +35,14 @@ if [[ -f /files/downloaded ]] && [[ ! -f /files/unpack ]]; then
             echo "ERROR: could not move ${path} to ${dest}"
             failed=$(( failed + 1 ))
         fi
-    done < <(find /downloader/data -type f ! -name '.gitignore' -print0 | sort -z)
+    # .torcheck holds item 42's preflight probe responses, not leak data.
+    # torcheck.sh deletes each probe as soon as it reads it, so this only
+    # matters if one was left behind by a crash - but sweeping it into
+    # /files would index a check.torproject.org response as evidence, so
+    # prune the directory rather than rely on that cleanup.
+    done < <(find /downloader/data -name .torcheck -prune -o -type f ! -name '.gitignore' -print0 | sort -z)
 
-    remaining="$(find /downloader/data -type f ! -name '.gitignore' | wc -l | tr -d ' ')"
+    remaining="$(find /downloader/data -name .torcheck -prune -o -type f ! -name '.gitignore' -print | wc -l | tr -d ' ')"
     if (( failed > 0 || remaining > 0 )); then
         echo "Move incomplete: ${failed} failed, ${remaining} file(s) left in /downloader/data. Will retry."
     else

@@ -15,6 +15,18 @@ if [[ ! -f /files/added_urls ]]; then
 
         sleep 1
 
+        # Item 42: verify egress before a single URL is queued, not after.
+        # A leaked download cannot be un-leaked, so this refuses to queue
+        # anything rather than reporting the problem once the request has
+        # already gone out. Only fatal when the batch actually needs TOR -
+        # torcheck.sh decides that using the same url_needs_tor() addurl.sh
+        # routes with.
+        if ! /deis/bin/torcheck.sh; then
+            log_error "Refusing to queue any URL: the TOR preflight check failed (see above)."
+            touch /files/download_failed
+            exit 1
+        fi
+
         while read -r url; do
             # Skip blank lines and comments.
             [[ -z "${url}" || "${url}" == \#* ]] && continue

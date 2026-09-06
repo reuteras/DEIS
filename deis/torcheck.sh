@@ -82,10 +82,22 @@ probe() {
         --arg dir "${PROBE_DIR_ARIA}" \
         --arg out "${name}" \
         --argjson options "${options}" \
-        '{jsonrpc: "2.0", id: "torcheck", method: "aria2.addUri",
-          params: [$secret, [$url],
-                   ($options + {dir: $dir, out: $out, "allow-overwrite": "true",
-                                "auto-file-renaming": "false", "max-tries": "1"})]}')"
+        '{
+            jsonrpc: "2.0",
+            id: "torcheck",
+            method: "aria2.addUri",
+            params: [
+                $secret,
+                [$url],
+                ($options + {
+                    dir: $dir,
+                    out: $out,
+                    "allow-overwrite": "true",
+                    "auto-file-renaming": "false",
+                    "max-tries": "1"
+                })
+            ]
+        }')"
 
     gid="$(rpc "${request}" | jq -r '.result // empty')"
     if [[ -z "${gid}" ]]; then
@@ -97,8 +109,12 @@ probe() {
         status="$(rpc "$(jq -n -c \
             --arg secret "token:${RPCSECRET}" \
             --arg gid "${gid}" \
-            '{jsonrpc: "2.0", id: "torcheck", method: "aria2.tellStatus",
-              params: [$secret, $gid, ["status"]]}')" | jq -r '.result.status // empty')"
+            '{
+                jsonrpc: "2.0",
+                id: "torcheck",
+                method: "aria2.tellStatus",
+                params: [$secret, $gid, ["status"]]
+            }')" | jq -r '.result.status // empty')"
         case "${status}" in
             complete) break ;;
             error|removed) return 1 ;;

@@ -12,10 +12,8 @@ services:
     volumes:
       - ./setup/entrypoint.sh:/entrypoint.sh:ro
       - ./setup/lib.sh:/lib.sh:ro
-      - ./setup/roles:/roles:ro
     environment:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
-      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
       KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
     networks:
       - elk
@@ -192,38 +190,6 @@ services:
       - 127.0.0.1:3000:3000
     networks:
       - web
-    restart: unless-stopped
-
-
-  # Nothing in the DEIS pipeline feeds Logstash - ingest.py writes to
-  # Elasticsearch directly. It used to be justified by the optional
-  # extensions in extensions/, which item 40 removed as never-wired-up, so
-  # it now has no consumer at all and is a candidate for removal in its own
-  # right - left in place here only because item 40's scope was the
-  # log-ingest scaffolding, not this. Behind a profile, so it does not start
-  # by default: docker compose --profile logstash up -d
-  logstash:
-    profiles:
-      - logstash
-    build:
-      context: logstash/
-      args:
-        ELASTIC_VERSION: ${ELASTIC_VERSION}
-    volumes:
-      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro,Z
-      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro,Z
-    ports:
-      - 127.0.0.1:5044:5044
-      - 127.0.0.1:50000:50000/tcp
-      - 127.0.0.1:50000:50000/udp
-      - 127.0.0.1:9600:9600
-    environment:
-      LS_JAVA_OPTS: -Xms256m -Xmx256m
-      LOGSTASH_INTERNAL_PASSWORD: ${LOGSTASH_INTERNAL_PASSWORD:-}
-    networks:
-      - elk
-    depends_on:
-      - elasticsearch
     restart: unless-stopped
 
 

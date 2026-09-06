@@ -9,31 +9,21 @@ source "${BASH_SOURCE[0]%/*}"/lib.sh
 # --------------------------------------------------------
 # Users declarations
 
-# Only the users this project actually runs something as. The Beats
-# accounts (metricbeat/filebeat/heartbeat/monitoring/beats_system) that came
-# with the docker-elk setup are gone along with extensions/ - see
-# docs/IMPROVEMENTS.md item 40. They were not inert: the roles below are
-# created unconditionally, and 'deis init' fills every "changeme" in .env
-# with a real generated secret, so every DEIS instance ended up with a live
-# filebeat_internal account holding a write role, plus beats_system, for
-# tooling that was never wired up and no longer exists here.
+# Only the users this project actually runs something as, which is now just
+# kibana_system. The Beats accounts (metricbeat/filebeat/heartbeat/
+# monitoring/beats_system) came with the docker-elk setup and went with
+# extensions/; logstash_internal went with logstash/ itself. Neither set was
+# inert: their roles were created unconditionally, and 'deis init' fills
+# every "changeme" in .env with a real generated secret, so every DEIS
+# instance ended up with live, credentialed accounts holding write roles for
+# tooling that was never wired up.
+#
+# kibana_system is an Elasticsearch built-in, so there is no custom role to
+# create and no account to create - only a password to set. That is why the
+# role machinery (setup/roles/, lib.sh's ensure_role) is gone as well.
 declare -A users_passwords
 users_passwords=(
-    [logstash_internal]="${LOGSTASH_INTERNAL_PASSWORD:-}"
     [kibana_system]="${KIBANA_SYSTEM_PASSWORD:-}"
-)
-
-declare -A users_roles
-users_roles=(
-    [logstash_internal]='logstash_writer'
-)
-
-# --------------------------------------------------------
-# Roles declarations
-
-declare -A roles_files
-roles_files=(
-    [logstash_writer]='logstash_writer.json'
 )
 
 # --------------------------------------------------------
@@ -75,20 +65,6 @@ fi
 
 sublog 'Built-in users were initialized'
 
-for role in "${!roles_files[@]}"; do
-    log "Role '$role'"
-
-    declare body_file
-    body_file="${BASH_SOURCE[0]%/*}/roles/${roles_files[$role]:-}"
-    if [[ ! -f "${body_file:-}" ]]; then
-        sublog "No role body found at '${body_file}', skipping"
-        continue
-    fi
-
-    sublog 'Creating/updating'
-    ensure_role "$role" "$(< "${body_file}")"
-done
-
 for user in "${!users_passwords[@]}"; do
     log "User '$user'"
     if [[ -z "${users_passwords[$user]:-}" ]]; then
@@ -96,20 +72,19 @@ for user in "${!users_passwords[@]}"; do
         continue
     fi
 
+    # Every user left here is an Elasticsearch built-in, so it is always
+    # present already - its absence means the cluster is not in the state
+    # this script assumes, which is worth failing on rather than papering
+    # over by creating an account with a guessed role.
     declare -i user_exists=0
     user_exists="$(check_user_exists "$user")"
 
     if ((user_exists)); then
-        sublog 'User exists, setting password'
+        sublog 'Setting password'
         set_user_password "$user" "${users_passwords[$user]}"
     else
-        if [[ -z "${users_roles[$user]:-}" ]]; then
-            suberr '  No role defined, skipping creation'
-            continue
-        fi
-
-        sublog 'User does not exist, creating'
-        create_user "$user" "${users_passwords[$user]}" "${users_roles[$user]}"
+        suberr "  Built-in user '$user' does not exist - is this really an Elasticsearch cluster with security enabled?"
+        exit 1
     fi
 done
 
@@ -202,11 +177,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                     "properties" : {
                         "content" : {
                             "type" : "text",
-                            "fielddata" : true,
-                            "fields" : {
-                                "english" : { "type" : "text", "analyzer" : "english" },
-                                "swedish" : { "type" : "text", "analyzer" : "swedish" }
-                            }
+                            "fielddata" : true
                         }
                     }
                 },
@@ -272,11 +243,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
             "properties" : {
                 "content" : {
                     "type" : "text",
-                    "fielddata" : true,
-                    "fields" : {
-                        "english" : { "type" : "text", "analyzer" : "english" },
-                        "swedish" : { "type" : "text", "analyzer" : "swedish" }
-                    }
+                    "fielddata" : true
                 }
             }
         },

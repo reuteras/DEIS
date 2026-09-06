@@ -31,19 +31,21 @@ Two properties should drive prioritization, because they follow from what the to
 1. Silent data loss is the worst failure mode. Someone asking "does this leak contain my friend's personal data?" gets a wrong answer if a file was skipped and nobody noticed.
 2. The data is toxic and the operator may be a target, so defaults matter more here than in a normal side project.
 
-## Live reconciliation
+## Reconciliation
 
-The numbers a healthy run should produce, from the current stack:
+There is no fixed test corpus in this repo, so absolute counts are not reproducible and are
+deliberately not recorded here - they changed on every run and went stale immediately. What
+should hold on any healthy run is the shape:
 
 ```text
-397 files on disk  →  273 unique sha256  →  273 markers  →  273 documents
+files on disk  →  unique sha256  →  markers  →  documents in Elasticsearch
 on disk but not in Elasticsearch:  0
 in Elasticsearch but not on disk:  0
 ```
 
-Far fewer documents than files is normal: the document id **is** the sha256, so identical
-files collapse into one document. Here 151 hashes appear once, 122 appear more than once,
-and 124 duplicate copies are folded in (151 + 122 = 273 unique; 273 + 124 = 397 files).
+Far fewer documents than files is normal and not a loss: the document id **is** the sha256, so
+identical files collapse into one document. `deis status` prints the funnel and `deis report`
+the last run's breakdown; the ingest summary prints most of it at the end of every run.
 
 ## Open items
 
@@ -113,14 +115,26 @@ So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR
     backups, encrypted-archive listing), 36 (result quality), and 10's v2ray remainder are each
     individually small and can be picked up whenever the surrounding code is being touched.
 
-Two smaller things worth recording rather than losing:
+## Decided, not open
 
-- `logstash/` still has a compose profile but no consumer at all now that `extensions/` is
-  gone - it was only ever kept for those. A candidate for removal in its own right.
-- Two decisions from the post-review pass were deliberately left open: whether the `pii` field
-  should store full card numbers/personnummer or masked forms, and whether
-  `attachment.content`'s `.english`/`.swedish` sub-fields earn their index cost. Both need a
-  judgement call rather than a patch.
+Recording these so they are not re-litigated later:
+
+- **PII is stored in full, not masked.** `deis pii-scan` writes complete personnummer, IBANs
+  and card numbers into each document's `pii` field. Masking would make the index safer to
+  hand around, but "does this leak contain this specific person's data" is the question the
+  tool exists to answer, and answering it means pivoting on the actual value. The index is
+  therefore as sensitive as the dump itself and should be treated that way.
+- **`attachment.content` has no per-language sub-fields.** The `.english`/`.swedish` analyzed
+  copies added with item 32 were measured with the `_disk_usage` API on a real index: 20.3%
+  each, against 20.5% for the base field - they tripled content indexing and accounted for
+  ~41% of the whole index, for stemming that buys little on a corpus item 32 found to be
+  largely Portuguese. Removed. The `language` keyword field, which is what the notebook and
+  the Kibana filter actually use, costs nothing by comparison and stays. Note that dropping
+  them only affects indices created afterwards - Elasticsearch cannot remove a field from an
+  existing mapping, so an index built before this keeps paying for them until it is rebuilt.
+- **Logstash is gone.** It had a compose profile but nothing ever fed it - `ingest.py` writes
+  to Elasticsearch directly - and its remaining justification, the optional extensions in
+  `extensions/`, went with item 40. Removed along with its Elasticsearch account and role.
 
 ## Verification approach
 
@@ -186,8 +200,9 @@ for every other one and they collapsed into one bogus cluster; `es_bulk()` ignor
 response, and `_bulk` answers 200 OK even when every item in it failed, so `pii-scan` and
 `dedupe-scan` could write nothing while printing a full results table; `deis init` left
 `.env` world-readable; and the notebook's results table interpolated leak-dump filenames
-into an HTML widget unescaped. Item 33's recorded result (243 of 272 documents clustered)
-predates the first of those and needs re-measuring before it is trusted.
+into an HTML widget unescaped. Item 33's clustering counts were re-measured after the
+fingerprint fix; documents with no alphabetic words are now reported as skipped instead
+of being grouped together, which is where most of the earlier inflation came from.
 
 Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
 and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See

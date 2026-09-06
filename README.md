@@ -75,9 +75,20 @@ Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The note
 Every document is tagged with a detected `language` (`english`/`swedish`/`unknown`, via a
 stopword-presence heuristic run server-side at ingest time) - filterable in Kibana, and used
 by the notebook's word cloud to pick the right stopword list automatically instead of needing
-it set by hand. `attachment.content` also carries per-language analyzed sub-fields
-(`.english`/`.swedish`, using Elasticsearch's built-in stemming analyzers) for better recall on
-Swedish text.
+it set by hand.
+
+`deis pii-scan` fills each document's `pii` field with the personal identifiers found in its
+text - Swedish personnummer/samordningsnummer, IBANs and card numbers (each validated against
+its own checksum, so a random run of digits is not reported), plus emails and phone numbers.
+Values are stored **in full**, not masked: finding every document that mentions one specific
+person is the question this tool exists to answer, and that needs the actual value to pivot
+on. Treat the index accordingly - it is as sensitive as the dump it came from.
+
+`deis dedupe-scan` groups near-identical documents (the same template letter, a monthly report
+with one number changed) into `duplicate_cluster`, using a SimHash fingerprint rather than the
+exact sha256 match that ingest already deduplicates on. Documents with no alphabetic words at
+all - pure numeric or tabular exports - have nothing to compare and are reported as skipped
+rather than being grouped together.
 
 ### Known limitations and planned work
 

@@ -1,9 +1,0 @@
----
-## Default Logstash configuration from Logstash base image.
-## https://github.com/elastic/logstash/blob/main/docker/data/logstash/config/logstash-full.yml
-#
-# Logstash 8 moved the monitoring API settings under api.*; the old http.host
-# is rejected outright and makes Logstash exit at startup.
-api.http.host: 0.0.0.0
-
-node.name: logstash

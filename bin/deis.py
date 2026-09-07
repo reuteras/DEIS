@@ -332,9 +332,7 @@ def check_tor_egress() -> bool:
 
 
 def cmd_run(args) -> int:
-    profile = {"setup": "setup", "download": "download", "extract": "unpack", "ingest": "ingest"}.get(
-        args.only, "deis"
-    )
+    profile = {"setup": "setup", "download": "download", "extract": "unpack", "ingest": "ingest"}.get(args.only, "deis")
     command = ["docker", "compose", "--profile", profile, "up", "-d"]
     console.print(f"Running: {' '.join(command)}")
     result = subprocess.run(command, cwd=REPO_ROOT, check=False)

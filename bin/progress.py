@@ -61,9 +61,7 @@ try:
         # Adding URLS to download
         if check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists("status/added_urls"):
             print_status("Adding URLS to download", "RUNNING")
-        elif not check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists(
-            "status/added_urls"
-        ):
+        elif not check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists("status/added_urls"):
             print_status("Adding URLS to download", "NO DOWNLOAD CONTAINER")
         else:
             print_status("Adding URLS to download", "DONE")

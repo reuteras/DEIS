@@ -169,7 +169,7 @@ Recording these so they are not re-litigated later:
 | 19 | `unpack/start.sh` extracted one archive at a time regardless of available CPU cores | `010903c` |
 | 20 | Config reading in `unpack/start.sh` used substring matching instead of being section-aware | `010903c` |
 | 21 (OCR only) | A scanned passport or invoice saved as a plain image indexed with no searchable text at all | `23ac2e8` |
-| 21 (email beyond PST) | Only `.pst` was handled; `.msg`/`.eml`/`.mbox`/`.ost` were left as opaque blobs, and `.msg` in particular risked being shredded by 7-Zip's own OLE/CFBF "Compound" archive detection before Tika ever saw it | `PENDING_COMMIT` |
+| 21 (email beyond PST) | Only `.pst` was handled; `.msg`/`.eml`/`.mbox`/`.ost` were left as opaque blobs, and `.msg` in particular risked being shredded by 7-Zip's own OLE/CFBF "Compound" archive detection before Tika ever saw it | `2c8809f` |
 | 22 | The index mapping was entirely dynamic; `sha256`/`filename` were analyzed as text and the cluster was permanently `yellow` | `c8b0f59` |
 | 24 | Every ingested file was a separate `PUT /_doc`, not batched via `_bulk` | `c8b0f59` |
 | 25 | Nothing reconciled files on disk against documents indexed, and the counts were never Kibana-visible | `44ff308` |

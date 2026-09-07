@@ -42,6 +42,7 @@ ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
 SUBCOMMANDS = (
     "init",
     "doctor",
+    "build",
     "setup",
     "run",
     "status",
@@ -330,6 +331,18 @@ def check_tor_egress() -> bool:
         return False
     console.print("[green]TOR egress: OK.[/green]")
     return True
+
+
+def cmd_build(_args) -> int:
+    # A service with no 'profiles:' key (elasticsearch, kibana, web, notebook,
+    # gotenberg) always builds regardless of --profile. 'deis' and 'setup'
+    # are the only two profile names needed to reach every profile-gated
+    # service too: downloader/controller/unpack/ingest are each tagged with
+    # 'deis' in addition to their own stage-specific profile, so 'deis'
+    # already covers all four - only setup's own profile is missing from it.
+    command = ["docker", "compose", "--profile", "deis", "--profile", "setup", "build"]
+    console.print(f"Running: {' '.join(command)}")
+    return subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
 
 
 def cmd_run(args) -> int:
@@ -740,6 +753,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="bootstrap .env and deis.cfg").set_defaults(func=cmd_init)
     sub.add_parser("doctor", help="preflight checks and diagnosis").set_defaults(func=cmd_doctor)
+
+    sub.add_parser("build", help="build every container image (docker compose build)").set_defaults(func=cmd_build)
 
     sub.add_parser("setup", help="alias for 'run --only setup'").set_defaults(func=cmd_run, only="setup")
 

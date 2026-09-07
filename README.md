@@ -191,6 +191,7 @@ run once, so `.venv` exists):
 ```bash
 bin/deis init            # bootstrap .env and deis.cfg if they don't exist yet
 bin/deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
+bin/deis build           # build every container image (docker compose build), before setup or run
 bin/deis setup           # alias for 'run --only setup': start the setup container and follow its logs until it exits
 bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
 bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
@@ -209,6 +210,7 @@ A full run from a clean checkout:
 ```bash
 just venv
 ./bin/deis init
+./bin/deis build   # optional - setup/run build images on demand too, this just does it upfront
 ./bin/deis setup
 ./bin/deis run
 ```

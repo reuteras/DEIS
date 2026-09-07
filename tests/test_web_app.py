@@ -1,5 +1,6 @@
 """Tests for web/app.py's path validation - the two functions CodeQL flagged
-(alert #103) and the ones the rest of the service's file access depends on.
+(alert #103) and the ones the rest of the service's file access depends on -
+plus the landing page's status/funnel helpers.
 """
 
 import importlib.util
@@ -8,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import requests
 from fastapi import HTTPException
 
 WEB_APP_PATH = Path(__file__).resolve().parent.parent / "web" / "app.py"
@@ -136,3 +138,150 @@ class TestResolveAndVerifyTargetFile:
         result = app_module.resolve_and_verify_target_file(str(symlinks_dir / VALID_SHA256))
 
         assert result == os.path.normpath(str(target))
+
+
+class TestPipelineStatus:
+    def test_nothing_written_yet(self, app_module, tmp_path):
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status == {"download": "not running", "extract": "waiting", "ingest": "waiting"}
+
+    def test_download_running(self, app_module, tmp_path):
+        (tmp_path / "running").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["download"] == "running"
+
+    def test_download_failed_takes_priority_over_downloaded(self, app_module, tmp_path):
+        (tmp_path / "downloaded").touch()
+        (tmp_path / "download_failed").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["download"] == "failed"
+
+    def test_extract_running_once_unpack_marker_exists(self, app_module, tmp_path):
+        (tmp_path / "unpack").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["extract"] == "running"
+        assert status["ingest"] == "waiting"
+
+    def test_ingest_running_once_extract_done(self, app_module, tmp_path):
+        (tmp_path / "extract_done").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["extract"] == "done"
+        assert status["ingest"] == "running"
+
+    def test_everything_done(self, app_module, tmp_path):
+        (tmp_path / "downloaded").touch()
+        (tmp_path / "extract_done").touch()
+        (tmp_path / "ingest_done").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status == {"download": "done", "extract": "done", "ingest": "done"}
+
+
+class TestCountFiles:
+    def test_missing_directory_is_zero(self, app_module, tmp_path):
+        assert app_module.count_files(str(tmp_path / "does-not-exist")) == 0
+
+    def test_counts_files_recursively(self, app_module, tmp_path):
+        (tmp_path / "a.txt").write_text("x")
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        (nested / "b.txt").write_text("y")
+        assert app_module.count_files(str(tmp_path)) == 2
+
+    def test_does_not_count_directories(self, app_module, tmp_path):
+        (tmp_path / "subdir").mkdir()
+        assert app_module.count_files(str(tmp_path)) == 0
+
+
+class TestCountLines:
+    def test_missing_file_is_zero(self, app_module, tmp_path):
+        assert app_module.count_lines(str(tmp_path / "missing.txt")) == 0
+
+    def test_counts_non_blank_lines(self, app_module, tmp_path):
+        f = tmp_path / "hashes.txt"
+        f.write_text("abc\n\ndef\n  \nghi\n")
+        assert app_module.count_lines(str(f)) == 3
+
+
+class TestElasticDocumentCount:
+    def test_returns_none_without_password(self, app_module, monkeypatch):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        assert app_module.elastic_document_count() is None
+
+    def test_returns_count_on_success(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"count": 42}
+
+        monkeypatch.setattr(app_module.requests, "get", lambda *a, **kw: FakeResponse())
+        assert app_module.elastic_document_count() == 42
+
+    def test_returns_none_when_unreachable(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        def raise_connection_error(*_a, **_kw):
+            raise requests.exceptions.ConnectionError
+
+        monkeypatch.setattr(app_module.requests, "get", raise_connection_error)
+        assert app_module.elastic_document_count() is None
+
+
+class TestLatestRunSummary:
+    def test_returns_none_without_password(self, app_module, monkeypatch):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        assert app_module.latest_run_summary() is None
+
+    def test_returns_none_when_no_hits(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"hits": {"hits": []}}
+
+        monkeypatch.setattr(app_module.requests, "get", lambda *a, **kw: FakeResponse())
+        assert app_module.latest_run_summary() is None
+
+    def test_returns_source_of_latest_hit(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"hits": {"hits": [{"_source": {"indexed_this_run": 5}}]}}
+
+        monkeypatch.setattr(app_module.requests, "get", lambda *a, **kw: FakeResponse())
+        assert app_module.latest_run_summary() == {"indexed_this_run": 5}
+
+
+class TestRenderIndexHtml:
+    def test_renders_without_elasticsearch(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+
+        page = app_module.render_index_html()
+
+        assert "DEIS" in page
+        assert "could not be read" in page
+        assert app_module.KIBANA_LINK in page
+        assert app_module.JUPYTER_LINK in page
+        assert app_module.DOWNLOAD_STATUS_LINK in page
+
+    def test_still_counts_shown_only_when_nonzero(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "still_encrypted.txt").write_text("abc\n")
+
+        page = app_module.render_index_html()
+
+        assert "Still encrypted" in page
+        assert "Still corrupt" not in page

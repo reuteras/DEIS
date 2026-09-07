@@ -164,6 +164,10 @@ Press CTRL-C to exit the progress display.
 The following web services are available. All of them listen on 127.0.0.1 only, so they are
 not reachable from other machines on your network:
 
+- [http://127.0.0.1:8081/](http://127.0.0.1:8081/) - **Start here.** Pipeline status (download/
+  extract/ingest), funnel counts, still-encrypted/corrupt/unsafe counts, the latest ingest run,
+  and links to the other services below. Comes up as soon as the `web` container starts - it
+  doesn't wait for extraction or ingest to finish - and refreshes itself every 30 seconds.
 - [http://127.0.0.1:3000/](http://127.0.0.1:3000/) - Gotenberg server
 - [http://127.0.0.1:5601/](http://127.0.0.1:5601/) - Elastic/Kibana
 - [http://127.0.0.1:8080/](http://127.0.0.1:8080/) - AriaNg

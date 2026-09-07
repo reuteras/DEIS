@@ -102,11 +102,15 @@ services:
   web:
     build: web
     volumes:
+      - ./files:/files:ro
       - ./extracted/files:/extracted/files
       - ./extracted/sha256:/extracted/sha256:ro
       - ./status:/status:ro
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
     networks:
       - web
+      - elk
     ports:
       - 127.0.0.1:8081:8081
 

@@ -18,8 +18,23 @@ app = FastAPI()
 
 SYMLINKS_DIR = "/extracted/sha256"
 EXTRACTED_ROOT = "/extracted"
+FILES_DIR = "/files"
+STATUS_DIR = "/status"
 GOTENBERG_URL = "http://gotenberg:3000/forms/libreoffice/convert"
 GOTENBERG_HTML_URL = "http://gotenberg:3000/forms/chromium/convert/html"
+ELASTIC_INDEX = "leakdata-index-000001"
+ELASTIC_RUNS_INDEX = "deis-ingest-runs"
+ELASTIC_URL = "http://elasticsearch:9200"
+KIBANA_LINK = "http://127.0.0.1:5601/"
+DOWNLOAD_STATUS_LINK = "http://127.0.0.1:8080/"
+JUPYTER_LINK = "http://127.0.0.1:8888/"
+STAGE_COLORS = {
+    "done": "#2e7d32",
+    "running": "#f9a825",
+    "failed": "#c62828",
+    "not running": "#c62828",
+    "waiting": "#9e9e9e",
+}
 Disposition = Literal["inline", "attachment"]
 SEND_AS_IS = [
     "application/octet-stream",
@@ -41,6 +56,219 @@ DONT_CONVERT_MIME = [
     "application/x-fpt",
     "application/x-ms-shortcut",
 ]
+
+
+def pipeline_status(status_dir: str = STATUS_DIR) -> dict[str, str]:
+    """Same three-stage status bin/deis.py's marker_status() computes for
+    `deis status` - filesystem markers only, no docker socket. Deliberately
+    does not attempt progress.py's "Setup"/"Adding URLs" checks: those need
+    `docker volume ls`/`docker ps`, which would mean mounting the Docker
+    socket into this always-on, browser-facing container - turning any
+    future bug here (this file has already had two CodeQL path-traversal
+    findings) into a full host compromise instead of just leak-data
+    exposure. Not worth it for two status lines an operator can already get
+    from `deis status` on the host.
+    """
+    status_path = Path(status_dir)
+    status = {}
+
+    if (status_path / "download_failed").exists():
+        status["download"] = "failed"
+    elif (status_path / "downloaded").exists():
+        status["download"] = "done"
+    elif (status_path / "running").exists():
+        status["download"] = "running"
+    else:
+        status["download"] = "not running"
+
+    if (status_path / "extract_done").exists():
+        status["extract"] = "done"
+    elif (status_path / "unpack").exists():
+        status["extract"] = "running"
+    else:
+        status["extract"] = "waiting"
+
+    if (status_path / "ingest_done").exists():
+        status["ingest"] = "done"
+    elif (status_path / "extract_done").exists():
+        status["ingest"] = "running"
+    else:
+        status["ingest"] = "waiting"
+
+    return status
+
+
+def count_files(directory: str, exclude: frozenset[str] = frozenset()) -> int:
+    """Same funnel count bin/deis.py's cmd_status computes on the host,
+    including its exclude param - files/ holds a tracked .gitignore (see
+    unpack/start.sh's own '! -name .*' exclusion of it) that isn't leak data
+    and shouldn't inflate the count.
+    """
+    path = Path(directory)
+    if not path.is_dir():
+        return 0
+    return sum(1 for f in path.rglob("*") if f.is_file() and f.name not in exclude)
+
+
+def count_lines(path: str) -> int:
+    """Non-blank line count of a status/*.txt file (still_encrypted.txt etc),
+    or 0 if unpack hasn't written it yet.
+    """
+    file_path = Path(path)
+    if not file_path.is_file():
+        return 0
+    return sum(1 for line in file_path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def elastic_document_count() -> int | None:
+    """Read-only /_count against the leak index, or None if Elasticsearch
+    isn't reachable or ELASTIC_PASSWORD isn't set. Never calls /_refresh
+    first (unlike ingest.py's own version of this) - this page can
+    auto-reload every few seconds, and a stale-by-a-few-seconds count is a
+    fair trade against forcing a refresh on the cluster every page load.
+    """
+    password = os.environ.get("ELASTIC_PASSWORD")
+    if not password:
+        return None
+    try:
+        response = requests.get(f"{ELASTIC_URL}/{ELASTIC_INDEX}/_count", auth=("elastic", password), timeout=10)
+        if response.status_code != 200:
+            return None
+        return response.json().get("count")
+    except requests.exceptions.RequestException:
+        return None
+
+
+def latest_run_summary() -> dict | None:
+    """Same query bin/deis.py's latest_run_summary() runs from the host, for
+    the per-run breakdown ingest.py writes to ELASTIC_RUNS_INDEX at the end
+    of every run (see ingest.py's index_run_summary()).
+    """
+    password = os.environ.get("ELASTIC_PASSWORD")
+    if not password:
+        return None
+    try:
+        response = requests.get(
+            f"{ELASTIC_URL}/{ELASTIC_RUNS_INDEX}/_search?size=1&sort=@timestamp:desc",
+            auth=("elastic", password),
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return None
+        hits = response.json().get("hits", {}).get("hits", [])
+        return hits[0]["_source"] if hits else None
+    except requests.exceptions.RequestException:
+        return None
+
+
+def render_index_html() -> str:
+    """The landing page: pipeline stage status, funnel counts, and links to
+    the other containers an end user (not an operator) actually needs -
+    Kibana, JupyterLab, and the download status page. The in-browser
+    equivalent of bin/progress.py, extended with what `deis status`/
+    `deis report` already compute on the host (see pipeline_status()'s
+    docstring for why the two docker-dependent progress.py checks aren't
+    reproduced here).
+    """
+    status = pipeline_status()
+    downloaded = count_files(FILES_DIR, exclude=frozenset({".gitignore"}))
+    extracted = count_files("/extracted/files")
+    unique = count_files(SYMLINKS_DIR)
+    still_encrypted = count_lines(f"{STATUS_DIR}/still_encrypted.txt")
+    still_corrupt = count_lines(f"{STATUS_DIR}/still_corrupt.txt")
+    still_unsafe = count_lines(f"{STATUS_DIR}/still_unsafe.txt")
+    doc_count = elastic_document_count()
+    run = latest_run_summary()
+
+    def stage_row(label: str, key: str) -> str:
+        state = status[key]
+        color = STAGE_COLORS.get(state, "#9e9e9e")
+        return (
+            f"<tr><td>{html.escape(label)}</td>"
+            f'<td style="color:{color}; font-weight:600;">{html.escape(state.upper())}</td></tr>'
+        )
+
+    doc_count_display = str(doc_count) if doc_count is not None else "could not be read"
+
+    still_rows = ""
+    for label, count in (
+        ("Still encrypted", still_encrypted),
+        ("Still corrupt", still_corrupt),
+        ("Rejected as unsafe", still_unsafe),
+    ):
+        if count:
+            still_rows += f'<tr><td>{html.escape(label)}</td><td style="color:#c62828;">{count}</td></tr>'
+
+    run_section = ""
+    if run:
+        run_rows = "".join(
+            f"<tr><td>{html.escape(str(key))}</td><td>{html.escape(str(run.get(key, '?')))}</td></tr>"
+            for key in (
+                "@timestamp",
+                "indexed_this_run",
+                "already_indexed",
+                "failed",
+            )
+        )
+        run_section = f"""
+<h2>Latest ingest run</h2>
+<table>{run_rows}</table>
+"""
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="30">
+<title>DEIS</title>
+<style>
+body {{ font-family: sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }}
+h1 {{ font-size: 1.4rem; }}
+h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
+table {{ border-collapse: collapse; width: 100%; }}
+td {{ padding: 0.3rem 0.5rem; border-bottom: 1px solid #ddd; }}
+td:first-child {{ color: #555; }}
+ul {{ padding-left: 1.2rem; }}
+.note {{ color: #777; font-size: 0.85rem; margin-top: 2rem; }}
+</style>
+</head>
+<body>
+<h1>DEIS</h1>
+
+<h2>Pipeline status</h2>
+<table>
+{stage_row("Download", "download")}
+{stage_row("Extract", "extract")}
+{stage_row("Ingest", "ingest")}
+</table>
+
+<h2>Funnel</h2>
+<table>
+<tr><td>Files in files/</td><td>{downloaded}</td></tr>
+<tr><td>Files under extracted/files</td><td>{extracted}</td></tr>
+<tr><td>Unique sha256</td><td>{unique}</td></tr>
+<tr><td>Documents in Elasticsearch</td><td>{doc_count_display}</td></tr>
+{still_rows}
+</table>
+{run_section}
+<h2>Search and review</h2>
+<ul>
+<li><a href="{KIBANA_LINK}" target="_blank">Kibana</a> - search and dashboards</li>
+<li><a href="{JUPYTER_LINK}" target="_blank">JupyterLab</a> - notebook (token is in .env)</li>
+<li><a href="{DOWNLOAD_STATUS_LINK}" target="_blank">Download status</a> - only reachable while the
+download stage is running</li>
+</ul>
+
+<p class="note">Refreshes every 30 seconds. Counts may lag the pipeline by up to that long.</p>
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """Landing page - see render_index_html()."""
+    return render_index_html()
 
 
 def validate_sha256_and_get_symlink_path(sha256: str) -> str:

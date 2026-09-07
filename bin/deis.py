@@ -42,6 +42,7 @@ ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
 SUBCOMMANDS = (
     "init",
     "doctor",
+    "setup",
     "run",
     "status",
     "search",
@@ -739,6 +740,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="bootstrap .env and deis.cfg").set_defaults(func=cmd_init)
     sub.add_parser("doctor", help="preflight checks and diagnosis").set_defaults(func=cmd_doctor)
+
+    sub.add_parser("setup", help="alias for 'run --only setup'").set_defaults(func=cmd_run, only="setup")
 
     p_run = sub.add_parser("run", help="start the pipeline (or one stage of it)")
     p_run.add_argument("--only", choices=list(RUN_ONLY_CHOICES))

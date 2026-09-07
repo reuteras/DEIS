@@ -131,7 +131,7 @@ Setup Elasticsearch and Kibana by running the command below which will start a c
 docker compose --profile setup up -d
 ```
 
-Or, equivalently, `bin/deis run --only setup` (see [Command-line interface](#command-line-interface)).
+Or, equivalently, `bin/deis setup` (see [Command-line interface](#command-line-interface)).
 
 Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
 
@@ -191,8 +191,8 @@ run once, so `.venv` exists):
 ```bash
 bin/deis init            # bootstrap .env and deis.cfg if they don't exist yet
 bin/deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
+bin/deis setup           # alias for 'run --only setup': start the setup container and follow its logs until it exits
 bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
-bin/deis run --only setup    # start the setup container and follow its logs until it exits
 bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
 bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
 bin/deis status          # snapshot of pipeline stage state and funnel counts
@@ -202,6 +202,15 @@ bin/deis pii-scan        # detect personal identifiers in indexed content (see b
 bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
+```
+
+A full run from a clean checkout:
+
+```bash
+just venv
+./bin/deis init
+./bin/deis setup
+./bin/deis run
 ```
 
 `bin/deis doctor` does not yet include a TOR egress leak test (see

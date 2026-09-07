@@ -26,7 +26,7 @@ clean:
     rm -f controller/www/index.html
 
 dist-clean: clean docker-clean
-    rm -rf extracted/* files/*
+    rm -rf extracted/* files/* status/*
     rm -f .jupyter/serverconfig/jupyterlabapputilsextensionannouncements.json
     rm -rf .jupyter/lab/workspaces/* .jupyter/migrated
     rm -rf notebook/.ipynb_checkpoints

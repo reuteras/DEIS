@@ -156,6 +156,16 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 # heap - but it scales with vocabulary size, not corpus size, which is a lot
 # smaller than pulling every document's full content client-side, the
 # alternative this replaced.
+#
+# attachment.modifier/publisher are explicit for the same reason
+# extraction_status/language/duplicate_cluster are: the exported dashboards
+# (export.ndjson) have panels that reference them by name, but the
+# ingest-attachment pipeline only creates a field dynamically the first time
+# some document actually has that Tika metadata populated - a fresh index,
+# or a corpus that never happens to contain a document with a "Modified By"/
+# "Publisher" property, would otherwise leave those two fields entirely
+# absent (not just empty), which Kibana reports as "field not found" rather
+# than showing an empty result.
 log 'Add leakdata index template (top_folder runtime field, explicit mapping)'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata?pretty" -H 'Content-Type: application/json' -d'
 {
@@ -178,6 +188,14 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                         "content" : {
                             "type" : "text",
                             "fielddata" : true
+                        },
+                        "modifier" : {
+                            "type" : "text",
+                            "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 256 } }
+                        },
+                        "publisher" : {
+                            "type" : "text",
+                            "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 256 } }
                         }
                     }
                 },
@@ -232,7 +250,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
 # existing index's mapping doesn't require a reindex). This index's filename
 # field is still text+keyword (see above), so its script still reads
 # filename.keyword, unlike the template's version above.
-log 'Backfill top_folder runtime field, extraction_status, content fielddata, pii, language and duplicate_cluster onto the existing leakdata index'
+log 'Backfill top_folder runtime field, extraction_status, content fielddata, attachment.modifier/publisher, pii, language and duplicate_cluster onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {
     "properties" : {
@@ -244,6 +262,14 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
                 "content" : {
                     "type" : "text",
                     "fielddata" : true
+                },
+                "modifier" : {
+                    "type" : "text",
+                    "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 256 } }
+                },
+                "publisher" : {
+                    "type" : "text",
+                    "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 256 } }
                 }
             }
         },

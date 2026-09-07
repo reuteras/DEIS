@@ -1,6 +1,8 @@
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
-ARG ELASTIC_VERSION
+# Default is only a fallback for a bare `docker build` outside compose -
+# docker-compose.yml always passes the real value from .env as a build arg.
+ARG ELASTIC_VERSION=9.5.3
 
 # https://www.docker.elastic.co/
 FROM docker.elastic.co/kibana/kibana:${ELASTIC_VERSION}

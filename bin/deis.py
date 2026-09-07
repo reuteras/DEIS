@@ -371,7 +371,9 @@ def cmd_status(_args) -> int:
         table.add_row(stage, status[stage])
     console.print(table)
 
-    downloaded = count_files(REPO_ROOT / "files", exclude=set())
+    # files/ holds a tracked .gitignore (see unpack/start.sh's own
+    # '! -name .*' exclusion of it) that isn't leak data.
+    downloaded = count_files(REPO_ROOT / "files", exclude={".gitignore"})
     extracted = count_files(REPO_ROOT / "extracted" / "files", exclude=set())
     unique = count_files(REPO_ROOT / "extracted" / "sha256", exclude=set())
 

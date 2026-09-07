@@ -198,6 +198,50 @@ is_pst_like() {
     [[ "${1,,}" == *.pst || "${1,,}" == *.ost ]]
 }
 
+# Legacy (pre-2007) Microsoft Office formats are OLE/CFBF files - the same
+# container format .msg uses, and 7-Zip's own format list explicitly names
+# doc/xls/ppt as extensions for its "Compound" archive type (confirmed via
+# `7zz i` against this image), so these are if anything more certain to be
+# shredded than .msg was. Confirmed against a real corpus: a .xls extracted
+# to just [5]SummaryInformation/[5]DocumentSummaryInformation - metadata
+# streams only, the actual Workbook/Book stream with the real spreadsheet
+# data never made it out at all.
+is_ole_document() {
+    case "${1,,}" in
+    *.msg | *.doc | *.dot | *.xls | *.xlt | *.xla | *.ppt | *.pot | *.pps | *.pub)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# OOXML (Office 2007+) and OpenDocument files are themselves ZIP archives -
+# a .xlsx is a package of internal XML parts (workbook.xml, sharedStrings.xml,
+# individual sheet XML with cells referencing sharedStrings by index, ...),
+# so 7-Zip's generic archive detection (signature-based, not extension-based
+# - see is_ole_document() above) happily "extracts" one into those loose
+# parts instead of leaving it whole. Found via a real corpus: one .xlsx
+# became 1029 separate documents of raw internal XML, each individually
+# meaningless, instead of one document with Tika's actual parsed cell
+# content. Same fix as is_ole_document(): skip 7-Zip for these and let
+# Tika's real OOXML/ODF parsers handle the whole file at ingest time.
+is_zip_based_document() {
+    case "${1,,}" in
+    *.docx | *.docm | *.dotx | *.dotm | \
+        *.xlsx | *.xlsm | *.xltx | *.xltm | *.xlsb | \
+        *.pptx | *.pptm | *.potx | *.potm | *.ppsx | *.ppsm | *.sldx | *.sldm | \
+        *.odt | *.ods | *.odp | *.odg | *.odf | *.odb | *.odc | *.odi | *.odm | \
+        *.ott | *.ots | *.otp | *.otg)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
 # Attempts every password candidate against $1, extracting into $2 on
 # success. Never omits -p: 7-Zip prompts interactively for a password on an
 # encrypted archive if none is given at all, which would hang the pipeline
@@ -285,16 +329,14 @@ process_zip_like() {
     fi
     mkdir -p "${dest}"
 
-    # .msg (Outlook message) is an OLE/CFBF file, the same container format
-    # 7-Zip's "Compound" archive type reads (also used by legacy .doc/.xls/
-    # .ppt) - and 7-Zip identifies it by signature, not extension, so 7zz
-    # would "successfully extract" a .msg into its raw internal property
-    # streams (unreadable) and dispose of the real message, rather than
-    # leaving it for Tika's OutlookExtractor at ingest time, which is what
-    # actually turns it into searchable text. Skip 7-Zip entirely for .msg
-    # and fall straight into the same not-archive/copy path used below for
-    # anything 7-Zip itself reports as not an archive.
-    if [[ "${path,,}" == *.msg ]]; then
+    # Document formats that 7-Zip's generic archive detection would
+    # "successfully" tear apart instead of leaving whole for Tika's real
+    # parsers at ingest time - see is_ole_document()/is_zip_based_document()
+    # above for why, and why this is a real content-loss bug rather than
+    # cosmetic. Skip 7-Zip entirely for both and fall straight into the same
+    # not-archive/copy path used below for anything 7-Zip itself reports as
+    # not an archive.
+    if is_ole_document "${path}" || is_zip_based_document "${path}"; then
         EXTRACT_RESULT="not-archive"
         EXTRACT_ERR=""
     elif ! check_archive_safety "${path}" "${dest}"; then
@@ -459,8 +501,9 @@ process_one_file() {
 }
 
 export -f log read_cfg config_true config_true_default config_int load_passwords dispose_of_original \
-    queue_new_files check_archive_safety maybe_ocr try_extract is_pst_like process_zip_like process_pst \
-    apply_known_result worker_entrypoint process_one_file
+    queue_new_files check_archive_safety maybe_ocr try_extract is_pst_like is_ole_document \
+    is_zip_based_document process_zip_like process_pst apply_known_result worker_entrypoint \
+    process_one_file
 
 # Extracts one round of files in parallel (up to $PARALLELISM at a time).
 # Files are deduplicated by content (sha256) plus type (.pst vs not, since

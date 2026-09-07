@@ -166,6 +166,17 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 # "Publisher" property, would otherwise leave those two fields entirely
 # absent (not just empty), which Kibana reports as "field not found" rather
 # than showing an empty result.
+# top_folder's script reads filename's 4th path segment
+# (extracted/files/<archive-sha256>/<segment>/...), not its 3rd: every
+# archive - nested or not - extracts flat into a directory named after its
+# own sha256 (see unpack/start.sh's process_zip_like/process_pst), so the
+# 3rd segment is always that hash, never anything from the leak dump
+# itself. The 4th segment is the first real subfolder an archive's own
+# internal structure had, when it had one - a genuinely meaningful "top
+# folder" for Kibana's "Top folders" panel to group by. Files with no such
+# subfolder (sitting directly inside an archive, or never archived at all)
+# fall into a single "(ungrouped)" bucket instead of each becoming its own
+# one-file "folder".
 log 'Add leakdata index template (top_folder runtime field, explicit mapping)'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata?pretty" -H 'Content-Type: application/json' -d'
 {
@@ -214,7 +225,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                 "top_folder" : {
                     "type" : "keyword",
                     "script" : {
-                        "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
+                        "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 4) { emit(parts[3]); } else { emit('"'"'(ungrouped)'"'"'); }"
                     }
                 }
             }
@@ -288,7 +299,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
         "top_folder" : {
             "type" : "keyword",
             "script" : {
-                "source" : "def parts = doc['"'"'filename.keyword'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 2) { emit(parts[2]); } else { emit('"'"'(root)'"'"'); }"
+                "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 4) { emit(parts[3]); } else { emit('"'"'(ungrouped)'"'"'); }"
             }
         }
     }

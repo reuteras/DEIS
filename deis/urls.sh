@@ -5,7 +5,7 @@ log_error() {
     echo "$(date -Iseconds) $1" >> /logs/download_errors.log
 }
 
-if [[ ! -f /files/added_urls ]]; then
+if [[ ! -f /status/added_urls ]]; then
     if [[ "$(wc -l /urls/* | tail -1 | awk '{print $1}')" != "0" ]]; then
         echo "Waiting for Aria2"
         while ! curl -s http://downloader:6800 > /dev/null 2>&1; do
@@ -23,7 +23,7 @@ if [[ ! -f /files/added_urls ]]; then
         # routes with.
         if ! /deis/bin/torcheck.sh; then
             log_error "Refusing to queue any URL: the TOR preflight check failed (see above)."
-            touch /files/download_failed
+            touch /status/download_failed
             exit 1
         fi
 
@@ -44,17 +44,17 @@ if [[ ! -f /files/added_urls ]]; then
 
             echo "Adding URL: ${url}"
             if gid="$(/deis/bin/addurl.sh "${url}")" && [[ -n "${gid}" && "${gid}" != "null" ]]; then
-                echo "${gid}" >> /files/batch_gids
+                echo "${gid}" >> /status/batch_gids
             else
                 log_error "Could not queue URL: ${url}"
             fi
         done < <(cat /urls/* | sort | uniq)
 
         # Used by download.sh to tell a slow batch from a stuck one.
-        date +%s > /files/batch_started
+        date +%s > /status/batch_started
     fi
 
     echo ""
-    echo "Added URLs and creating /files/added_urls"
-    touch /files/added_urls
+    echo "Added URLs and creating /status/added_urls"
+    touch /status/added_urls
 fi

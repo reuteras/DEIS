@@ -38,7 +38,7 @@ nested inside an archive inside an archive is still found, regardless of its ext
 detection is "try extracting it" rather than a fixed list of extensions, since leak dumps are
 full of wrong or missing ones. This continues for up to `max_depth` rounds (`deis.cfg`,
 default 6); anything nested deeper than that is left as-is, and files still encrypted after
-every password below has been tried are listed in `extracted/still_encrypted.txt`.
+every password below has been tried are listed in `status/still_encrypted.txt`.
 
 - Run [readpst][res] on files with the extension [.pst][pst] (Outlook Data File).
 - If the downloaded files are password protected, set **ZIP_PASSWORD** in *.env*, or add one
@@ -52,7 +52,7 @@ every password below has been tried are listed in `extracted/still_encrypted.txt
   if its declared uncompressed size is over `max_extract_bytes` (default 10 GiB) or its
   compression ratio is over `max_compression_ratio` (default 200x, the shape of a
   decompression bomb) - either way it's left as-is, unextracted, and listed in
-  `extracted/still_unsafe.txt`. A single archive's extraction is also capped at
+  `status/still_unsafe.txt`. A single archive's extraction is also capped at
   `extract_timeout` seconds (default 1800) so one hung `7-Zip`/`readpst` run can't stall the
   pipeline indefinitely.
 - OCR for image files (`deis.cfg`'s `ocr`/`ocr_languages`, on by default with `eng`; also
@@ -131,6 +131,8 @@ Setup Elasticsearch and Kibana by running the command below which will start a c
 docker compose --profile setup up -d
 ```
 
+Or, equivalently, `bin/deis run --only setup` (see [Command-line interface](#command-line-interface)).
+
 Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
 
 ```bash
@@ -190,7 +192,8 @@ run once, so `.venv` exists):
 bin/deis init            # bootstrap .env and deis.cfg if they don't exist yet
 bin/deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
 bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
-bin/deis run --only ingest   # or just one stage: download, extract, or ingest
+bin/deis run --only setup    # start the setup container and follow its logs until it exits
+bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
 bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
 bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal

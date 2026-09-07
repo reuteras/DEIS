@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Single entry point for operating DEIS, for people who don't want to learn
-docker compose profiles, Kibana's Dev Tools console, or which of four marker
-directories to check when something looks wrong. Wraps the existing scripts
-and containers rather than replacing them - see docs/IMPROVEMENTS.md's "CLI"
-section for the design.
+docker compose profiles, Kibana's Dev Tools console, or which marker file
+under status/ to check when something looks wrong. Wraps the existing
+scripts and containers rather than replacing them - see
+docs/IMPROVEMENTS.md's "CLI" section for the design.
 """
 
 import argparse
@@ -53,7 +53,7 @@ SUBCOMMANDS = (
     "reset",
     "completion",
 )
-RUN_ONLY_CHOICES = ("download", "extract", "ingest")
+RUN_ONLY_CHOICES = ("setup", "download", "extract", "ingest")
 
 console = Console()
 
@@ -154,29 +154,28 @@ def marker_status() -> dict[str, str]:
     exists so `deis status` can add the funnel counts progress.py doesn't
     have, as a single snapshot rather than a second infinite loop.
     """
-    files = REPO_ROOT / "files"
-    extracted = REPO_ROOT / "extracted"
+    status_dir = REPO_ROOT / "status"
     status = {}
 
-    if (files / "download_failed").exists():
+    if (status_dir / "download_failed").exists():
         status["download"] = "failed"
-    elif (files / "downloaded").exists():
+    elif (status_dir / "downloaded").exists():
         status["download"] = "done"
-    elif (files / "running").exists():
+    elif (status_dir / "running").exists():
         status["download"] = "running"
     else:
         status["download"] = "not running"
 
-    if (extracted / "files" / "done").exists():
+    if (status_dir / "extract_done").exists():
         status["extract"] = "done"
-    elif (files / "unpack").exists():
+    elif (status_dir / "unpack").exists():
         status["extract"] = "running"
     else:
         status["extract"] = "waiting"
 
-    if (extracted / "ingest_done").exists():
+    if (status_dir / "ingest_done").exists():
         status["ingest"] = "done"
-    elif (extracted / "files" / "done").exists():
+    elif (status_dir / "extract_done").exists():
         status["ingest"] = "running"
     else:
         status["ingest"] = "waiting"
@@ -333,10 +332,21 @@ def check_tor_egress() -> bool:
 
 
 def cmd_run(args) -> int:
-    profile = {"download": "download", "extract": "unpack", "ingest": "ingest"}.get(args.only, "deis")
+    profile = {"setup": "setup", "download": "download", "extract": "unpack", "ingest": "ingest"}.get(
+        args.only, "deis"
+    )
     command = ["docker", "compose", "--profile", profile, "up", "-d"]
     console.print(f"Running: {' '.join(command)}")
-    return subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
+    result = subprocess.run(command, cwd=REPO_ROOT, check=False)
+    if result.returncode != 0 or profile != "setup":
+        return result.returncode
+
+    # The setup container is one-shot: it exits once Kibana/ES are
+    # configured. "docker compose logs -f" streams its output and returns on
+    # its own when the container exits, so this blocks until setup is done
+    # instead of leaving the caller to poll or tail logs separately.
+    console.print("Following setup container logs until it exits...")
+    return subprocess.run(["docker", "compose", "logs", "setup", "-f"], cwd=REPO_ROOT, check=False).returncode
 
 
 def cmd_status(_args) -> int:
@@ -349,10 +359,7 @@ def cmd_status(_args) -> int:
     console.print(table)
 
     downloaded = count_files(REPO_ROOT / "files", exclude=set())
-    extracted = count_files(
-        REPO_ROOT / "extracted" / "files",
-        exclude={"done", "path.txt"},
-    )
+    extracted = count_files(REPO_ROOT / "extracted" / "files", exclude=set())
     unique = count_files(REPO_ROOT / "extracted" / "sha256", exclude=set())
 
     counts = Table(title="Funnel")
@@ -421,7 +428,7 @@ def cmd_report(_args) -> int:
         ("still corrupt", "still_corrupt.txt"),
         ("rejected as unsafe", "still_unsafe.txt"),
     ):
-        path = REPO_ROOT / "extracted" / filename
+        path = REPO_ROOT / "status" / filename
         count = len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
         console.print(f"  {label}: {count}")
 
@@ -736,7 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="preflight checks and diagnosis").set_defaults(func=cmd_doctor)
 
     p_run = sub.add_parser("run", help="start the pipeline (or one stage of it)")
-    p_run.add_argument("--only", choices=["download", "extract", "ingest"])
+    p_run.add_argument("--only", choices=list(RUN_ONLY_CHOICES))
     p_run.set_defaults(func=cmd_run)
 
     sub.add_parser("status", help="snapshot of pipeline state and funnel counts").set_defaults(func=cmd_status)

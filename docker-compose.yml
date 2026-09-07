@@ -36,6 +36,7 @@ services:
       - ./files:/files
       - ./downloader/data:/downloader/data
       - ./extracted:/extracted
+      - ./status:/status
       - ./logs:/logs
       - ./urls:/urls
     networks:
@@ -89,6 +90,7 @@ services:
     volumes:
       - ./files:/files
       - ./extracted:/extracted
+      - ./status:/status
       - ./deis.cfg:/deis.cfg
       - ./logs:/logs
       - ./passwords:/passwords:ro
@@ -102,6 +104,7 @@ services:
     volumes:
       - ./extracted/files:/extracted/files
       - ./extracted/sha256:/extracted/sha256:ro
+      - ./status:/status:ro
     networks:
       - web
     ports:
@@ -115,6 +118,7 @@ services:
     build: ingest
     volumes:
       - ./extracted:/extracted
+      - ./status:/status
       - ./deis.cfg:/deis.cfg
       - ./db:/db
       - ./logs:/logs

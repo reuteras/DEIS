@@ -2,23 +2,23 @@
 
 # Only evaluate once urls.sh has actually submitted something, and only once
 # (skip once we've already recorded a final downloaded/download_failed result).
-[[ -f /files/added_urls ]] || exit 0
-[[ -f /files/downloaded ]] && exit 0
-[[ -f /files/download_failed ]] && exit 0
-[[ -s /files/batch_gids ]] || exit 0
+[[ -f /status/added_urls ]] || exit 0
+[[ -f /status/downloaded ]] && exit 0
+[[ -f /status/download_failed ]] && exit 0
+[[ -s /status/batch_gids ]] || exit 0
 
 # Purely a display flag for bin/progress.py; not used for control flow below.
-touch /files/running
+touch /status/running
 
 # aria2 keeps retrying a failing download forever (max-tries=0 in aria2.conf,
 # which is what makes flaky Tor circuits survivable). Without a deadline a
 # single unreachable URL would keep the whole pipeline waiting silently, so
 # give up after DOWNLOAD_TIMEOUT seconds and report what is still stuck.
 timeout="${DOWNLOAD_TIMEOUT:-86400}"
-if [[ ! -f /files/batch_started ]]; then
-    date +%s > /files/batch_started
+if [[ ! -f /status/batch_started ]]; then
+    date +%s > /status/batch_started
 fi
-started="$(cat /files/batch_started)"
+started="$(cat /status/batch_started)"
 
 rpc() {
     curl --silent "http://downloader:6800/jsonrpc" \
@@ -49,7 +49,7 @@ while true; do
 done
 
 # Only look at the GIDs this batch actually submitted (deis/urls.sh writes
-# them to /files/batch_gids). This deliberately never purges or otherwise
+# them to /status/batch_gids). This deliberately never purges or otherwise
 # touches aria2's own history, so AriaNg's Stopped/Waiting views stay intact.
 pending=""
 pending_count=0
@@ -67,14 +67,14 @@ while IFS= read -r gid; do
         msg="$(echo "${entry}" | jq -r '.errorMessage')"
         errors+="${gid} ${uri} -> ${msg}"$'\n'
     fi
-done < /files/batch_gids
+done < /status/batch_gids
 
 if [[ -n "${pending}" ]]; then
     # Report the count whenever it changes, so a slow batch still shows signs
     # of life instead of looking identical to a stuck one.
-    if [[ "$(cat /files/pending_count 2>/dev/null)" != "${pending_count}" ]]; then
+    if [[ "$(cat /status/pending_count 2>/dev/null)" != "${pending_count}" ]]; then
         echo "Waiting for ${pending_count} download(s) to finish."
-        echo "${pending_count}" > /files/pending_count
+        echo "${pending_count}" > /status/pending_count
     fi
 
     elapsed=$(( $(date +%s) - started ))
@@ -103,13 +103,13 @@ if [[ -n "${pending}" ]]; then
         echo "${stalled}"
         [[ -n "${errors}" ]] && echo "${errors}"
     } >> /logs/download_errors.log
-    rm -f /files/running
-    touch /files/download_failed
+    rm -f /status/running
+    touch /status/download_failed
     exit 0
 fi
 
-rm -f /files/running
-rm -f /files/pending_count
+rm -f /status/running
+rm -f /status/pending_count
 
 if [[ -n "${errors}" ]]; then
     echo "Download finished with errors, not marking as downloaded:"
@@ -118,8 +118,8 @@ if [[ -n "${errors}" ]]; then
         echo "$(date -Iseconds) download errors:"
         echo "${errors}"
     } >> /logs/download_errors.log
-    touch /files/download_failed
+    touch /status/download_failed
 else
-    echo "Download done. Creating /files/downloaded."
-    touch /files/downloaded
+    echo "Download done. Creating /status/downloaded."
+    touch /status/downloaded
 fi

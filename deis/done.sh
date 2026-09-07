@@ -2,13 +2,13 @@
 
 sleep 6
 
-[[ -f /files/dies_done ]] && pkill -9 crond
+[[ -f /status/dies_done ]] && pkill -9 crond
 
 # Guarded on "not yet moved everything" rather than a one-shot flag, so a file
 # that lands in /downloader/data late, or a move that failed the first time
 # around (disk full, permissions), is retried on the next cron tick instead
 # of being silently abandoned.
-if [[ -f /files/downloaded ]] && [[ ! -f /files/unpack ]]; then
+if [[ -f /status/downloaded ]] && [[ ! -f /status/unpack ]]; then
     echo "Move files for extraction."
     failed=0
     while IFS= read -r -d '' path; do
@@ -46,7 +46,7 @@ if [[ -f /files/downloaded ]] && [[ ! -f /files/unpack ]]; then
     if (( failed > 0 || remaining > 0 )); then
         echo "Move incomplete: ${failed} failed, ${remaining} file(s) left in /downloader/data. Will retry."
     else
-        echo "Files have been moved and creating /files/unpack"
-        touch /files/unpack /files/dies_done
+        echo "Files have been moved and creating /status/unpack"
+        touch /status/unpack /status/dies_done
     fi
 fi

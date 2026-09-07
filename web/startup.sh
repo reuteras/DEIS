@@ -1,7 +1,7 @@
 #!/bin/bash
 
-[[ ! -e /extracted/files/done ]] && echo "Waiting for files."
-while [[ ! -e /extracted/files/done ]]; do
+[[ ! -e /status/extract_done ]] && echo "Waiting for files."
+while [[ ! -e /status/extract_done ]]; do
     sleep 5
 done
 

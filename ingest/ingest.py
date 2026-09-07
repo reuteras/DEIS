@@ -35,7 +35,6 @@ BULK_MAX_DOCS = 200
 BULK_MAX_BYTES = 20 * 1024 * 1024
 
 # What happened to a single file, for the summary at the end of a run.
-SKIPPED = "skipped"  # bookkeeping file, never meant to be indexed
 INDEXED = "indexed"  # sent to Elasticsearch during this run
 PRESENT = "present"  # a document for this content already existed
 FAILED = "failed"  # could not be indexed, will be retried on the next run
@@ -166,13 +165,11 @@ def prepare_file(fname: Path):
     the main process (see process_batch). Nothing raises out of here: a
     single unreadable or unusual file must not abort the whole run.
 
-    Returns a dict, always with a "status" key: SKIPPED (a bookkeeping file),
-    PRESENT (already indexed, carries "sha256"), FAILED (could not even be
-    hashed, carries "error"), or "ready" (carries "fname", "sha256",
-    "content" bytes and "message", waiting to be sent).
+    Returns a dict, always with a "status" key: PRESENT (already indexed,
+    carries "sha256"), FAILED (could not even be hashed, carries "error"),
+    or "ready" (carries "fname", "sha256", "content" bytes and "message",
+    waiting to be sent).
     """
-    if str(fname) in ["extracted/files/done", "extracted/files/path.txt"]:
-        return {"status": SKIPPED}
     try:
         sha256 = get_filehash(fname)
         if sha256 is None or len(sha256) != 64:
@@ -369,7 +366,6 @@ def print_summary(results, directory):
     print("Ingest summary")
     print("--------------")
     print(f"  files looked at:      {len(results)}")
-    print(f"  internal files:       {statuses.count(SKIPPED)}")
     print(f"  unique files:         {len(covered)}")
     print(f"  duplicate copies:     {counted - len(covered)}")
     print(f"  indexed this run:     {statuses.count(INDEXED)}")
@@ -391,7 +387,6 @@ def print_summary(results, directory):
         {
             "@timestamp": datetime.now(UTC).isoformat(),
             "files_looked_at": len(results),
-            "internal_files": statuses.count(SKIPPED),
             "unique_files": len(covered),
             "duplicate_copies": counted - len(covered),
             "indexed_this_run": statuses.count(INDEXED),
@@ -475,9 +470,9 @@ def process_files(directory: Path):
 cfg = read_configuration("./deis.cfg")
 max_size = int(cfg.get("ingest", "max_size"))
 use_sqlite = cfg.getboolean("ingest", "use_sqlite")
-still_encrypted = load_sha256_set("extracted/still_encrypted.txt")
-still_corrupt = load_sha256_set("extracted/still_corrupt.txt")
-still_unsafe = load_sha256_set("extracted/still_unsafe.txt")
+still_encrypted = load_sha256_set("status/still_encrypted.txt")
+still_corrupt = load_sha256_set("status/still_corrupt.txt")
+still_unsafe = load_sha256_set("status/still_unsafe.txt")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:
@@ -498,5 +493,5 @@ if __name__ == "__main__":
         # on the next run - but only if this run isn't marked as done.
         print("Ingest incomplete. Re-run with 'docker compose restart ingest' to retry the failed files.")
         sys.exit(1)
-    Path("./extracted/ingest_done").touch()
+    Path("./status/ingest_done").touch()
     print("Ingest done.")

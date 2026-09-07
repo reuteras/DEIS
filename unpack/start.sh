@@ -3,9 +3,9 @@
 set -u
 
 LOG=/logs/unpack.log
-STILL_ENCRYPTED=/extracted/still_encrypted.txt
-STILL_CORRUPT=/extracted/still_corrupt.txt
-STILL_UNSAFE=/extracted/still_unsafe.txt
+STILL_ENCRYPTED=/status/still_encrypted.txt
+STILL_CORRUPT=/status/still_corrupt.txt
+STILL_UNSAFE=/status/still_unsafe.txt
 MAX_DEPTH_DEFAULT=6
 PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
 # Defaults for the hostile-archive guards in check_archive_safety() and the
@@ -20,11 +20,6 @@ PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
 export MAX_EXTRACT_BYTES_DEFAULT=$((10 * 1024 * 1024 * 1024)) # 10 GiB uncompressed
 export MAX_COMPRESSION_RATIO_DEFAULT=200                      # uncompressed:compressed
 export EXTRACT_TIMEOUT_DEFAULT=1800                           # seconds per archive
-
-# Marker files deis/*.sh and web/startup.sh drop into /files. They must never
-# be treated as leak data - keep this in sync with what those scripts touch
-# (grep -ohrE '/files/[a-z_]+' deis/*.sh web/startup.sh is the source of truth).
-CONTROL_FILES='/(\.gitignore|added_urls|batch_gids|batch_started|dies_done|done|download_failed|downloaded|extract|pending_count|running|unpack)$'
 
 log() {
     # $1 = level (EXTRACTED / COPIED / ENCRYPTED / CORRUPT / DEPTH-LIMIT)
@@ -519,10 +514,11 @@ unpack() {
     export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT STILL_UNSAFE
     build_password_list | awk '!seen[$0]++' > "${WORKDIR}/passwords.list"
 
+    # -name '.*' excludes /files/.gitignore - status/progress markers no
+    # longer live in /files, so a dotfile is the only non-data entry left to
+    # skip here.
     local -a current
-    mapfile -d '' -t current < <(find /files -maxdepth 1 -type f -print0 \
-        | grep -zvE "${CONTROL_FILES}" \
-        | sort -z)
+    mapfile -d '' -t current < <(find /files -maxdepth 1 -type f ! -name '.*' -print0 | sort -z)
 
     local max_depth
     max_depth="$(config_int max_depth "${MAX_DEPTH_DEFAULT}")"
@@ -542,9 +538,9 @@ unpack() {
 }
 
 function summary {
-    find /extracted/files -type f -exec basename {} \; | grep -E '^[^.]+\.' | sed 's/^.*\.//' | sort | uniq -c | sort -nr > /extracted/extensions.txt
-    find /extracted/files -type f -exec file -b --mime-type {} \; | sort | uniq -c | sort -nr > /extracted/mime.txt
-    find /extracted/files > /extracted/files/path.txt
+    find /extracted/files -type f -exec basename {} \; | grep -E '^[^.]+\.' | sed 's/^.*\.//' | sort | uniq -c | sort -nr > /status/extensions.txt
+    find /extracted/files -type f -exec file -b --mime-type {} \; | sort | uniq -c | sort -nr > /status/mime.txt
+    find /extracted/files > /status/path.txt
 }
 
 function prepare {
@@ -564,12 +560,12 @@ function prepare {
 [[ -d /extracted/files ]] || mkdir /extracted/files
 
 while true; do
-    if [[ -f /files/unpack && ! -e /extracted/files/done ]]; then
+    if [[ -f /status/unpack && ! -e /status/extract_done ]]; then
         echo "Configuration:"
         cat /deis.cfg
         echo ""
         prepare
-        touch /extracted/files/done
+        touch /status/extract_done
         exit
     fi
     sleep 5

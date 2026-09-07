@@ -59,43 +59,45 @@ try:
             sys.exit()
 
         # Adding URLS to download
-        if check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists("files/added_urls"):
+        if check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists("status/added_urls"):
             print_status("Adding URLS to download", "RUNNING")
-        elif not check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists("files/added_urls"):
+        elif not check_output_contains("docker ps -a", "deis-downloader") and not os.path.exists(
+            "status/added_urls"
+        ):
             print_status("Adding URLS to download", "NO DOWNLOAD CONTAINER")
         else:
             print_status("Adding URLS to download", "DONE")
 
         # Download
-        if os.path.exists("files/download_failed"):
+        if os.path.exists("status/download_failed"):
             print_status("Download", "FAILED")
-        elif os.path.exists("files/downloaded"):
+        elif os.path.exists("status/downloaded"):
             print_status("Download", "DONE")
-        elif os.path.exists("files/running"):
+        elif os.path.exists("status/running"):
             print_status("Download", "RUNNING")
         else:
             print_status("Download", "NOT RUNNING")
 
         # Move files to ./files
-        if os.path.exists("files/extract") and not os.path.exists("files/unpack"):
+        if os.path.exists("status/extract") and not os.path.exists("status/unpack"):
             print_status("Move files to files", "RUNNING")
-        elif os.path.exists("files/unpack"):
+        elif os.path.exists("status/unpack"):
             print_status("Move files to files", "DONE")
         else:
             print_status("Move files to files", "WAITING FOR FILES")
 
         # Extraction of files
-        if not os.path.exists("files/unpack") and not os.path.exists("extracted/files/done"):
+        if not os.path.exists("status/unpack") and not os.path.exists("status/extract_done"):
             print_status("Extraction of files", "WAITING FOR FILES")
-        elif os.path.exists("files/unpack") and not os.path.exists("extracted/files/done"):
+        elif os.path.exists("status/unpack") and not os.path.exists("status/extract_done"):
             print_status("Extraction of files", "RUNNING")
         else:
             print_status("Extraction of files", "DONE")
 
         # Ingest
-        if os.path.exists("extracted/ingest_done"):
+        if os.path.exists("status/ingest_done"):
             print_status("Ingest", "DONE")
-        elif not os.path.exists("extracted/ingest_done") and not os.path.exists("extracted/files/done"):
+        elif not os.path.exists("status/ingest_done") and not os.path.exists("status/extract_done"):
             print_status("Ingest", "WAITING FOR FILES")
         else:
             print_status("Ingest", "RUNNING")

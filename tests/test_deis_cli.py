@@ -73,30 +73,26 @@ class TestReadEnv:
 class TestMarkerStatus:
     def test_all_waiting_on_empty_tree(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        (tmp_path / "files").mkdir()
-        (tmp_path / "extracted").mkdir()
+        (tmp_path / "status").mkdir()
         status = deis_module.marker_status()
         assert status == {"download": "not running", "extract": "waiting", "ingest": "waiting"}
 
     def test_full_pipeline_done(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        files = tmp_path / "files"
-        extracted = tmp_path / "extracted"
-        files.mkdir()
-        (extracted / "files").mkdir(parents=True)
-        (files / "downloaded").touch()
-        (extracted / "files" / "done").touch()
-        (extracted / "ingest_done").touch()
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "downloaded").touch()
+        (status_dir / "extract_done").touch()
+        (status_dir / "ingest_done").touch()
         status = deis_module.marker_status()
         assert status == {"download": "done", "extract": "done", "ingest": "done"}
 
     def test_download_failed_takes_priority(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        files = tmp_path / "files"
-        files.mkdir()
-        (tmp_path / "extracted").mkdir()
-        (files / "downloaded").touch()
-        (files / "download_failed").touch()
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "downloaded").touch()
+        (status_dir / "download_failed").touch()
         assert deis_module.marker_status()["download"] == "failed"
 
 

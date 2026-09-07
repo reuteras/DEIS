@@ -119,16 +119,22 @@ git clone https://github.com/reuteras/DEIS.git
 cd DEIS
 ```
 
-Configure DEIS by changing three files:
+First we need to create the venv and install Python packages. If you have `just` installed you can run `just venv`. Otherwise run:
 
-- Copy *.env.default* to *.env* and modify the passwords in it. Set **JUPYTER_TOKEN** to a
-  random value (`openssl rand -hex 32`) - JupyterLab will not start without one. If the
-  downloaded files are password protected set the **ZIP_PASSWORD**, or - if there is more
-  than one password in play - add them one per line to files in the *passwords* directory
-  instead; every archive at every nesting level is tried against all of them. *.env* is
-  not tracked by git, so your passwords stay on your machine.
-- Add a list of URLs (one per line) for files to download to a file in the *urls* directory.
-- Copy *deis.cfg.default* to *deis.cfg* and update the settings described in the file.
+```bash
+uv sync --dev
+source .venv/bin/activate
+```
+
+Configure DEIS by running:
+
+```bash
+./bin/deis init
+```
+
+Look through the created *.env* and *deis.cfg* files and update as needed.
+
+Add a list of URLs (one per line) for files to download to a file in the *urls* directory. If you already have the files downloaded look for the `add-files` subcommand of `./bin/deis`.
 
 `.onion` URLs are downloaded over TOR and everything else is downloaded directly, which is
 much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR instead.
@@ -136,15 +142,7 @@ much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR
 Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
 
 ```bash
-docker compose --profile setup up -d
-```
-
-Or, equivalently, `bin/deis setup` (see [Command-line interface](#command-line-interface)).
-
-Wait for *deis-setup-1* to exit. Tailing the container logs will exit when the container is done after about 45 seconds.
-
-```bash
-docker logs deis-setup-1 -f
+./bin/deis setup
 ```
 
 ## Run all steps
@@ -152,16 +150,10 @@ docker logs deis-setup-1 -f
 To run all steps in **DEIS** run.
 
 ```bash
-docker compose --profile deis up -d
+./bin/deis run
 ```
 
-Monitor progress by first running:
-
-```bash
-just venv
-```
-
-And then run the *bin/progress.py* Python script with:
+Monitor progress by running:
 
 ```bash
 just progress
@@ -236,10 +228,6 @@ just venv
 ./bin/deis setup
 ./bin/deis run
 ```
-
-`bin/deis doctor` does not yet include a TOR egress leak test (see
-[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) item 42) - it does not confirm downloads are
-actually routed through TOR.
 
 `bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already
 Tika-extracted text and looks for Swedish personnummer/samordningsnummer, emails, phone

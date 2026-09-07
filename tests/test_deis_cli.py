@@ -153,6 +153,50 @@ class TestInitEnvPermissions:
         assert values["ELASTIC_PASSWORD"] != values["KIBANA_PASSWORD"]
 
 
+class TestAddFiles:
+    def test_copies_directory_and_sets_markers(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        source = tmp_path / "colleagues-copy"
+        source.mkdir()
+        (source / "a.txt").write_text("a")
+        (source / "sub").mkdir()
+        (source / "sub" / "b.txt").write_text("b")
+
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+
+        assert rc == 0
+        assert (tmp_path / "files" / "a.txt").read_text() == "a"
+        assert (tmp_path / "files" / "b.txt").read_text() == "b"
+        for marker in ("added_urls", "downloaded", "unpack"):
+            assert (tmp_path / "status" / marker).exists()
+
+    def test_name_collision_gets_dup_suffix(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / "files").mkdir()
+        (tmp_path / "files" / "a.txt").write_text("existing")
+        source = tmp_path / "colleagues-copy"
+        source.mkdir()
+        (source / "a.txt").write_text("new")
+
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+
+        assert rc == 0
+        assert (tmp_path / "files" / "a.txt").read_text() == "existing"
+        assert (tmp_path / "files" / "a-dup2.txt").read_text() == "new"
+
+    def test_missing_source_fails(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(tmp_path / "does-not-exist")))
+        assert rc == 1
+
+    def test_empty_source_fails(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        source = tmp_path / "empty"
+        source.mkdir()
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+        assert rc == 1
+
+
 class TestCompletionScripts:
     """SUBCOMMANDS/RUN_ONLY_CHOICES are the single source of truth for both
     build_parser() and the completion scripts - these tests catch the two

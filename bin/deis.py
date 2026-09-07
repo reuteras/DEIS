@@ -49,6 +49,7 @@ SUBCOMMANDS = (
     "search",
     "report",
     "add-urls",
+    "add-files",
     "pii-scan",
     "dedupe-scan",
     "clean",
@@ -649,6 +650,59 @@ def cmd_add_urls(args) -> int:
     return 0
 
 
+def cmd_add_files(args) -> int:
+    """Feeds already-downloaded files into the pipeline as if deis/done.sh
+    had just moved them there, for when the original URLs are dead but the
+    files themselves are available some other way (a colleague's copy, a
+    different mirror, ...). Collision handling mirrors done.sh exactly, so
+    a file added this way is indistinguishable from a normal download once
+    it lands in files/.
+    """
+    source = Path(args.source)
+    if not source.exists():
+        console.print(f"[red]{source} does not exist.[/red]")
+        return 1
+
+    sources = [source] if source.is_file() else sorted(p for p in source.rglob("*") if p.is_file())
+    if not sources:
+        console.print(f"[yellow]No files found under {source}.[/yellow]")
+        return 1
+
+    files_dir = REPO_ROOT / "files"
+    status_dir = REPO_ROOT / "status"
+    files_dir.mkdir(exist_ok=True)
+    status_dir.mkdir(exist_ok=True)
+
+    copied = 0
+    for src in sources:
+        dest = files_dir / src.name
+        if dest.exists():
+            base, ext = src.stem, src.suffix
+            n = 2
+            while (files_dir / f"{base}-dup{n}{ext}").exists():
+                n += 1
+            dest = files_dir / f"{base}-dup{n}{ext}"
+            console.print(f"[yellow]{src.name} already exists in files/, copying as {dest.name} instead.[/yellow]")
+        shutil.copyfile(src, dest)
+        copied += 1
+
+    # Matches the state deis/done.sh leaves behind once a real download's
+    # files have been moved into files/, so the rest of the pipeline (status
+    # display, unpack's own trigger check) can't tell the difference.
+    for marker in ("added_urls", "downloaded", "unpack"):
+        (status_dir / marker).touch()
+
+    console.print(f"[green]Copied {copied} file(s) into files/.[/green]")
+    if (status_dir / "extract_done").exists():
+        console.print(
+            "[yellow]status/extract_done already exists from an earlier run - unpack.sh only extracts once, "
+            "so it won't pick these up unless you remove status/extract_done (and status/ingest_done) first.[/yellow]"
+        )
+    else:
+        console.print("Next: 'bin/deis run --only extract', then 'bin/deis run --only ingest'.")
+    return 0
+
+
 def cmd_clean(_args) -> int:
     return _confirm_and_run(["just", "clean"], "delete downloader state, log files, and controller's web page")
 
@@ -773,6 +827,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add-urls", help="queue a URL, or a file of URLs, for download")
     p_add.add_argument("target", help="a single URL, or a path to a file of URLs (one per line)")
     p_add.set_defaults(func=cmd_add_urls)
+
+    p_add_files = sub.add_parser(
+        "add-files", help="copy already-downloaded files into the pipeline, skipping the download stage"
+    )
+    p_add_files.add_argument("source", help="a file, or a directory (searched recursively) of already-downloaded files")
+    p_add_files.set_defaults(func=cmd_add_files)
 
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
     p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")

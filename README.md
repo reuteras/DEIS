@@ -183,6 +183,19 @@ just ingest
 .venv/bin/python3 ingest/ingest.py
 ```
 
+### Skip download, using files you already have
+
+If the original URLs are dead but you have the files some other way (a colleague's copy, a
+different mirror, ...) and still want them extracted and OCR'd as usual, `bin/deis add-files`
+copies them into *files/* and marks the download stage as done, so the pipeline picks up from
+extraction:
+
+```bash
+bin/deis add-files <file-or-directory>
+bin/deis run --only extract
+bin/deis run --only ingest
+```
+
 ## Command-line interface
 
 `bin/deis` wraps most of the above into a single command (requires `just venv` to have been
@@ -196,6 +209,7 @@ bin/deis setup           # alias for 'run --only setup': start the setup contain
 bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
 bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
 bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
+bin/deis add-files <path>  # copy already-downloaded files in, skipping the download stage
 bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed

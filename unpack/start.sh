@@ -189,6 +189,15 @@ check_archive_safety() {
     return 0
 }
 
+# True for anything readpst handles: .pst and .ost share the same underlying
+# libpst format (OST is Outlook's offline cache of the same data), so both
+# are dispatched through process_pst() and gated by the same pst/pst_archive/
+# pst_remove deis.cfg keys - readpst reads the file by its own header, not by
+# extension, so no separate tool or config surface is needed for OST.
+is_pst_like() {
+    [[ "${1,,}" == *.pst || "${1,,}" == *.ost ]]
+}
+
 # Attempts every password candidate against $1, extracting into $2 on
 # success. Never omits -p: 7-Zip prompts interactively for a password on an
 # encrypted archive if none is given at all, which would hang the pipeline
@@ -276,7 +285,19 @@ process_zip_like() {
     fi
     mkdir -p "${dest}"
 
-    if ! check_archive_safety "${path}" "${dest}"; then
+    # .msg (Outlook message) is an OLE/CFBF file, the same container format
+    # 7-Zip's "Compound" archive type reads (also used by legacy .doc/.xls/
+    # .ppt) - and 7-Zip identifies it by signature, not extension, so 7zz
+    # would "successfully extract" a .msg into its raw internal property
+    # streams (unreadable) and dispose of the real message, rather than
+    # leaving it for Tika's OutlookExtractor at ingest time, which is what
+    # actually turns it into searchable text. Skip 7-Zip entirely for .msg
+    # and fall straight into the same not-archive/copy path used below for
+    # anything 7-Zip itself reports as not an archive.
+    if [[ "${path,,}" == *.msg ]]; then
+        EXTRACT_RESULT="not-archive"
+        EXTRACT_ERR=""
+    elif ! check_archive_safety "${path}" "${dest}"; then
         EXTRACT_RESULT="unsafe"
         EXTRACT_ERR="${SAFETY_REASON}"
     elif try_extract "${path}" "${dest}"; then
@@ -334,7 +355,7 @@ process_pst() {
 
     if timeout "${extract_timeout}" readpst -D -S -j 2 -q -r -o "${dest}" "${path}" < /dev/null 2>>"${LOG}"; then
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
-        log EXTRACTED "Extracted PST: ${path} -> ${dest}"
+        log EXTRACTED "Extracted PST/OST: ${path} -> ${dest}"
         queue_new_files "${dest}"
         dispose_of_original "${path}" pst
     else
@@ -342,7 +363,7 @@ process_pst() {
         [[ -n "${resultfile}" ]] && echo "corrupt" > "${resultfile}"
         [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
         echo "${sha}" >> "${STILL_CORRUPT}"
-        log CORRUPT "Could not extract PST (corrupt or unsupported), left/copied as-is: ${path}"
+        log CORRUPT "Could not extract PST/OST (corrupt or unsupported), left/copied as-is: ${path}"
     fi
 }
 
@@ -403,7 +424,7 @@ worker_entrypoint() {
     local path="$1" sha kind resultfile
     load_passwords
     sha="$(sha256sum "${path}" | awk '{print $1}')"
-    if [[ "${path,,}" == *.pst ]]; then kind="pst"; else kind="zip"; fi
+    if is_pst_like "${path}"; then kind="pst"; else kind="zip"; fi
     resultfile="${WORKDIR}/results/${sha}-${kind}"
 
     if [[ "${kind}" == "pst" ]]; then
@@ -412,7 +433,7 @@ worker_entrypoint() {
         else
             echo "extracted" > "${resultfile}"  # "extracted" here just means "handled, nothing left to do"
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
-            log COPIED "PST extraction disabled (pst=false), left/copied as-is: ${path}"
+            log COPIED "PST/OST extraction disabled (pst=false), left/copied as-is: ${path}"
         fi
     else
         process_zip_like "${path}" "${sha}" "${resultfile}"
@@ -425,12 +446,12 @@ worker_entrypoint() {
 process_one_file() {
     local path="$1"
     [[ -f "${path}" ]] || return   # may already have been consumed elsewhere
-    if [[ "${path,,}" == *.pst ]]; then
+    if is_pst_like "${path}"; then
         if config_true pst; then
             process_pst "${path}" "$(sha256sum "${path}" | awk '{print $1}')"
         else
             [[ "${path}" == /extracted/files/* ]] || cp "${path}" /extracted/files/
-            log COPIED "PST extraction disabled (pst=false), left/copied as-is: ${path}"
+            log COPIED "PST/OST extraction disabled (pst=false), left/copied as-is: ${path}"
         fi
     else
         process_zip_like "${path}" "$(sha256sum "${path}" | awk '{print $1}')"
@@ -438,7 +459,7 @@ process_one_file() {
 }
 
 export -f log read_cfg config_true config_true_default config_int load_passwords dispose_of_original \
-    queue_new_files check_archive_safety maybe_ocr try_extract process_zip_like process_pst \
+    queue_new_files check_archive_safety maybe_ocr try_extract is_pst_like process_zip_like process_pst \
     apply_known_result worker_entrypoint process_one_file
 
 # Extracts one round of files in parallel (up to $PARALLELISM at a time).
@@ -464,7 +485,7 @@ dispatch_round() {
 
     for path in "${files[@]}"; do
         sha="$(sha256sum "${path}" | awk '{print $1}')"
-        if [[ "${path,,}" == *.pst ]]; then kind="pst"; else kind="zip"; fi
+        if is_pst_like "${path}"; then kind="pst"; else kind="zip"; fi
         group="${sha}-${kind}"
         if [[ -n "${seen_group[${group}]:-}" ]]; then
             dup_paths+=("${path}")

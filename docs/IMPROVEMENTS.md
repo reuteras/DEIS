@@ -67,11 +67,10 @@ from — that has not been touched. *Effort: M.*
 
 ### E — Extract
 
-#### 21. More extractors (OCR done - see "Already fixed"; the rest is still open)
+#### 21. More extractors (OCR and email beyond PST done - see "Already fixed"; the rest is still open)
 
 Roughly in order of real-world value for leak dumps:
 
-- **Email beyond PST**: `.msg`, `.eml`, `.mbox`, `.ost`. Only `.pst` is handled today.
 - **Structured data as rows rather than blobs**: `.csv`, `.xlsx`, `.sql` dumps and SQLite
   files are where personal data actually lives in these leaks. Tika flattens them to text;
   parsing them into per-record documents would turn "is my friend in here?" into a precise
@@ -170,6 +169,7 @@ Recording these so they are not re-litigated later:
 | 19 | `unpack/start.sh` extracted one archive at a time regardless of available CPU cores | `010903c` |
 | 20 | Config reading in `unpack/start.sh` used substring matching instead of being section-aware | `010903c` |
 | 21 (OCR only) | A scanned passport or invoice saved as a plain image indexed with no searchable text at all | `23ac2e8` |
+| 21 (email beyond PST) | Only `.pst` was handled; `.msg`/`.eml`/`.mbox`/`.ost` were left as opaque blobs, and `.msg` in particular risked being shredded by 7-Zip's own OLE/CFBF "Compound" archive detection before Tika ever saw it | `PENDING_COMMIT` |
 | 22 | The index mapping was entirely dynamic; `sha256`/`filename` were analyzed as text and the cluster was permanently `yellow` | `c8b0f59` |
 | 24 | Every ingested file was a separate `PUT /_doc`, not batched via `_bulk` | `c8b0f59` |
 | 25 | Nothing reconciled files on disk against documents indexed, and the counts were never Kibana-visible | `44ff308` |

@@ -40,7 +40,15 @@ full of wrong or missing ones. This continues for up to `max_depth` rounds (`dei
 default 6); anything nested deeper than that is left as-is, and files still encrypted after
 every password below has been tried are listed in `status/still_encrypted.txt`.
 
-- Run [readpst][res] on files with the extension [.pst][pst] (Outlook Data File).
+- Run [readpst][res] on [`.pst` and `.ost`][pst] (Outlook Data File, and Outlook's offline cache
+  of the same data) files - both share the same underlying format, so both are gated by the
+  same `pst`/`pst_archive`/`pst_remove` `deis.cfg` keys.
+- `.msg` (a single Outlook message) is left untouched here rather than run through 7-Zip: it
+  uses the same OLE/CFBF container format as legacy `.doc`/`.xls`/`.ppt`, which 7-Zip
+  recognizes as an archive by content signature regardless of extension, so extracting it would
+  shred it into unreadable internal streams instead of a message. It's parsed into searchable
+  text by Tika during ingest instead - as are `.eml` and `.mbox`, which are plain text and were
+  never touched by extraction in the first place.
 - If the downloaded files are password protected, set **ZIP_PASSWORD** in *.env*, or add one
   password per line to files in the *passwords* directory - every archive is tried against
   all of them, in order, at every nesting level.

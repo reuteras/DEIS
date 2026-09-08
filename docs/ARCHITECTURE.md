@@ -44,7 +44,7 @@ Only `elk`/`web`-network ports are published to `127.0.0.1`.
 urls/, add-urls    ──▶  aria2 (downloader)  ──▶  downloader/data/
                                                         │ done.sh moves finished files
                                                         ▼
-                                                     files/
+                                                      files/
                                                         │ unpack (7-Zip/readpst, recursive)
                                                         ▼
                                           ┌── extracted/files/<sha256>   (extracted content, deduped by hash)

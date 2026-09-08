@@ -172,7 +172,11 @@ services:
 
 
   notebook:
-    image: reuteras/container-notebook
+    # Pinned per this repo's supply-chain policy: floating on `latest` is how
+    # a jupyter_ai update silently broke ipywidgets rendering (mismatched
+    # @jupyter/ydoc versions across federated JupyterLab extensions) without
+    # anything here changing. Update deliberately, not implicitly.
+    image: reuteras/container-notebook@sha256:3a7bff5cad3c597ce157f38d9ad028dcc778aab901f71b1a56c908e9cc34ab14
     ports:
       - 127.0.0.1:8888:8888
     environment:

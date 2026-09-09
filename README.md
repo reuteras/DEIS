@@ -48,7 +48,24 @@ every password below has been tried are listed in `status/still_encrypted.txt`.
   recognizes as an archive by content signature regardless of extension, so extracting it would
   shred it into unreadable internal streams instead of a message. It's parsed into searchable
   text by Tika during ingest instead - as are `.eml` and `.mbox`, which are plain text and were
-  never touched by extraction in the first place.
+  never touched by extraction in the first place. This isn't purely extension-based: a file's
+  first 8 bytes are also checked against the OLE/CFBF magic number, so a legacy Office/Outlook
+  document saved under some other extension (found in a real corpus: a `.kli` accounting
+  export, byte-for-byte an OLE2 Word document) still gets left whole instead of shredded. PDFs
+  are skipped the same way for a different reason: some PDF authoring tools append proprietary
+  sidecar data as a small ZIP fragment after the file's own `%%EOF`, which 7-Zip's signature
+  scan finds and tries to open as an archive - the real PDF content is unaffected either way,
+  but 7-Zip would otherwise report the file as "corrupt".
+- A multi-volume RAR set (`foo.part01.rar`, `foo.part02.rar`, ...) only needs its first volume
+  extracted - 7-Zip pulls in every sibling volume automatically as long as they're all present
+  in the same directory. The other volumes, tried on their own, fail (misleadingly, as "wrong
+  password" on every entry - no password fixes a missing volume) and are tracked separately in
+  `status/still_multivolume.txt` rather than `still_encrypted.txt`. Once extraction as a whole
+  finishes, any of those still sitting in `files/` are checked again: if a sibling volume of the
+  same set already succeeded, the file is moved into `extracted/archive/` the same as a directly
+  extracted original, rather than being left looking like unfinished work. A set missing a
+  volume entirely (never downloaded, for example) stays flagged in `still_multivolume.txt`
+  instead - that's a genuinely different, actionable problem from "wrong password".
 - If the downloaded files are password protected, set **ZIP_PASSWORD** in *.env*, or add one
   password per line to files in the *passwords* directory - every archive is tried against
   all of them, in order, at every nesting level.
@@ -67,6 +84,21 @@ every password below has been tried are listed in `status/still_encrypted.txt`.
   installed: `swe`) - a scanned passport or invoice saved as a plain image otherwise has
   no searchable text at all. Writes a `<name>.ocr.txt` file next to the image, indexed as its
   own separate document.
+- MS Access table export (`deis.cfg`'s `access_export`, on by default) - Tika has no Access
+  parser, so a `.mdb`/`.wdb` database otherwise indexes with no searchable text at all despite
+  holding real structured data. Every table is exported to a `<name>.<table>.csv` sidecar via
+  `mdbtools`, each indexed as its own separate document. `.accdb` (Access 2007+/ACE) is only
+  partially supported by `mdbtools`; `.dbf` (dBase) isn't attempted at all.
+- Password-cracking for individually password-protected documents (`deis.cfg`'s
+  `document_decrypt_office`/`document_decrypt_pdf`, both on by default) - a single encrypted
+  `.docx`/`.xlsx`/`.pdf`, as opposed to an encrypted *archive*, is tried against the same
+  password list above (`qpdf` for PDF, `msoffcrypto-tool` for Office). A recovered document is
+  decrypted in place and searchable as normal, flagged `extraction_status: decrypted` in
+  Kibana so it's distinguishable from a document that was never protected; one still stuck
+  after every password is flagged `extraction_status: encrypted`, same as an undecryptable
+  archive. PDF detection needs one `qpdf` encryption check per PDF (mime type alone can't tell
+  an encrypted PDF from an ordinary one, unlike Office's reliable `application/encrypted`
+  signal) - turn `document_decrypt_pdf` off if that per-PDF cost isn't wanted.
 
 ### Ingest
 
@@ -192,13 +224,30 @@ just ingest
 If the original URLs are dead but you have the files some other way (a colleague's copy, a
 different mirror, ...) and still want them extracted and OCR'd as usual, `bin/deis add-files`
 copies them into *files/* and marks the download stage as done, so the pipeline picks up from
-extraction:
+extraction. It accepts one or more files and/or directories (directories are searched
+recursively), so a shell glob like `bin/deis add-files /path/to/*.rar` works too:
 
 ```bash
-bin/deis add-files <file-or-directory>
+bin/deis add-files <file-or-directory> [file-or-directory ...]
 bin/deis run --only extract
 bin/deis run --only ingest
 ```
+
+`run --only ingest` doesn't need to be re-run after every extraction batch once the `ingest`
+container is up: it isn't a one-shot job, it's a long-lived process that polls every 30 seconds
+for `status/extract_done` and starts `ingest.py` itself as soon as that marker appears
+(`ingest/start.sh`). So if `ingest` is already running from an earlier `bin/deis run` or
+`bin/deis run --only ingest`, a fresh `bin/deis run --only extract` is enough on its own -
+ingestion picks up automatically once extraction finishes.
+
+`bin/deis status` (or `just progress`, or the web dashboard) tracks `extract` and `ingest`
+through four states: `waiting` (nothing to do yet) -> `pending` (the prior stage is done and
+this one is ready, but hasn't actually started working) -> `running` (actively extracting/
+ingesting right now - `unpack/start.sh` and `ingest/start.sh` touch `status/extracting`/
+`status/ingesting` right before they start the real work, the same way `download.sh` touches
+`status/running`) -> `done`. If `ingest` sits at `pending` rather than moving to `running`,
+that usually means the `ingest` container was never started - check with `docker compose ps
+ingest` and start it with `bin/deis run --only ingest` if it's missing.
 
 ## Command-line interface
 
@@ -213,7 +262,7 @@ bin/deis setup           # alias for 'run --only setup': start the setup contain
 bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
 bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
 bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
-bin/deis add-files <path>  # copy already-downloaded files in, skipping the download stage
+bin/deis add-files <path> [path ...]  # copy already-downloaded files in, skipping the download stage
 bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed

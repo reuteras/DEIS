@@ -1,4 +1,6 @@
-# Pinned: 7-Zip
+# Pinned dependencies
+
+## 7-Zip
 
 `install.sh` downloads the 7-Zip console build fresh from 7-zip.org at image build time (it
 is a real binary, not something practical to vendor into git), but pins the version and
@@ -17,3 +19,20 @@ To upgrade: read the 7-Zip changelog, download both architectures' tarballs from
 `VERSION`/`SHA256` in `install.sh`, and verify the change is reviewed rather than automated -
 7-zip.org does not publish independent per-file checksums, so this hash is only as
 trustworthy as the download that produced it.
+
+## msoffcrypto-tool
+
+Password-cracking for individually-encrypted Office documents (as opposed to encrypted
+*archives*, which 7-Zip already handles) - see `deis.cfg.default`'s
+`document_decrypt_office` key. Installed via `pip` into its own venv
+(`/opt/msoffcrypto-venv`) at image build time, since Debian trixie has no package for it and
+enforces PEP 668 (no unmanaged system-wide `pip install`); `python3-venv` itself is
+build-time only and autoremoved afterwards, same as `wget`/`xz-utils`.
+
+- Source: <https://pypi.org/project/msoffcrypto-tool/>
+- Version: 6.0.0
+- Pinned on: 2026-09-09
+
+To upgrade: read the changelog on <https://github.com/nolze/msoffcrypto-tool/releases>,
+check what its own dependencies (`cryptography`, `olefile`) pull in at the new version, and
+bump the pinned version in `Dockerfile`'s `pip install` line.

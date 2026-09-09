@@ -27,6 +27,7 @@ def print_status(text, status):
         "DONE": "green",
         "RUN SETUP": "red",
         "RUNNING": "yellow",
+        "PENDING": "blue",
         "NO DOWNLOAD CONTAINER": "red",
         "NOT RUNNING": "red",
         "WAITING FOR FILES": "red",
@@ -84,21 +85,31 @@ try:
         else:
             print_status("Move files to files", "WAITING FOR FILES")
 
-        # Extraction of files
-        if not os.path.exists("status/unpack") and not os.path.exists("status/extract_done"):
-            print_status("Extraction of files", "WAITING FOR FILES")
-        elif os.path.exists("status/unpack") and not os.path.exists("status/extract_done"):
-            print_status("Extraction of files", "RUNNING")
-        else:
+        # Extraction of files. "status/extracting" is a real liveness
+        # signal, touched by unpack/start.sh right before it starts the
+        # actual work - "status/unpack" alone only means "ready to
+        # extract", not "the unpack container is currently up and working".
+        if os.path.exists("status/extract_done"):
             print_status("Extraction of files", "DONE")
+        elif os.path.exists("status/extracting"):
+            print_status("Extraction of files", "RUNNING")
+        elif os.path.exists("status/unpack"):
+            print_status("Extraction of files", "PENDING")
+        else:
+            print_status("Extraction of files", "WAITING FOR FILES")
 
-        # Ingest
+        # Ingest. Same pattern: "status/ingesting" is touched by
+        # ingest/start.sh right before it execs ingest.py - "extract_done"
+        # alone only means ingest is ready to run, not that the ingest
+        # container has actually been started yet.
         if os.path.exists("status/ingest_done"):
             print_status("Ingest", "DONE")
-        elif not os.path.exists("status/ingest_done") and not os.path.exists("status/extract_done"):
-            print_status("Ingest", "WAITING FOR FILES")
-        else:
+        elif os.path.exists("status/ingesting"):
             print_status("Ingest", "RUNNING")
+        elif os.path.exists("status/extract_done"):
+            print_status("Ingest", "PENDING")
+        else:
+            print_status("Ingest", "WAITING FOR FILES")
 
         print("".ljust(max_length * 2))
         print("Information can be delayed up to 60 seconds. Press CTRL-C to exit.")

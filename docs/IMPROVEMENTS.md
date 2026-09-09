@@ -67,7 +67,7 @@ from — that has not been touched. *Effort: M.*
 
 ### E — Extract
 
-#### 21. More extractors (OCR and email beyond PST done - see "Already fixed"; the rest is still open)
+#### 21. More extractors (OCR, email beyond PST, MS Access table export, and password-cracking for individually-encrypted documents done - see "Already fixed"; the rest is still open)
 
 Roughly in order of real-world value for leak dumps:
 
@@ -77,8 +77,34 @@ Roughly in order of real-world value for leak dumps:
   query.
 - **Disk and VM images**: `.vmdk`, `.vhdx`, `.E01`, raw `.dd`.
 - **Mobile backups**, `.iso`/`.wim`, mail-server maildirs.
-- **Encrypted archives**: at minimum list them so they are not forgotten; optionally attempt
-  a wordlist.
+- **dBase (`.dbf`)**: deferred alongside MS Access support (see "Already fixed") - `mdbtools`
+  doesn't parse dBase at all, it's a wholly different container format, and would need its own
+  tool for a much smaller file count than the `.mdb`/`.wdb` case had. Not attempted yet.
+
+### I — Ingest
+
+#### 46. No provenance/lineage tracking - "which download did file.txt inside archive.zip come from?"
+
+Today a document's only location info is `filename` (`resolve_filepath()`), pointing either
+at the sqlite-recorded original name or the literal extracted-tree path
+(`/extracted/files/<parent-sha256>/...`) - which reveals one level of nesting by accident (the
+immediate parent's sha256 as a directory name) but not the full chain back to the original
+download, and isn't a structured, queryable field. Reconstructing "which URL did this ultimately
+come from" today means manually walking `logs/unpack.log`'s `[EXTRACTED] ... -> ...` lines
+backward, sha256 by sha256, then cross-referencing the top-level filename against aria2's own
+download history (`downloader:6800`'s JSON-RPC, or AriaNg) for the URL - aria2 knows the
+URL-per-file association at download time, but nothing persists or threads it forward past
+`deis/download.sh`.
+
+A real fix needs two things: (1) `deis/download.sh` (or `done.sh`) recording url→filename
+before the marker files it already writes are touched, and (2) each extraction step in
+`unpack/start.sh` appending to (rather than starting fresh at) a lineage chain per file -
+`dispatch_round`/`process_zip_like` already know both a file's own sha256 and the sha256 of
+whatever archive it came out of, so the data exists at exactly the right point, it's just
+never written down. Store the chain as a `source_chain` array field
+(`[{url}, {filename, sha256, archive_type}, ...]`) so a document is traceable end-to-end and
+Kibana can filter/aggregate by original download. *Effort: M. Impact: high for "does this leak
+contain X" answers that need to state provenance, not just content.*
 
 ### S — Search
 
@@ -193,6 +219,8 @@ Recording these so they are not re-litigated later:
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 | CLI | Running DEIS meant memorizing docker compose profile incantations and checking four marker-file directories by hand | `065c714` |
 | 45 | unpack's "try extracting it" detection is signature-based, not extension-based, so `.xlsx`/`.docx`/`.pptx`/ODF files (real ZIP archives internally) and legacy `.doc`/`.xls`/`.ppt` (OLE/CFBF, 7-Zip's own "Compound" format) were shredded into internal XML parts or raw property streams instead of reaching Tika whole - found via the "Top folders" dashboard panel showing OOXML-internal folder names, then confirmed against a real corpus: one `.xlsx` became 1029 meaningless documents, one `.xls` extracted to only its two metadata streams with the actual spreadsheet data stream never surviving at all | `4837d32` |
+| 21 (MS Access) | `.mdb`/`.wdb` databases indexed with `content_length: 0` - Tika has no Access parser. `maybe_export_access_tables()` exports every table to a `<name>.<table>.csv` sidecar via `mdbtools`, same pattern as OCR's `.ocr.txt` - confirmed against a real corpus (a Swedish accounting export's `.wdb` files), including one 160KB staff/payroll table that previously had zero searchable content | *(uncommitted)* |
+| 21 (password-cracking) | A single individually-encrypted document (`.docx`/`.xlsx`/`.pdf`, as opposed to an encrypted *archive*) never had `deis.cfg`'s password list tried against it. `decrypt_office_document()`/`decrypt_pdf_document()` do, via `msoffcrypto-tool`/`qpdf` respectively - confirmed against a real corpus (8 individually-encrypted files, all Office format) and a synthetic encrypted-PDF fixture; a recovered document is flagged `extraction_status: decrypted` in Kibana, distinct from a document that was never protected | *(uncommitted)* |
 
 A review of items 21/31/32/33 and the CLI afterwards found four defects in the work above,
 fixed in `f2702b5` and `f35014c`: `simhash.fingerprint()` returned 0 rather than "no result"

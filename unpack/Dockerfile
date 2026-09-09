@@ -15,15 +15,22 @@ RUN apt-get update && \
     apt-get -y install --no-install-recommends \
         ca-certificates \
         file \
+        mdbtools \
         pst-utils \
+        python3 \
+        python3-venv \
+        qpdf \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-swe \
         wget \
         xz-utils && \
     /install.sh && \
+    python3 -m venv /opt/msoffcrypto-venv && \
+    /opt/msoffcrypto-venv/bin/pip install --no-cache-dir "msoffcrypto-tool==6.0.0" && \
     apt-get autoremove -y \
         ca-certificates \
+        python3-venv \
         wget \
         xz-utils && \
     apt-get clean && \

@@ -203,15 +203,32 @@ def load_sha256_set(path):
 
 def extraction_status(hash_value):
     """Whether unpack could extract this file's content, if it was ever an
-    archive at all - "encrypted"/"corrupt"/"unsafe" mean the document's
-    content is the opaque original, not what was inside it. Kibana's "File
-    without text content" search already showed files with no content; this
-    says why, for files unpack itself flagged rather than a
-    still-unclassified case (an image, a format Tika doesn't parse, etc.) -
-    see item 34. "unsafe" (item 18) means unpack rejected the archive before
-    ever attempting extraction - a zip-slip entry, a decompression-bomb
-    shape, or not enough disk space - so unlike "corrupt" it says nothing
-    about whether the archive itself was otherwise valid.
+    archive at all - "encrypted"/"corrupt"/"unsafe"/"multivolume" mean the
+    document's content is the opaque original, not what was inside it.
+    Kibana's "File without text content" search already showed files with
+    no content; this says why, for files unpack itself flagged rather than
+    a still-unclassified case (an image, a format Tika doesn't parse,
+    etc.) - see item 34. "unsafe" (item 18) means unpack rejected the
+    archive before ever attempting extraction - a zip-slip entry, a
+    decompression-bomb shape, or not enough disk space - so unlike
+    "corrupt" it says nothing about whether the archive itself was
+    otherwise valid. "multivolume" means a non-first volume of a
+    multi-volume archive that's missing its other parts entirely (the
+    ordinary case - a full, resolvable set - never reaches ingest at all;
+    unpack's resolve_multivolume_stragglers disposes of those before this
+    file ever runs) - unlike the others, that makes it an actionable "go
+    find the missing volume" flag rather than a permanent characteristic
+    of the file itself. "decrypted" means this document was individually
+    password-protected (a single encrypted .docx/.xlsx/.pdf, as opposed to
+    an encrypted archive - see item 21's password-cracking write-up) and
+    unpack recovered it by trying deis.cfg's password list - a positive
+    signal (full content is available and was Tika-parsed normally), but
+    flagged so an analyst can tell "this was originally encrypted and we
+    cracked it" apart from a document that was never protected, matching
+    the audit-trail spirit of the other flags above. Never collides with
+    them: a recovered document's hash is computed from its decrypted
+    content, which by definition differs from whatever hash (if any) an
+    unresolved encrypted/corrupt/unsafe/multivolume file was tracked under.
     """
     if hash_value in still_encrypted:
         return "encrypted"
@@ -219,6 +236,10 @@ def extraction_status(hash_value):
         return "corrupt"
     if hash_value in still_unsafe:
         return "unsafe"
+    if hash_value in still_multivolume:
+        return "multivolume"
+    if hash_value in decrypted:
+        return "decrypted"
     return "ok"
 
 
@@ -473,6 +494,8 @@ use_sqlite = cfg.getboolean("ingest", "use_sqlite")
 still_encrypted = load_sha256_set("status/still_encrypted.txt")
 still_corrupt = load_sha256_set("status/still_corrupt.txt")
 still_unsafe = load_sha256_set("status/still_unsafe.txt")
+still_multivolume = load_sha256_set("status/still_multivolume.txt")
+decrypted = load_sha256_set("status/decrypted.txt")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:

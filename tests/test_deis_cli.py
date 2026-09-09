@@ -95,6 +95,36 @@ class TestMarkerStatus:
         (status_dir / "download_failed").touch()
         assert deis_module.marker_status()["download"] == "failed"
 
+    def test_extract_pending_once_unpack_marker_exists(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "unpack").touch()
+        assert deis_module.marker_status()["extract"] == "pending"
+
+    def test_extract_running_once_extracting_marker_exists(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "unpack").touch()
+        (status_dir / "extracting").touch()
+        assert deis_module.marker_status()["extract"] == "running"
+
+    def test_ingest_pending_once_extract_done(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "extract_done").touch()
+        assert deis_module.marker_status()["ingest"] == "pending"
+
+    def test_ingest_running_once_ingesting_marker_exists(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        status_dir = tmp_path / "status"
+        status_dir.mkdir()
+        (status_dir / "extract_done").touch()
+        (status_dir / "ingesting").touch()
+        assert deis_module.marker_status()["ingest"] == "running"
+
 
 class TestCountFiles:
     def test_missing_directory_is_zero(self, deis_module, tmp_path):
@@ -162,7 +192,7 @@ class TestAddFiles:
         (source / "sub").mkdir()
         (source / "sub" / "b.txt").write_text("b")
 
-        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(source)]))
 
         assert rc == 0
         assert (tmp_path / "files" / "a.txt").read_text() == "a"
@@ -178,7 +208,7 @@ class TestAddFiles:
         source.mkdir()
         (source / "a.txt").write_text("new")
 
-        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(source)]))
 
         assert rc == 0
         assert (tmp_path / "files" / "a.txt").read_text() == "existing"
@@ -186,15 +216,39 @@ class TestAddFiles:
 
     def test_missing_source_fails(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(tmp_path / "does-not-exist")))
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(tmp_path / "does-not-exist")]))
         assert rc == 1
 
     def test_empty_source_fails(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
         source = tmp_path / "empty"
         source.mkdir()
-        rc = deis_module.cmd_add_files(argparse.Namespace(source=str(source)))
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(source)]))
         assert rc == 1
+
+    def test_multiple_sources_are_all_copied(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        first = tmp_path / "first.rar"
+        first.write_text("a")
+        second = tmp_path / "second.rar"
+        second.write_text("b")
+
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(first), str(second)]))
+
+        assert rc == 0
+        assert (tmp_path / "files" / "first.rar").read_text() == "a"
+        assert (tmp_path / "files" / "second.rar").read_text() == "b"
+
+    def test_one_missing_among_multiple_sources_fails(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        present = tmp_path / "present.rar"
+        present.write_text("a")
+        missing = tmp_path / "missing.rar"
+
+        rc = deis_module.cmd_add_files(argparse.Namespace(source=[str(present), str(missing)]))
+
+        assert rc == 1
+        assert not (tmp_path / "files").exists()
 
 
 class TestCompletionScripts:

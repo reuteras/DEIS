@@ -31,6 +31,7 @@ JUPYTER_LINK = "http://127.0.0.1:8888/"
 STAGE_COLORS = {
     "done": "#2e7d32",
     "running": "#f9a825",
+    "pending": "#1976d2",
     "failed": "#c62828",
     "not running": "#c62828",
     "waiting": "#9e9e9e",
@@ -81,17 +82,28 @@ def pipeline_status(status_dir: str = STATUS_DIR) -> dict[str, str]:
     else:
         status["download"] = "not running"
 
+    # "extracting"/"ingesting" are real liveness signals, touched by
+    # unpack/start.sh and ingest/start.sh right before they start the
+    # actual work - same pattern as download's status/running. "unpack" and
+    # "extract_done" alone only mean "ready for this stage", not "the
+    # container for it is currently up and working", so without those
+    # liveness markers this would have to guess "pending" instead of
+    # knowing "running". Matches bin/deis.py's marker_status().
     if (status_path / "extract_done").exists():
         status["extract"] = "done"
-    elif (status_path / "unpack").exists():
+    elif (status_path / "extracting").exists():
         status["extract"] = "running"
+    elif (status_path / "unpack").exists():
+        status["extract"] = "pending"
     else:
         status["extract"] = "waiting"
 
     if (status_path / "ingest_done").exists():
         status["ingest"] = "done"
-    elif (status_path / "extract_done").exists():
+    elif (status_path / "ingesting").exists():
         status["ingest"] = "running"
+    elif (status_path / "extract_done").exists():
+        status["ingest"] = "pending"
     else:
         status["ingest"] = "waiting"
 
@@ -177,6 +189,8 @@ def render_index_html() -> str:
     still_encrypted = count_lines(f"{STATUS_DIR}/still_encrypted.txt")
     still_corrupt = count_lines(f"{STATUS_DIR}/still_corrupt.txt")
     still_unsafe = count_lines(f"{STATUS_DIR}/still_unsafe.txt")
+    still_multivolume = count_lines(f"{STATUS_DIR}/still_multivolume.txt")
+    decrypted = count_lines(f"{STATUS_DIR}/decrypted.txt")
     doc_count = elastic_document_count()
     run = latest_run_summary()
 
@@ -195,9 +209,18 @@ def render_index_html() -> str:
         ("Still encrypted", still_encrypted),
         ("Still corrupt", still_corrupt),
         ("Rejected as unsafe", still_unsafe),
+        ("Stuck multi-volume parts", still_multivolume),
     ):
         if count:
             still_rows += f'<tr><td>{html.escape(label)}</td><td style="color:#c62828;">{count}</td></tr>'
+    # Positive signal, unlike the rows above (a needs-attention list) - green
+    # like STAGE_COLORS' "done" rather than red, so a recovered-document
+    # count doesn't read as another problem to chase down.
+    if decrypted:
+        still_rows += (
+            f"<tr><td>{html.escape('Recovered by password-cracking')}</td>"
+            f'<td style="color:#2e7d32;">{decrypted}</td></tr>'
+        )
 
     run_section = ""
     if run:

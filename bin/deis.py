@@ -169,17 +169,28 @@ def marker_status() -> dict[str, str]:
     else:
         status["download"] = "not running"
 
+    # "extracting"/"ingesting" are real liveness signals, touched by
+    # unpack/start.sh and ingest/start.sh right before they start the
+    # actual work - same pattern as download's status/running. "unpack" and
+    # "extract_done" alone only mean "ready for this stage", not "the
+    # container for it is currently up and working", so without those
+    # liveness markers this would have to guess "pending" instead of
+    # knowing "running".
     if (status_dir / "extract_done").exists():
         status["extract"] = "done"
-    elif (status_dir / "unpack").exists():
+    elif (status_dir / "extracting").exists():
         status["extract"] = "running"
+    elif (status_dir / "unpack").exists():
+        status["extract"] = "pending"
     else:
         status["extract"] = "waiting"
 
     if (status_dir / "ingest_done").exists():
         status["ingest"] = "done"
-    elif (status_dir / "extract_done").exists():
+    elif (status_dir / "ingesting").exists():
         status["ingest"] = "running"
+    elif (status_dir / "extract_done").exists():
+        status["ingest"] = "pending"
     else:
         status["ingest"] = "waiting"
 
@@ -442,6 +453,8 @@ def cmd_report(_args) -> int:
         ("still encrypted", "still_encrypted.txt"),
         ("still corrupt", "still_corrupt.txt"),
         ("rejected as unsafe", "still_unsafe.txt"),
+        ("stuck multi-volume parts", "still_multivolume.txt"),
+        ("recovered by password-cracking", "decrypted.txt"),
     ):
         path = REPO_ROOT / "status" / filename
         count = len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
@@ -660,14 +673,18 @@ def cmd_add_files(args) -> int:
     a file added this way is indistinguishable from a normal download once
     it lands in files/.
     """
-    source = Path(args.source)
-    if not source.exists():
-        console.print(f"[red]{source} does not exist.[/red]")
+    roots = [Path(s) for s in args.source]
+    missing = [root for root in roots if not root.exists()]
+    if missing:
+        for root in missing:
+            console.print(f"[red]{root} does not exist.[/red]")
         return 1
 
-    sources = [source] if source.is_file() else sorted(p for p in source.rglob("*") if p.is_file())
+    sources = []
+    for root in roots:
+        sources.extend([root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file()))
     if not sources:
-        console.print(f"[yellow]No files found under {source}.[/yellow]")
+        console.print(f"[yellow]No files found under {', '.join(str(r) for r in roots)}.[/yellow]")
         return 1
 
     files_dir = REPO_ROOT / "files"
@@ -833,7 +850,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_files = sub.add_parser(
         "add-files", help="copy already-downloaded files into the pipeline, skipping the download stage"
     )
-    p_add_files.add_argument("source", help="a file, or a directory (searched recursively) of already-downloaded files")
+    p_add_files.add_argument(
+        "source",
+        nargs="+",
+        help="one or more files, or directories (searched recursively), of already-downloaded files",
+    )
     p_add_files.set_defaults(func=cmd_add_files)
 
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")

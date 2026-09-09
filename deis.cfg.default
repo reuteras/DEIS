@@ -32,3 +32,26 @@ extract_timeout=1800
 # e.g. eng+swe.
 ocr=true
 ocr_languages=eng
+# MS Access (.mdb/.wdb) table export (docs/IMPROVEMENTS.md item 21) - Tika
+# has no Access parser, so these otherwise index with content_length: 0.
+# Exports every table to a "<name>.<table>.csv" sidecar via mdbtools,
+# indexed as its own document the same way ocr's sidecar is. .accdb
+# (Access 2007+/ACE) is only partially supported by mdbtools, and dBase
+# (.dbf) isn't attempted at all - a separate, smaller format not handled
+# here yet.
+access_export=true
+# Password-cracking for individually-encrypted documents (docs/IMPROVEMENTS.md
+# item 21) - a single encrypted .docx/.xlsx/.pdf, as opposed to an encrypted
+# *archive*, was never tried against the password list above before. Reuses
+# the exact same list (ZIP_PASSWORD + passwords/*.txt). A recovered document
+# is logged as DECRYPTED and its sha256 recorded in status/decrypted.txt,
+# surfaced in Kibana as extraction_status: decrypted; the password itself is
+# never logged, same as the existing archive-password handling.
+# document_decrypt_office is gated on a reliable mime-type signal
+# (application/encrypted) so it costs nothing against ordinary documents.
+# document_decrypt_pdf is a separate switch because PDF encryption can't be
+# told apart from an ordinary PDF by mime type alone, so every PDF costs one
+# qpdf encryption check (not just already-known-encrypted ones) - turn it
+# off if that cost isn't wanted and this corpus has no encrypted PDFs.
+document_decrypt_office=true
+document_decrypt_pdf=true

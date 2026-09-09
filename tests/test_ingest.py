@@ -75,25 +75,44 @@ class TestExtractionStatus:
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = set()
         ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = set()
         assert ingest_module.extraction_status("x") == "ok"
 
     def test_encrypted_when_in_still_encrypted(self, ingest_module):
         ingest_module.still_encrypted = {"x"}
         ingest_module.still_corrupt = set()
         ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = set()
         assert ingest_module.extraction_status("x") == "encrypted"
 
     def test_corrupt_when_in_still_corrupt(self, ingest_module):
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = {"x"}
         ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = set()
         assert ingest_module.extraction_status("x") == "corrupt"
 
     def test_unsafe_when_in_still_unsafe(self, ingest_module):
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = set()
         ingest_module.still_unsafe = {"x"}
+        ingest_module.still_multivolume = set()
         assert ingest_module.extraction_status("x") == "unsafe"
+
+    def test_multivolume_when_in_still_multivolume(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = {"x"}
+        assert ingest_module.extraction_status("x") == "multivolume"
+
+    def test_decrypted_when_in_decrypted(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = set()
+        ingest_module.decrypted = {"x"}
+        assert ingest_module.extraction_status("x") == "decrypted"
 
     def test_encrypted_takes_priority_over_corrupt_and_unsafe(self, ingest_module):
         # Should not happen in practice (unpack classifies a file as exactly
@@ -102,13 +121,31 @@ class TestExtractionStatus:
         ingest_module.still_encrypted = {"x"}
         ingest_module.still_corrupt = {"x"}
         ingest_module.still_unsafe = {"x"}
+        ingest_module.still_multivolume = {"x"}
+        ingest_module.decrypted = {"x"}
         assert ingest_module.extraction_status("x") == "encrypted"
 
-    def test_corrupt_takes_priority_over_unsafe(self, ingest_module):
+    def test_corrupt_takes_priority_over_unsafe_and_multivolume(self, ingest_module):
         ingest_module.still_encrypted = set()
         ingest_module.still_corrupt = {"x"}
         ingest_module.still_unsafe = {"x"}
+        ingest_module.still_multivolume = {"x"}
         assert ingest_module.extraction_status("x") == "corrupt"
+
+    def test_unsafe_takes_priority_over_multivolume(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = {"x"}
+        ingest_module.still_multivolume = {"x"}
+        assert ingest_module.extraction_status("x") == "unsafe"
+
+    def test_multivolume_takes_priority_over_decrypted(self, ingest_module):
+        ingest_module.still_encrypted = set()
+        ingest_module.still_corrupt = set()
+        ingest_module.still_unsafe = set()
+        ingest_module.still_multivolume = {"x"}
+        ingest_module.decrypted = {"x"}
+        assert ingest_module.extraction_status("x") == "multivolume"
 
 
 class TestIndexRunSummary:

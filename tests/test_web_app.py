@@ -156,17 +156,43 @@ class TestPipelineStatus:
         status = app_module.pipeline_status(str(tmp_path))
         assert status["download"] == "failed"
 
-    def test_extract_running_once_unpack_marker_exists(self, app_module, tmp_path):
+    def test_extract_pending_once_unpack_marker_exists(self, app_module, tmp_path):
         (tmp_path / "unpack").touch()
         status = app_module.pipeline_status(str(tmp_path))
-        assert status["extract"] == "running"
+        assert status["extract"] == "pending"
         assert status["ingest"] == "waiting"
 
-    def test_ingest_running_once_extract_done(self, app_module, tmp_path):
+    def test_extract_running_once_extracting_marker_exists(self, app_module, tmp_path):
+        (tmp_path / "unpack").touch()
+        (tmp_path / "extracting").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["extract"] == "running"
+
+    def test_extract_done_takes_priority_over_extracting(self, app_module, tmp_path):
+        (tmp_path / "unpack").touch()
+        (tmp_path / "extracting").touch()
         (tmp_path / "extract_done").touch()
         status = app_module.pipeline_status(str(tmp_path))
         assert status["extract"] == "done"
+
+    def test_ingest_pending_once_extract_done(self, app_module, tmp_path):
+        (tmp_path / "extract_done").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["extract"] == "done"
+        assert status["ingest"] == "pending"
+
+    def test_ingest_running_once_ingesting_marker_exists(self, app_module, tmp_path):
+        (tmp_path / "extract_done").touch()
+        (tmp_path / "ingesting").touch()
+        status = app_module.pipeline_status(str(tmp_path))
         assert status["ingest"] == "running"
+
+    def test_ingest_done_takes_priority_over_ingesting(self, app_module, tmp_path):
+        (tmp_path / "extract_done").touch()
+        (tmp_path / "ingesting").touch()
+        (tmp_path / "ingest_done").touch()
+        status = app_module.pipeline_status(str(tmp_path))
+        assert status["ingest"] == "done"
 
     def test_everything_done(self, app_module, tmp_path):
         (tmp_path / "downloaded").touch()
@@ -285,3 +311,27 @@ class TestRenderIndexHtml:
 
         assert "Still encrypted" in page
         assert "Still corrupt" not in page
+        assert "Stuck multi-volume parts" not in page
+        assert "Recovered by password-cracking" not in page
+
+    def test_still_multivolume_count_shown_when_nonzero(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "still_multivolume.txt").write_text("abc\n")
+
+        page = app_module.render_index_html()
+
+        assert "Stuck multi-volume parts" in page
+
+    def test_decrypted_count_shown_when_nonzero(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "decrypted.txt").write_text("abc\n")
+
+        page = app_module.render_index_html()
+
+        assert "Recovered by password-cracking" in page

@@ -23,8 +23,9 @@ def _load_module(name, path):
 @pytest.fixture
 def ingest_module(tmp_path, monkeypatch):
     """A fresh import of ingest/ingest.py, with its module-level config
-    loading (deis.cfg, extracted/sha256, still_encrypted.txt/still_corrupt.txt)
-    pointed at an isolated temp directory instead of the real repo.
+    loading (deis.cfg, extracted/sha256, still_encrypted.txt/still_corrupt.txt/
+    still_unsafe.txt/still_multivolume.txt) pointed at an isolated temp
+    directory instead of the real repo.
     """
     (tmp_path / "deis.cfg").write_text(
         "[elastic]\npassword=test-password\n[ingest]\nfiles=./extracted/files/\nmax_size=1000000\nuse_sqlite=False\n"

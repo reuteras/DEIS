@@ -71,3 +71,18 @@ access_export=true
 # off if that cost isn't wanted and this corpus has no encrypted PDFs.
 document_decrypt_office=true
 document_decrypt_pdf=true
+[entities]
+# Named-entity extraction (docs/IMPROVEMENTS.md item 32, `deis entity-scan`)
+# runs spaCy NER against attachment.content. Cost scales with input length,
+# and it isn't small: a real 194,000-character document from this corpus
+# (Tika's own indexed_chars cap) measured ~7.5s for spaCy's tok2vec+ner
+# alone - excluding the other pipeline components (tagger/parser/etc.)
+# barely moves that number, since ner+tok2vec is already the dominant
+# cost. A corpus with many such large documents would take hours to scan
+# uncapped. max_chars truncates the text handed to spaCy per document
+# before that cost is paid; the file's own full-text search index
+# (attachment.content itself) is completely unaffected either way - this
+# only bounds how much of a document entity-scan looks through. Set to 0
+# to disable the cap and scan each document's full indexed text, accepting
+# the multi-hour cost on a large corpus.
+max_chars=20000

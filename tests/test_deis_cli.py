@@ -70,6 +70,26 @@ class TestReadEnv:
         assert deis_module.read_env(env_file) == {"ELASTIC_PASSWORD": "hunter2"}
 
 
+class TestEntitiesMaxChars:
+    def test_missing_file_falls_back_to_default(self, deis_module, tmp_path):
+        assert deis_module.entities_max_chars(tmp_path / "missing.cfg") == 20000
+
+    def test_missing_section_falls_back_to_default(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[ingest]\nmax_size=1\n")
+        assert deis_module.entities_max_chars(cfg_file) == 20000
+
+    def test_reads_configured_value(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[entities]\nmax_chars=5000\n")
+        assert deis_module.entities_max_chars(cfg_file) == 5000
+
+    def test_zero_means_uncapped(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[entities]\nmax_chars=0\n")
+        assert deis_module.entities_max_chars(cfg_file) == 0
+
+
 class TestMarkerStatus:
     def test_all_waiting_on_empty_tree(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)

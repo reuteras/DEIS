@@ -111,19 +111,17 @@ contain X" answers that need to state provenance, not just content.*
 
 ### S — Search
 
-#### 32. Entity extraction - names, organisations, locations (language detection is done; see "Already fixed")
+#### 32. Entity extraction - names, organisations, locations (done - see "Already fixed")
 
-Names, organisations and locations as structured fields would turn the corpus from a text blob
-into something pivotable - real named-entity recognition (NER), not the regex/heuristic
-approach items 18/31 use for archive safety and PII, since there is no checksum or fixed shape
-to validate a person's name against. Deliberately not attempted here: doing this properly
-needs a real NLP model (spaCy's per-language models are hundreds of MB each; Elasticsearch's
-own inference API needs a hosted model uploaded via Eland, a separate ML toolchain). That is a
-genuine new-dependency decision this project's minimize-dependencies posture says is worth
-raising explicitly rather than picking unilaterally - and a low-quality regex-based
-"NER" (e.g. flagging every capitalized phrase as an entity) would likely be worse than nothing,
-cluttering search results with noise on a tool whose whole premise is trustworthy answers.
-*Effort: L. Impact: high, but blocked on a dependency decision.*
+Names, organisations and locations as structured fields turn the corpus from a text blob into
+something pivotable - real named-entity recognition (NER), not the regex/heuristic approach
+items 18/31 use for archive safety and PII, since there is no checksum or fixed shape to
+validate a person's name against. This was deliberately not attempted until the dependency
+decision it was blocked on was settled: spaCy (trained per-language NER models) vs.
+Elasticsearch's own inference API (a hosted model uploaded via Eland, a separate ML toolchain
+outside this project's docker-compose pattern). Raised explicitly rather than picked
+unilaterally, per this project's minimize-dependencies posture - spaCy was chosen. See
+"Already fixed" below for the implementation and real-corpus verification.
 
 #### 36. Result quality
 
@@ -133,15 +131,14 @@ export of a result set as CSV or JSON for reporting back to whoever asked. *Effo
 ## Suggested sequencing
 
 All of the "analytical power" work is done: PII detection (31), OCR (the highest-value part of
-21), language detection (the tractable half of 32), near-duplicate clustering (33) and the CLI.
+21), language detection and entity extraction (32), near-duplicate clustering (33) and the CLI.
 So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR leak test) and
 40 (log-ingest scaffolding). What remains:
 
-1. Entity extraction (the rest of 32) is blocked on a dependency decision (spaCy vs.
-    Elasticsearch's inference API), not effort - worth settling before picking one.
-2. The rest of 21 (email formats beyond PST, structured data as rows, disk/VM images, mobile
-    backups, encrypted-archive listing), 36 (result quality), and 10's v2ray remainder are each
-    individually small and can be picked up whenever the surrounding code is being touched.
+1. The rest of 21 (email formats beyond PST, `.xlsx`/SQL dumps/SQLite as rows, disk/VM images,
+    mobile backups, encrypted-archive listing), 36 (result quality), and 10's v2ray remainder
+    are each individually small and can be picked up whenever the surrounding code is being
+    touched.
 
 ## Decided, not open
 
@@ -224,7 +221,8 @@ Recording these so they are not re-litigated later:
 | 45 | unpack's "try extracting it" detection is signature-based, not extension-based, so `.xlsx`/`.docx`/`.pptx`/ODF files (real ZIP archives internally) and legacy `.doc`/`.xls`/`.ppt` (OLE/CFBF, 7-Zip's own "Compound" format) were shredded into internal XML parts or raw property streams instead of reaching Tika whole - found via the "Top folders" dashboard panel showing OOXML-internal folder names, then confirmed against a real corpus: one `.xlsx` became 1029 meaningless documents, one `.xls` extracted to only its two metadata streams with the actual spreadsheet data stream never surviving at all | `4837d32` |
 | 21 (MS Access) | `.mdb`/`.wdb` databases indexed with `content_length: 0` - Tika has no Access parser. `maybe_export_access_tables()` exports every table to a `<name>.<table>.csv` sidecar via `mdbtools`, same pattern as OCR's `.ocr.txt` - confirmed against a real corpus (a Swedish accounting export's `.wdb` files), including one 160KB staff/payroll table that previously had zero searchable content | `264fc39` |
 | 21 (password-cracking) | A single individually-encrypted document (`.docx`/`.xlsx`/`.pdf`, as opposed to an encrypted *archive*) never had `deis.cfg`'s password list tried against it. `decrypt_office_document()`/`decrypt_pdf_document()` do, via `msoffcrypto-tool`/`qpdf` respectively - confirmed against a real corpus (8 individually-encrypted files, all Office format) and a synthetic encrypted-PDF fixture; a recovered document is flagged `extraction_status: decrypted` in Kibana, distinct from a document that was never protected | `264fc39` |
-| 21 (`.csv` as rows) | `.csv` files indexed as one flattened text blob, precluding a precise per-record query. `parse_csv_rows()` additionally indexes each row into its own document (a new `leakdata-rows-*` index, `row` mapped `flattened` to sidestep `total_fields.limit` across arbitrary/unbounded column names) - confirmed against the real corpus: 1,046,145 rows across 425 files, including Swedish debt-collection (`Kronofogden`) records where `row.Personnummer`/`row.Namn`/`row.Belopp` are now exact-match queryable. Two real bugs found and fixed during this verification: a `ready_rows_only` file (blob already indexed, only rows newly added) was silently uncounted in the run summary (427 files on the real corpus); and `setup/export.ndjson` is baked into the `setup` image at build time, unlike bind-mounted `entrypoint.sh` - an edit silently kept importing the stale pre-edit Kibana objects until the image was rebuilt (now commented in `setup/Dockerfile`). Confirmed live: `flattened` range queries compare lexicographically as strings, not numerically (`"906" > "1000"`) - exact-match queries are fully reliable, numeric range filtering is not, out of scope for this round. `.xlsx`/SQL dumps/SQLite remain open (see item 21 above) | *(uncommitted)* |
+| 21 (`.csv` as rows) | `.csv` files indexed as one flattened text blob, precluding a precise per-record query. `parse_csv_rows()` additionally indexes each row into its own document (a new `leakdata-rows-*` index, `row` mapped `flattened` to sidestep `total_fields.limit` across arbitrary/unbounded column names) - confirmed against the real corpus: 1,046,145 rows across 425 files, including Swedish debt-collection (`Kronofogden`) records where `row.Personnummer`/`row.Namn`/`row.Belopp` are now exact-match queryable. Two real bugs found and fixed during this verification: a `ready_rows_only` file (blob already indexed, only rows newly added) was silently uncounted in the run summary (427 files on the real corpus); and `setup/export.ndjson` is baked into the `setup` image at build time, unlike bind-mounted `entrypoint.sh` - an edit silently kept importing the stale pre-edit Kibana objects until the image was rebuilt (now commented in `setup/Dockerfile`). Confirmed live: `flattened` range queries compare lexicographically as strings, not numerically (`"906" > "1000"`) - exact-match queries are fully reliable, numeric range filtering is not, out of scope for this round. `.xlsx`/SQL dumps/SQLite remain open (see item 21 above) | `15199a7` |
+| 32 (entity extraction) | No structured people/organizations/locations fields existed - only free-text KQL. `bin/entities.py` runs spaCy's trained NER (`en_core_web_sm`/`sv_core_news_sm`, per-language label schemes confirmed directly rather than assumed - English splits GPE/LOC, Swedish doesn't and uses PRS not PERSON) via the new `deis entity-scan` subcommand, same scroll/bulk-update/`--rescan` shape as `pii-scan`. `entities.persons`/`organizations`/`locations`/`has_entities` mapped `keyword`/`boolean`; new Kibana saved search "Documents with named entities". `[entities] max_chars` (deis.cfg, default 20000, 0 = uncapped) bounds spaCy's cost per document - a real 194,000-character document from this corpus measured ~7.5s for tok2vec+ner alone, and excluding the rest of spaCy's pipeline (tagger/parser/lemmatizer/morphologizer, also applied) barely moved that number, so an uncapped scan of a corpus with many such documents would take hours. Verified with 196 unit tests against the real, pinned models (not mocked); full-corpus live verification is still pending | *(uncommitted)* |
 
 A review of items 21/31/32/33 and the CLI afterwards found four defects in the work above,
 fixed in `f2702b5` and `f35014c`: `simhash.fingerprint()` returned 0 rather than "no result"

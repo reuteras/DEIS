@@ -8,6 +8,7 @@ docs/IMPROVEMENTS.md's "CLI" section for the design.
 
 import argparse
 import base64
+import configparser
 import json
 import re
 import secrets
@@ -28,6 +29,13 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pii
 import simhash
+
+# entities (item 32) is deliberately NOT imported up here alongside pii/
+# simhash: unlike those, it pulls in spaCy and two trained models (see
+# bin/VENDORED.md) - a real, ~1-2s-to-load dependency chain that every
+# other subcommand (status/search/report/...) has no reason to pay the
+# cost of, or depend on being installed at all, just to run `deis
+# --help`. Imported lazily inside cmd_entity_scan() instead.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ES_URL = "http://127.0.0.1:9200"
@@ -51,6 +59,7 @@ SUBCOMMANDS = (
     "add-urls",
     "add-files",
     "pii-scan",
+    "entity-scan",
     "dedupe-scan",
     "clean",
     "reset",
@@ -85,6 +94,24 @@ def elastic_password() -> str | None:
     if password := os.environ.get("ELASTIC_PASSWORD"):
         return password
     return read_env().get("ELASTIC_PASSWORD")
+
+
+def entities_max_chars(path: Path = REPO_ROOT / "deis.cfg") -> int:
+    """Reads [entities] max_chars from deis.cfg - the character cap applied
+    to attachment.content before it's handed to spaCy in cmd_entity_scan
+    (see bin/entities.py's module docstring for why this cost is real: a
+    194,000-character document from this corpus measured ~7.5s for
+    tok2vec+ner alone, and excluding the rest of spaCy's pipeline barely
+    moved that number). 0 means uncapped - scan each document's full
+    indexed text, accepting the cost. fallback=20000, not a hard
+    requirement that the key exist: deis.cfg is gitignored and 'deis init'
+    leaves an existing one alone, so an install predating this option
+    still gets a sane capped default rather than an error or an
+    unintentionally uncapped scan.
+    """
+    config = configparser.RawConfigParser()
+    config.read(path)
+    return config.getint("entities", "max_chars", fallback=20000)
 
 
 def es_request(path: str, method: str = "GET", body: dict | None = None, timeout: int = 30):
@@ -535,6 +562,98 @@ def cmd_pii_scan(args) -> int:
     return 0
 
 
+def cmd_entity_scan(args) -> int:
+    """A post-pass (item 32), same reasoning as cmd_pii_scan above: entity
+    extraction needs attachment.content, which only exists once
+    Elasticsearch's own ingest pipeline has already Tika-parsed a
+    document. Uses the `language` every document is already tagged with
+    (item 32's already-fixed language-detection half) to pick the right
+    spaCy model per document - see entities.py for why "unknown" (common
+    on numeric/tabular documents) is skipped rather than guessed.
+
+    Truncates each document's content to [entities] max_chars (deis.cfg)
+    before running spaCy - see entities_max_chars()'s docstring for why:
+    large documents are genuinely slow to run NER against, and this cap
+    bounds that cost. 0 disables it.
+    """
+    import entities  # deliberately lazy, see the top-of-file comment
+
+    max_chars = entities_max_chars()
+    query = {"match_all": {}} if args.rescan else {"bool": {"must_not": {"exists": {"field": "entities.has_entities"}}}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": ["attachment.content", "language"], "query": query},
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    totals = dict.fromkeys(("persons", "organizations", "locations"), 0)
+    scanned = 0
+    with_entities = 0
+    skipped_unknown_language = 0
+    failures: list[str] = []
+
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            actions = []
+            for hit in hits:
+                source = hit.get("_source", {})
+                content = source.get("attachment", {}).get("content", "") or ""
+                if max_chars > 0:
+                    content = content[:max_chars]
+                language = source.get("language", "unknown")
+                result = entities.detect_entities(content, language)
+                scanned += 1
+                if language not in ("english", "swedish"):
+                    skipped_unknown_language += 1
+                if result["has_entities"]:
+                    with_entities += 1
+                for key in totals:
+                    totals[key] += len(result[key])
+                actions.append({"update": {"_index": INDEX, "_id": hit["_id"]}})
+                actions.append({"doc": {"entities": result}})
+
+            if actions:
+                failures.extend(bulk_failures(es_bulk(actions)))
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    console.print(
+        f"Scanned {scanned} document(s), {with_entities} with at least one entity found "
+        f"({skipped_unknown_language} skipped - language unknown)."
+    )
+    table = Table(title="Entities found")
+    table.add_column("Type")
+    table.add_column("Count")
+    for key, count in totals.items():
+        table.add_row(key, str(count))
+    console.print(table)
+
+    if failures:
+        console.print(f"[red]{len(failures)} document(s) could not be updated - these results were NOT saved:[/red]")
+        for reason in failures[:10]:
+            console.print(f"  [red]{reason}[/red]")
+        if len(failures) > 10:
+            console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+        return 1
+    return 0
+
+
 def cmd_dedupe_scan(args) -> int:
     """Near-duplicate clustering (item 33) - a whole-corpus operation,
     unlike pii-scan/language detection which are independent per-document
@@ -860,6 +979,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
     p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
     p_pii.set_defaults(func=cmd_pii_scan)
+
+    p_entity = sub.add_parser("entity-scan", help="extract named entities (people/orgs/locations) from indexed content")
+    p_entity.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
+    p_entity.set_defaults(func=cmd_entity_scan)
 
     p_dedupe = sub.add_parser("dedupe-scan", help="cluster near-duplicate documents")
     p_dedupe.add_argument(

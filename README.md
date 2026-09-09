@@ -108,6 +108,20 @@ I've incorporated the [docker-elk][del] repository setup and run Elasticsearch a
 
 Newly indexed and failed files are logged to `logs/ingest.log`; a summary prints at the end of every run.
 
+`.csv` files (`deis.cfg`'s `csv_rows`, on by default) are additionally indexed one document
+*per row*, in their own `leakdata-rows-*` index, alongside their normal whole-file document -
+Tika's flattened text blob can't answer "which row has my friend's data", a per-row document
+with real column names can. Delimiter is auto-detected (`,`/`;`/tab - Swedish locale exports
+commonly use `;`); the first row is always treated as a header, so a genuinely header-less
+file has its first data row misread as column names - a real corpus turned up both cases:
+Swedish debt-collection (`Kronofogden`) exports with real headers (`Personnummer`, `Namn`,
+`Belopp`, ...) index perfectly, while large `Quinyx` workforce-scheduling exports (no header
+at all) get synthetic-looking column names instead. Exact-match queries
+(`row.Personnummer: "<value>"` in Kibana) are fully reliable; a numeric range query is not -
+`row`'s `flattened` mapping compares values lexicographically as strings, confirmed live
+(`"906"` matches `> "1000"`). Capped at `csv_max_rows` (default 50000) per file, truncation
+logged, never silently dropped. `.xlsx`/SQL dumps/SQLite are not handled yet.
+
 ### Search
 
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].

@@ -67,14 +67,17 @@ from — that has not been touched. *Effort: M.*
 
 ### E — Extract
 
-#### 21. More extractors (OCR, email beyond PST, MS Access table export, and password-cracking for individually-encrypted documents done - see "Already fixed"; the rest is still open)
+#### 21. More extractors (OCR, email beyond PST, MS Access table export, password-cracking for individually-encrypted documents, and `.csv` as rows done - see "Already fixed"; the rest is still open)
 
 Roughly in order of real-world value for leak dumps:
 
-- **Structured data as rows rather than blobs**: `.csv`, `.xlsx`, `.sql` dumps and SQLite
-  files are where personal data actually lives in these leaks. Tika flattens them to text;
-  parsing them into per-record documents would turn "is my friend in here?" into a precise
-  query.
+- **Structured data as rows rather than blobs, the rest of it**: `.csv` is done (see "Already
+  fixed") - `.xlsx`, `.sql` dumps, and SQLite are not. Same value proposition once done: Tika
+  flattens them to text today; parsing them into per-record documents turns "is my friend in
+  here?" into a precise query, confirmed for `.csv` against a real corpus (Swedish debt-
+  collection/`Kronofogden` records - `row.Personnummer: "<value>"` now finds every record for
+  one person across dozens of monthly files instantly, instead of a full-text match with no
+  way to tell which row matched).
 - **Disk and VM images**: `.vmdk`, `.vhdx`, `.E01`, raw `.dd`.
 - **Mobile backups**, `.iso`/`.wim`, mail-server maildirs.
 - **dBase (`.dbf`)**: deferred alongside MS Access support (see "Already fixed") - `mdbtools`
@@ -221,6 +224,7 @@ Recording these so they are not re-litigated later:
 | 45 | unpack's "try extracting it" detection is signature-based, not extension-based, so `.xlsx`/`.docx`/`.pptx`/ODF files (real ZIP archives internally) and legacy `.doc`/`.xls`/`.ppt` (OLE/CFBF, 7-Zip's own "Compound" format) were shredded into internal XML parts or raw property streams instead of reaching Tika whole - found via the "Top folders" dashboard panel showing OOXML-internal folder names, then confirmed against a real corpus: one `.xlsx` became 1029 meaningless documents, one `.xls` extracted to only its two metadata streams with the actual spreadsheet data stream never surviving at all | `4837d32` |
 | 21 (MS Access) | `.mdb`/`.wdb` databases indexed with `content_length: 0` - Tika has no Access parser. `maybe_export_access_tables()` exports every table to a `<name>.<table>.csv` sidecar via `mdbtools`, same pattern as OCR's `.ocr.txt` - confirmed against a real corpus (a Swedish accounting export's `.wdb` files), including one 160KB staff/payroll table that previously had zero searchable content | `264fc39` |
 | 21 (password-cracking) | A single individually-encrypted document (`.docx`/`.xlsx`/`.pdf`, as opposed to an encrypted *archive*) never had `deis.cfg`'s password list tried against it. `decrypt_office_document()`/`decrypt_pdf_document()` do, via `msoffcrypto-tool`/`qpdf` respectively - confirmed against a real corpus (8 individually-encrypted files, all Office format) and a synthetic encrypted-PDF fixture; a recovered document is flagged `extraction_status: decrypted` in Kibana, distinct from a document that was never protected | `264fc39` |
+| 21 (`.csv` as rows) | `.csv` files indexed as one flattened text blob, precluding a precise per-record query. `parse_csv_rows()` additionally indexes each row into its own document (a new `leakdata-rows-*` index, `row` mapped `flattened` to sidestep `total_fields.limit` across arbitrary/unbounded column names) - confirmed against the real corpus: 1,046,145 rows across 425 files, including Swedish debt-collection (`Kronofogden`) records where `row.Personnummer`/`row.Namn`/`row.Belopp` are now exact-match queryable. Two real bugs found and fixed during this verification: a `ready_rows_only` file (blob already indexed, only rows newly added) was silently uncounted in the run summary (427 files on the real corpus); and `setup/export.ndjson` is baked into the `setup` image at build time, unlike bind-mounted `entrypoint.sh` - an edit silently kept importing the stale pre-edit Kibana objects until the image was rebuilt (now commented in `setup/Dockerfile`). Confirmed live: `flattened` range queries compare lexicographically as strings, not numerically (`"906" > "1000"`) - exact-match queries are fully reliable, numeric range filtering is not, out of scope for this round. `.xlsx`/SQL dumps/SQLite remain open (see item 21 above) | *(uncommitted)* |
 
 A review of items 21/31/32/33 and the CLI afterwards found four defects in the work above,
 fixed in `f2702b5` and `f35014c`: `simhash.fingerprint()` returned 0 rather than "no result"

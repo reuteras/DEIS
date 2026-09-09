@@ -4,6 +4,22 @@ password=changeme
 files=./extracted/files/
 max_size=314572800
 use_sqlite=False
+# Row-level indexing of .csv files (docs/IMPROVEMENTS.md item 21) - in
+# addition to the existing whole-file blob document (attachment.content via
+# Tika), each row is also parsed into its own document in a separate
+# leakdata-rows-* index, turning "is my friend in here?" into a precise
+# per-column query instead of a full-text match against a flattened blob.
+# Delimiter (comma vs semicolon - Swedish locale exports commonly use ';')
+# and header-row presence are auto-detected per file via csv.Sniffer, never
+# assumed fixed; a genuinely header-less file has its first data row
+# misread as column names, the one undetectable case. .xlsx/SQL dumps/
+# SQLite/dBase are not handled here - see item 21's remaining open bullets.
+csv_rows=true
+# Safety cap on rows parsed per CSV file - a hostile or unexpectedly huge
+# CSV should truncate its structured row breakdown, not exhaust worker
+# memory or stall the run. The file's own full-text blob document is
+# unaffected by this cap either way. Truncation is logged, never silent.
+csv_max_rows=50000
 [unpack]
 pst=true
 pst_archive=true

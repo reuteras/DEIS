@@ -234,6 +234,50 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
 }
 ' > /dev/null && sublog 'Done'
 
+# Item 21's structured-data-as-rows piece (.csv only for now): one document
+# per CSV row rather than one flattened text blob per file, so a precise
+# per-column query becomes possible instead of only a full-text match
+# against attachment.content. Deliberately a separate index rather than a
+# field on the file's own leakdata-index-000001 document - a single CSV can
+# have thousands of rows. "leakdata-rows-*" already matches the "leakdata-*"
+# Kibana index pattern above, so no new one is needed there.
+#
+# "row" is "flattened" rather than given explicit per-column mappings: CSV
+# column names are arbitrary and unbounded across hundreds of differently
+# shaped source files, so mapping each one individually would eventually
+# blow the leakdata template's own total_fields.limit above (2000) even in
+# a separate index. flattened stores/indexes arbitrary JSON keys as
+# searchable keyword pairs (dot-path queryable, e.g. row.SomeColumn: value)
+# without each one becoming its own mapped field.
+#
+# "priority": 100 is required, not optional: "leakdata-rows-000001" also
+# matches the "leakdata-*" template above, which sets no priority of its
+# own (defaults to 0). Composable index templates apply exactly one
+# template - highest priority wins - so without an explicit higher priority
+# here, this index would silently inherit the wrong (Tika/pii-shaped)
+# mapping instead, and "row" would fall back to dynamic mapping instead of
+# flattened.
+log 'Add leakdata-rows index template (item 21 CSV-as-rows)'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_index_template/leakdata-rows?pretty" -H 'Content-Type: application/json' -d'
+{
+    "index_patterns" : ["leakdata-rows-*"],
+    "priority" : 100,
+    "template" : {
+        "settings" : {
+            "number_of_replicas" : 0
+        },
+        "mappings" : {
+            "properties" : {
+                "source_sha256" : { "type" : "keyword" },
+                "source_filename" : { "type" : "keyword" },
+                "row_number" : { "type" : "integer" },
+                "row" : { "type" : "flattened" }
+            }
+        }
+    }
+}
+' > /dev/null && sublog 'Done'
+
 # The template above only applies to indices created from now on - a live
 # mapping cannot change an existing field type (sha256/filename from
 # text+keyword to keyword, dropping attachment.content.keyword) without a

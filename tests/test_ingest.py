@@ -60,6 +60,175 @@ class TestHashLinkMarker:
         assert link.readlink() == original_target
 
 
+class TestRowHashLinkMarker:
+    """Mirrors TestHashLinkMarker exactly - same crash-safety/idempotency
+    property, just for item 21's separate rows marker.
+    """
+
+    def test_does_not_exist_initially(self, ingest_module):
+        assert ingest_module.row_hash_link_exists("a" * 64) is False
+
+    def test_create_then_exists(self, ingest_module, tmp_path):
+        target = tmp_path / "extracted" / "files" / "doc.csv"
+        target.parent.mkdir(parents=True)
+        target.write_text("a,b\n1,2\n")
+
+        created = ingest_module.create_row_hash_link("a" * 64, target)
+
+        assert created is True
+        assert ingest_module.row_hash_link_exists("a" * 64) is True
+
+    def test_create_is_a_no_op_the_second_time(self, ingest_module, tmp_path):
+        target = tmp_path / "extracted" / "files" / "doc.csv"
+        target.parent.mkdir(parents=True)
+        target.write_text("a,b\n1,2\n")
+        ingest_module.create_row_hash_link("a" * 64, target)
+        link = Path("extracted/sha256_rows/" + "a" * 64)
+        original_target = link.readlink()
+
+        second_target = tmp_path / "extracted" / "files" / "other.csv"
+        second_target.write_text("different content, same hash for this test")
+        result = ingest_module.create_row_hash_link("a" * 64, second_target)
+
+        assert result is False
+        assert link.readlink() == original_target
+
+    def test_independent_from_the_blob_marker(self, ingest_module, tmp_path):
+        # The whole point of a second marker: a file already blob-indexed
+        # (create_hash_link) must still report its rows as not-yet-done
+        # until create_row_hash_link is separately called.
+        target = tmp_path / "extracted" / "files" / "doc.csv"
+        target.parent.mkdir(parents=True)
+        target.write_text("a,b\n1,2\n")
+        ingest_module.create_hash_link("a" * 64, target)
+
+        assert ingest_module.hash_link_exists("a" * 64) is True
+        assert ingest_module.row_hash_link_exists("a" * 64) is False
+
+
+class TestParseCsvRows:
+    def test_comma_delimited_with_header(self, ingest_module):
+        content = b"name,age\nAlice,30\nBob,25\n"
+        rows, meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert rows == [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+        assert meta["truncated"] is False
+
+    def test_semicolon_delimited_with_header(self, ingest_module):
+        # Swedish locale exports commonly use ';' since ',' is the decimal
+        # separator.
+        content = "namn;stad\nAnna;Stockholm\nBjörn;Malmö\n".encode()
+        rows, meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert rows == [{"namn": "Anna", "stad": "Stockholm"}, {"namn": "Björn", "stad": "Malmö"}]
+        assert meta["truncated"] is False
+
+    def test_header_less_input_is_misread_as_a_header_documented_tradeoff(self, ingest_module):
+        # The first row is always treated as a header (see parse_csv_rows'
+        # docstring for why csv.Sniffer.has_header() isn't trusted here) -
+        # a genuinely header-less file has its first data row consumed as
+        # column names instead of appearing as its own row.
+        content = b"1,2,3\n4,5,6\n"
+        rows, meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert rows == [{"1": "4", "2": "5", "3": "6"}]
+        assert meta["truncated"] is False
+
+    def test_utf8_bom_is_stripped(self, ingest_module):
+        content = b"\xef\xbb\xbfname\nAlice\n"
+        rows, _meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert rows == [{"name": "Alice"}]
+
+    def test_cp1252_swedish_bytes_decode(self, ingest_module):
+        # 'å' is 0xe5 in cp1252 but invalid as a standalone UTF-8 byte, so
+        # this only succeeds once the cp1252 fallback kicks in.
+        content = "stad\nMalmå\n".encode("cp1252")
+        rows, _meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert rows == [{"stad": "Malmå"}]
+
+    def test_truncates_past_max_rows(self, ingest_module):
+        content = b"n\n" + b"".join(f"{i}\n".encode() for i in range(10))
+        rows, meta = ingest_module.parse_csv_rows(content, max_rows=5)
+        assert len(rows) == 5
+        assert meta["truncated"] is True
+
+    def test_garbage_bytes_never_raise(self, ingest_module):
+        # latin-1 guarantees a successful decode of literally any byte
+        # sequence, so this exercises "never raises", not "always empty" -
+        # garbage bytes may still parse into meaningless rows (there's no
+        # reliable way to detect "this isn't really CSV-shaped" short of
+        # the parse itself succeeding); the only real invariant is no
+        # exception ever escapes.
+        content = bytes(range(256)) * 3
+        rows, meta = ingest_module.parse_csv_rows(content, max_rows=100)
+        assert isinstance(rows, list)
+        assert isinstance(meta, dict)
+
+    def test_empty_bytes_yields_no_rows_no_crash(self, ingest_module):
+        rows, meta = ingest_module.parse_csv_rows(b"", max_rows=100)
+        assert rows == []
+        assert "error" in meta
+
+
+class TestPrepareFileCsvBranching:
+    def test_non_csv_file_unaffected(self, ingest_module, tmp_path):
+        # Regression guard: item 21 must be purely additive for every
+        # other file type.
+        f = tmp_path / "extracted" / "files" / "doc.txt"
+        f.parent.mkdir(parents=True)
+        f.write_text("hello")
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready"
+        assert result["rows"] is None
+        assert result["row_meta"] is None
+
+    def test_new_csv_file_is_ready_with_rows(self, ingest_module, tmp_path):
+        f = tmp_path / "extracted" / "files" / "doc.csv"
+        f.parent.mkdir(parents=True)
+        f.write_text("a,b\n1,2\n")
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready"
+        assert result["rows"] == [{"a": "1", "b": "2"}]
+
+    def test_blob_indexed_csv_is_ready_rows_only(self, ingest_module, tmp_path):
+        # The backfill case: already blob-indexed (marker present), rows
+        # marker still missing.
+        f = tmp_path / "extracted" / "files" / "doc.csv"
+        f.parent.mkdir(parents=True)
+        f.write_text("a,b\n1,2\n")
+        sha256 = ingest_module.get_filehash(f)
+        ingest_module.create_hash_link(sha256, f)
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready_rows_only"
+        assert result["rows"] == [{"a": "1", "b": "2"}]
+
+    def test_fully_done_csv_is_present(self, ingest_module, tmp_path):
+        f = tmp_path / "extracted" / "files" / "doc.csv"
+        f.parent.mkdir(parents=True)
+        f.write_text("a,b\n1,2\n")
+        sha256 = ingest_module.get_filehash(f)
+        ingest_module.create_hash_link(sha256, f)
+        ingest_module.create_row_hash_link(sha256, f)
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == ingest_module.PRESENT
+
+    def test_csv_rows_disabled_behaves_like_a_plain_file(self, ingest_module, tmp_path):
+        ingest_module.csv_rows_enabled = False
+        f = tmp_path / "extracted" / "files" / "doc.csv"
+        f.parent.mkdir(parents=True)
+        f.write_text("a,b\n1,2\n")
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready"
+        assert result["rows"] is None
+
+
 class TestLoadSha256Set:
     def test_missing_file_yields_empty_set(self, ingest_module, tmp_path):
         assert ingest_module.load_sha256_set(str(tmp_path / "missing.txt")) == set()
@@ -247,3 +416,50 @@ class TestProcessFilesDedup:
 
         all_sent = [sha for batch in sent_batches for sha in batch]
         assert len(all_sent) == len(set(all_sent)) == 2
+
+
+class TestProcessFilesRowsOnlyCounting:
+    """Regression test for a real bug found during this feature's own live
+    verification run: a file whose blob was already indexed but still
+    needed CSV rows ("ready_rows_only") was silently missing from
+    process_files()'s results entirely - not counted as INDEXED, PRESENT,
+    or FAILED - undercounting "files looked at"/"unique files" in the run
+    summary by exactly the number of such files (427 on the real corpus),
+    even though nothing was actually lost from Elasticsearch (the blob
+    really was already there; only the run's own accounting was wrong).
+    """
+
+    def test_ready_rows_only_file_is_recorded_as_present(self, ingest_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(ingest_module, "ProcessPoolExecutor", ThreadPoolExecutor)
+        files_dir = tmp_path / "extracted" / "files"
+        files_dir.mkdir(parents=True)
+        csv_file = files_dir / "data.csv"
+        csv_file.write_text("a,b\n1,2\n")
+        sha256 = ingest_module.get_filehash(csv_file)
+        ingest_module.create_hash_link(sha256, csv_file)  # blob already indexed
+
+        def fake_process_rows_batch(items):
+            results = []
+            for item in items:
+                ingest_module.create_row_hash_link(item["sha256"], item["fname"])
+                results.append((ingest_module.INDEXED, item["sha256"], None))
+            return results
+
+        def fail_process_batch(_items):
+            raise AssertionError("process_batch must not be called for a ready_rows_only file")
+
+        captured = {}
+
+        def fake_print_summary(results, row_results, _directory):
+            captured["results"] = results
+            captured["row_results"] = row_results
+            return 0
+
+        monkeypatch.setattr(ingest_module, "process_rows_batch", fake_process_rows_batch)
+        monkeypatch.setattr(ingest_module, "process_batch", fail_process_batch)
+        monkeypatch.setattr(ingest_module, "print_summary", fake_print_summary)
+
+        ingest_module.process_files(files_dir)
+
+        assert (ingest_module.PRESENT, sha256, None) in captured["results"]
+        assert (ingest_module.INDEXED, sha256, None) in captured["row_results"]

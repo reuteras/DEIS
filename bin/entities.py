@@ -26,11 +26,11 @@ The two languages' NER label sets are NOT the same scheme (confirmed
 directly against both loaded models' own nlp.get_pipe("ner").labels,
 rather than assumed from English's scheme alone):
 - English (en_core_web_sm): PERSON, ORG, GPE, LOC (+ others not used here -
-  DATE, MONEY, etc.). Locations split into GPE (countries/cities/states)
-  and LOC (everything else location-like, e.g. mountain ranges) - both
-  bucketed together here.
+    DATE, MONEY, etc.). Locations split into GPE (countries/cities/states)
+    and LOC (everything else location-like, e.g. mountain ranges) - both
+    bucketed together here.
 - Swedish (sv_core_news_sm): PRS, ORG, LOC (+ others not used here - EVN,
-  MSR, OBJ, TME, WRK). No GPE/LOC split - LOC covers all locations.
+    MSR, OBJ, TME, WRK). No GPE/LOC split - LOC covers all locations.
 
 Pure functions only (aside from the one-time model load below) - no
 network, no Elasticsearch. See bin/deis.py's `entity-scan` subcommand for

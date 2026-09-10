@@ -214,6 +214,51 @@ queue_new_files() {
     find "$1" -type f -print0 >> "${WORKDIR}/next.$$"
 }
 
+# Backslash and double-quote only - the two characters that can actually
+# appear in a path here and would otherwise break the JSON line below.
+# Not a general-purpose JSON escaper (no jq dependency for one fixed-shape
+# line - unpack's image has none today, and this project defaults to
+# stdlib/no-new-dependency where reasonable); the reader (ingest.py's
+# json.loads) doesn't care how carefully this side escaped it as long as
+# the result is valid JSON.
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# item 46's provenance tracking: one edge per *extracted archive* (not per
+# file inside it - item 45 found single archives expanding into 1000+
+# files, so a per-file log would be needlessly large; nesting doesn't
+# compound today, see below, so a per-archive-hop log is exactly the size
+# needed). Called once, right where an archive's own extraction succeeds
+# in process_zip_like/process_pst - $sha is this archive's own hash (what
+# its own contents get filed under, /extracted/files/$sha/...), $path is
+# where *this* archive itself was found before extraction.
+#
+# If a nested archive B (sha_B) is found inside archive A (sha_A), B's own
+# contents get filed under /extracted/files/$sha_B/... - a brand new
+# top-level entry, not nested under sha_A - so a grandchild of B has zero
+# path reference to A on its own. Extracting sha_A from $path here (it
+# starts with /extracted/files/<sha_A>/ when B itself came from inside A)
+# is what makes the chain reconstructible past that one accidental level:
+# ingest.py walks sha -> parent_sha through every edge this function
+# recorded, all the way back to a root (empty parent_sha, meaning $path
+# didn't start with /extracted/files/ at all - this archive came straight
+# from /files/).
+#
+# Deliberately not called for the early-return "already extracted"
+# duplicate-content branches in process_zip_like/process_pst: the first
+# successful extraction of a given sha already recorded its edge, and a
+# byte-identical duplicate found via a *different* parent archive keeps
+# only the first-recorded parent - the same "one representative wins"
+# simplification item 1/41's own sha256-keyed dedup already makes, not a
+# new one.
+record_lineage_edge() {
+    local sha="$1" path="$2" kind="$3" parent=""
+    [[ "${path}" =~ ^/extracted/files/([a-f0-9]{64})/ ]] && parent="${BASH_REMATCH[1]}"
+    printf '{"sha":"%s","parent_sha":"%s","filename":"%s","archive_type":"%s"}\n' \
+        "${sha}" "${parent}" "$(json_escape "${path}")" "${kind}" >> /status/lineage.jsonl
+}
+
 # Pre-extraction check against a hostile archive, using 7-Zip's own -slt
 # listing rather than trusting anything about the archive that would only
 # be known after extracting it. Two independent things this catches: an
@@ -677,6 +722,7 @@ process_zip_like() {
     elif try_extract "${path}" "${dest}"; then
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted: ${path} -> ${dest}"
+        record_lineage_edge "${sha}" "${path}" zip
         queue_new_files "${dest}"
         dispose_of_original "${path}" zip
         return
@@ -731,6 +777,7 @@ process_pst() {
         rm -rf "${stage}"
         [[ -n "${resultfile}" ]] && echo "extracted" > "${resultfile}"
         log EXTRACTED "Extracted PST/OST: ${path} -> ${dest}"
+        record_lineage_edge "${sha}" "${path}" pst
         queue_new_files "${dest}"
         dispose_of_original "${path}" pst
     else
@@ -850,7 +897,7 @@ process_one_file() {
 
 export -f log read_cfg config_true config_true_default config_int load_passwords \
     sanitize_component safe_copy place_sanitized dispose_of_original multivolume_family \
-    queue_new_files check_archive_safety maybe_ocr maybe_export_access_tables \
+    queue_new_files json_escape record_lineage_edge check_archive_safety maybe_ocr maybe_export_access_tables \
     maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
     is_pst_like is_ole_document is_zip_based_document is_pdf_document is_ooxml_or_odf_zip \
     process_zip_like process_pst apply_known_result worker_entrypoint process_one_file

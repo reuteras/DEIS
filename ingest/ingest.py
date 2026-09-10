@@ -609,6 +609,111 @@ def load_sha256_set(path):
         return set()
 
 
+def load_lineage(path):
+    """Reads status/lineage.jsonl (unpack/start.sh's record_lineage_edge)
+    into a dict keyed by each extracted archive's own sha256 - one entry
+    per archive hop, not per file inside it (item 45 found single archives
+    expanding into 1000+ files, so a per-file log would be needlessly
+    large; see record_lineage_edge's own docstring for why a per-hop log
+    is the right size). Missing file or a malformed line are both normal,
+    not errors: the former means nothing has been extracted with this
+    feature active yet, the latter must never abort an ingest run over one
+    bad line unpack.sh wrote (e.g. a container killed mid-write).
+    """
+    edges = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    edge = json.loads(line)
+                    edges[edge["sha"]] = edge
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return edges
+
+
+def load_source_urls(path):
+    """Reads status/source_urls.jsonl (deis/done.sh) into a dict keyed by
+    sha256 - one entry per downloaded file, each the root of its own
+    provenance chain. Same never-raise reasoning as load_lineage above.
+    """
+    urls = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    urls[record["sha256"]] = record
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return urls
+
+
+def _immediate_parent_sha(filename: str) -> str | None:
+    """The immediate parent archive's sha256, if any - already encoded for
+    free in an extracted file's own path ("extracted/files/<sha>/..."),
+    the one level of nesting item 46's problem statement calls
+    "accidental" but reliable. resolve_source_chain below only needs
+    unpack/start.sh's lineage table (see load_lineage) for anything past
+    this first hop.
+    """
+    parts = Path(filename).parts
+    for i in range(len(parts) - 2):
+        if parts[i] == "extracted" and parts[i + 1] == "files":
+            candidate = parts[i + 2]
+            if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate.lower()):
+                return candidate
+    return None
+
+
+def resolve_source_chain(filename: str, sha256: str) -> dict:
+    """Reconstructs a document's full provenance chain, root to leaf, by
+    walking unpack/start.sh's recorded lineage edges (one per extracted
+    archive) back to a root, then looking up that root's download URL
+    (deis/done.sh's source_urls.jsonl). Never raises and never loops
+    forever on a corrupted table (the `seen` guard) - a file with no
+    recorded lineage or origin is a normal, expected case (added via
+    `deis add-files`, or from before this feature existed), not an error.
+
+    sha256s/filenames/archive_types deliberately exclude the document's
+    own sha256/filename - those are already the document's own top-level
+    fields, this is ancestors only, root-first.
+    """
+    sha256s: list[str] = []
+    filenames: list[str] = []
+    archive_types: list[str] = []
+
+    current = _immediate_parent_sha(filename)
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        edge = lineage_by_sha.get(current)
+        sha256s.insert(0, current)
+        if edge is None:
+            # This sha was never itself produced by an extraction - it's
+            # the root, and record_lineage_edge was never called for it.
+            filenames.insert(0, source_urls_by_sha.get(current, {}).get("filename", ""))
+            archive_types.insert(0, "")
+            break
+        filenames.insert(0, edge.get("filename", ""))
+        archive_types.insert(0, edge.get("archive_type", ""))
+        current = edge.get("parent_sha") or None
+
+    root = sha256s[0] if sha256s else sha256
+    url = source_urls_by_sha.get(root, {}).get("url", "")
+    return {"url": url, "sha256s": sha256s, "filenames": filenames, "archive_types": archive_types}
+
+
 def extraction_status(hash_value):
     """Whether unpack could extract this file's content, if it was ever an
     archive at all - "encrypted"/"corrupt"/"unsafe"/"multivolume" mean the
@@ -670,6 +775,13 @@ def build_bulk_body(items):
             "mtime": int(item["fname"].stat().st_mtime),
             "message": item["message"],
             "extraction_status": extraction_status(item["sha256"]),
+            # The raw extracted-tree path, not resolve_filepath()'s
+            # possibly-sqlite-resolved "filename" above - resolve_source_chain
+            # needs the real "extracted/files/<sha>/..." structure to find
+            # this file's own immediate parent, which resolve_filepath's
+            # sqlite lookup (use_sqlite=True) can override to an unrelated
+            # original name.
+            "source_chain": resolve_source_chain(str(item["fname"]), item["sha256"]),
         }
         lines.append(json.dumps(doc))
     return ("\n".join(lines) + "\n").encode("utf-8")
@@ -1048,6 +1160,8 @@ still_corrupt = load_sha256_set("status/still_corrupt.txt")
 still_unsafe = load_sha256_set("status/still_unsafe.txt")
 still_multivolume = load_sha256_set("status/still_multivolume.txt")
 decrypted = load_sha256_set("status/decrypted.txt")
+lineage_by_sha = load_lineage("status/lineage.jsonl")
+source_urls_by_sha = load_source_urls("status/source_urls.jsonl")
 if use_sqlite:
     con = sqlite3.connect("db/file_hashes.db")
 try:

@@ -10,6 +10,7 @@ import argparse
 import base64
 import configparser
 import csv
+import hashlib
 import json
 import re
 import secrets
@@ -1004,17 +1005,36 @@ def cmd_add_files(args) -> int:
     status_dir.mkdir(exist_ok=True)
 
     copied = 0
-    for src in sources:
-        dest = files_dir / src.name
-        if dest.exists():
-            base, ext = src.stem, src.suffix
-            n = 2
-            while (files_dir / f"{base}-dup{n}{ext}").exists():
-                n += 1
-            dest = files_dir / f"{base}-dup{n}{ext}"
-            console.print(f"[yellow]{src.name} already exists in files/, copying as {dest.name} instead.[/yellow]")
-        shutil.copyfile(src, dest)
-        copied += 1
+    source_urls_file = status_dir / "source_urls.jsonl"
+    with source_urls_file.open("a", encoding="utf-8") as urls_out:
+        for src in sources:
+            dest = files_dir / src.name
+            if dest.exists():
+                base, ext = src.stem, src.suffix
+                n = 2
+                while (files_dir / f"{base}-dup{n}{ext}").exists():
+                    n += 1
+                dest = files_dir / f"{base}-dup{n}{ext}"
+                console.print(f"[yellow]{src.name} already exists in files/, copying as {dest.name} instead.[/yellow]")
+            shutil.copyfile(src, dest)
+            copied += 1
+
+            # item 46's provenance tracking: no URL exists for a file added
+            # this way (that's the whole reason to use add-files - the
+            # original is dead or was never downloaded by this pipeline at
+            # all), but recording it here with an empty url still lets
+            # ingest.py's resolve_source_chain() tell "known local add"
+            # apart from "no record at all" (an older corpus, or a file
+            # that predates this feature) - see ingest.py's own docstring.
+            # Streamed, not dest.read_bytes() - item 28 already flagged
+            # reading a whole file into memory as a real bug elsewhere in
+            # this project (bin/pathfix.py), and this needs to work on
+            # arbitrarily large leak-dump files too.
+            sha256_hash = hashlib.sha256()
+            with dest.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    sha256_hash.update(chunk)
+            urls_out.write(json.dumps({"sha256": sha256_hash.hexdigest(), "url": "", "filename": src.name}) + "\n")
 
     # Matches the state deis/done.sh leaves behind once a real download's
     # files have been moved into files/, so the rest of the pipeline (status

@@ -66,6 +66,26 @@ while IFS= read -r gid; do
         uri="$(echo "${entry}" | jq -r '.files[0].uris[0].uri')"
         msg="$(echo "${entry}" | jq -r '.errorMessage')"
         errors+="${gid} ${uri} -> ${msg}"$'\n'
+    else
+        # item 46's provenance tracking: record which URL produced which
+        # filename while both are still known together - aria2's own path
+        # (in /downloader/data/) is gone once deis/done.sh moves the file
+        # into /files/, and done.sh's own dup-rename means the final
+        # filename isn't decided yet either, so this only records the
+        # pre-move basename; done.sh looks entries up by that same
+        # basename before it does any renaming, then re-keys by sha256
+        # (computed once the file is stable and named) into
+        # /status/source_urls.jsonl. This loop re-runs on every
+        # download.sh invocation until the whole batch finishes, so an
+        # already-completed gid can be appended again here on a later
+        # tick - harmless duplicate lines, not a correctness issue: done.sh
+        # only needs one matching entry, and it stops looking once found.
+        path="$(echo "${entry}" | jq -r '.files[0].path // empty')"
+        uri="$(echo "${entry}" | jq -r '.files[0].uris[0].uri // empty')"
+        if [[ -n "${path}" && -n "${uri}" ]]; then
+            jq -nc --arg filename "$(basename "${path}")" --arg url "${uri}" \
+                '{filename: $filename, url: $url}' >> /status/batch_urls.jsonl
+        fi
     fi
 done < /status/batch_gids
 

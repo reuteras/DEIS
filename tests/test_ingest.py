@@ -474,6 +474,141 @@ class TestLoadSha256Set:
         assert ingest_module.load_sha256_set(str(f)) == {"aaa", "bbb", "ccc"}
 
 
+class TestLoadLineage:
+    def test_missing_file_yields_empty_dict(self, ingest_module, tmp_path):
+        assert ingest_module.load_lineage(str(tmp_path / "missing.jsonl")) == {}
+
+    def test_parses_one_edge_per_line_keyed_by_sha(self, ingest_module, tmp_path):
+        f = tmp_path / "lineage.jsonl"
+        f.write_text(
+            '{"sha":"aaa","parent_sha":"","filename":"/files/a.zip","archive_type":"zip"}\n'
+            '{"sha":"bbb","parent_sha":"aaa","filename":"/extracted/files/aaa/b.zip","archive_type":"zip"}\n'
+        )
+        edges = ingest_module.load_lineage(str(f))
+        assert edges["aaa"]["parent_sha"] == ""
+        assert edges["bbb"]["parent_sha"] == "aaa"
+
+    def test_malformed_line_is_skipped_not_fatal(self, ingest_module, tmp_path):
+        # A single bad line (e.g. a container killed mid-write) must never
+        # abort an ingest run - matches parse_csv_rows/parse_xlsx_rows's
+        # own never-raise guarantee elsewhere in this file.
+        f = tmp_path / "lineage.jsonl"
+        f.write_text('not json\n{"sha":"aaa","parent_sha":"","filename":"x","archive_type":"zip"}\n{"missing":"sha"}\n')
+        edges = ingest_module.load_lineage(str(f))
+        assert edges == {"aaa": {"sha": "aaa", "parent_sha": "", "filename": "x", "archive_type": "zip"}}
+
+
+class TestLoadSourceUrls:
+    def test_missing_file_yields_empty_dict(self, ingest_module, tmp_path):
+        assert ingest_module.load_source_urls(str(tmp_path / "missing.jsonl")) == {}
+
+    def test_parses_one_record_per_line_keyed_by_sha256(self, ingest_module, tmp_path):
+        f = tmp_path / "source_urls.jsonl"
+        f.write_text('{"sha256":"aaa","url":"https://example.com/a.zip","filename":"a.zip"}\n')
+        urls = ingest_module.load_source_urls(str(f))
+        assert urls["aaa"]["url"] == "https://example.com/a.zip"
+
+
+class TestImmediateParentSha:
+    def test_extracts_sha_from_extracted_tree_path(self, ingest_module):
+        sha = "a" * 64
+        assert ingest_module._immediate_parent_sha(f"extracted/files/{sha}/sub/leaf.pdf") == sha
+
+    def test_top_level_file_has_no_parent(self, ingest_module):
+        assert ingest_module._immediate_parent_sha("extracted/files/leaf.pdf") is None
+
+    def test_non_hex_directory_is_not_mistaken_for_a_sha(self, ingest_module):
+        assert ingest_module._immediate_parent_sha("extracted/files/not-a-hash-dir/leaf.pdf") is None
+
+
+class TestResolveSourceChain:
+    def test_top_level_file_with_known_url(self, ingest_module):
+        # This exact file was downloaded directly (never extracted from
+        # anything) - no ancestors, but its own sha resolves a url.
+        sha = "a" * 64
+        ingest_module.lineage_by_sha = {}
+        ingest_module.source_urls_by_sha = {
+            sha: {"sha256": sha, "url": "https://example.com/a.pdf", "filename": "a.pdf"}
+        }
+        result = ingest_module.resolve_source_chain("extracted/files/a.pdf", sha)
+        assert result == {"url": "https://example.com/a.pdf", "sha256s": [], "filenames": [], "archive_types": []}
+
+    def test_one_level_of_nesting_with_a_recorded_root(self, ingest_module):
+        parent = "a" * 64
+        ingest_module.lineage_by_sha = {
+            parent: {"sha": parent, "parent_sha": "", "filename": "/files/a.zip", "archive_type": "zip"},
+        }
+        ingest_module.source_urls_by_sha = {
+            parent: {"sha256": parent, "url": "https://example.com/a.zip", "filename": "a.zip"}
+        }
+        result = ingest_module.resolve_source_chain(f"extracted/files/{parent}/leaf.pdf", "leaf-sha")
+        assert result["url"] == "https://example.com/a.zip"
+        assert result["sha256s"] == [parent]
+        assert result["archive_types"] == ["zip"]
+
+    def test_three_levels_of_nesting_confirms_chain_actually_compounds(self, ingest_module):
+        # The exact bug item 46 exists to fix: nesting doesn't compound in
+        # the extracted-tree path alone past one level (a brand-new
+        # top-level dest is computed for each nested archive - see
+        # record_lineage_edge's own docstring in unpack/start.sh) - this
+        # must walk every recorded hop, not just the accidental first one.
+        root, mid, leaf_parent = "1" * 64, "2" * 64, "3" * 64
+        ingest_module.lineage_by_sha = {
+            root: {"sha": root, "parent_sha": "", "filename": "/files/root.zip", "archive_type": "zip"},
+            mid: {
+                "sha": mid,
+                "parent_sha": root,
+                "filename": f"/extracted/files/{root}/mid.zip",
+                "archive_type": "zip",
+            },
+            leaf_parent: {
+                "sha": leaf_parent,
+                "parent_sha": mid,
+                "filename": f"/extracted/files/{mid}/inner.pst",
+                "archive_type": "pst",
+            },
+        }
+        ingest_module.source_urls_by_sha = {
+            root: {"sha256": root, "url": "https://example.com/root.zip", "filename": "root.zip"}
+        }
+        result = ingest_module.resolve_source_chain(f"extracted/files/{leaf_parent}/leaf.pdf", "leaf-sha")
+        assert result["url"] == "https://example.com/root.zip"
+        assert result["sha256s"] == [root, mid, leaf_parent]
+        assert result["archive_types"] == ["zip", "zip", "pst"]
+
+    def test_missing_lineage_entry_treated_as_root_not_an_error(self, ingest_module):
+        # A file whose extracted-tree path implies a parent archive that
+        # was itself extracted before this feature existed (an older
+        # corpus) - no lineage.jsonl entry for it. Falls back to treating
+        # it as a root rather than crashing or silently dropping the one
+        # level of nesting the path itself still proves.
+        old_parent = "9" * 64
+        ingest_module.lineage_by_sha = {}
+        ingest_module.source_urls_by_sha = {}
+        result = ingest_module.resolve_source_chain(f"extracted/files/{old_parent}/leaf.pdf", "leaf-sha")
+        assert result["sha256s"] == [old_parent]
+        assert result["url"] == ""
+
+    def test_unknown_origin_returns_empty_not_an_error(self, ingest_module):
+        ingest_module.lineage_by_sha = {}
+        ingest_module.source_urls_by_sha = {}
+        result = ingest_module.resolve_source_chain("extracted/files/leaf.pdf", "leaf-sha")
+        assert result == {"url": "", "sha256s": [], "filenames": [], "archive_types": []}
+
+    def test_cyclical_lineage_never_loops_forever(self, ingest_module):
+        # Defensive only - a cycle should never occur in practice (an
+        # archive can't be its own ancestor), but a corrupted lineage.jsonl
+        # must not hang ingest forever.
+        a, b = "a" * 64, "b" * 64
+        ingest_module.lineage_by_sha = {
+            a: {"sha": a, "parent_sha": b, "filename": "x", "archive_type": "zip"},
+            b: {"sha": b, "parent_sha": a, "filename": "y", "archive_type": "zip"},
+        }
+        ingest_module.source_urls_by_sha = {}
+        result = ingest_module.resolve_source_chain(f"extracted/files/{a}/leaf.pdf", "leaf-sha")
+        assert isinstance(result["sha256s"], list)
+
+
 class TestExtractionStatus:
     def test_ok_when_in_no_list(self, ingest_module):
         ingest_module.still_encrypted = set()

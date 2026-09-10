@@ -106,6 +106,14 @@ Ingest files to search into [Elasticsearch][els] with the [attachment processor]
 
 I've incorporated the [docker-elk][del] repository setup and run Elasticsearch and Kibana but have removed Logstash.
 
+Every document carries a `source_chain` field answering "where did this actually come from" -
+the original download URL, and the full path of archives it was nested inside (root to leaf),
+not just the one level of nesting the extracted-tree path itself happens to reveal by accident.
+`source_chain.url` is the root download's URL (empty if unknown - a file added via `deis
+add-files` with no live URL, or one extracted before this feature existed); `source_chain.
+sha256s`/`filenames`/`archive_types` are each ancestor archive in order, e.g. a PDF found three
+archives deep shows all three hops, not just its immediate parent.
+
 Newly indexed and failed files are logged to `logs/ingest.log`; a summary prints at the end of every run.
 
 `.csv` files (`deis.cfg`'s `csv_rows`, on by default) are additionally indexed one document

@@ -34,6 +34,22 @@ if [[ -f /status/downloaded ]] && [[ ! -f /status/unpack ]]; then
             echo "$(date -Iseconds) ERROR: could not move ${path} to ${dest}" >> /logs/download_errors.log
             echo "ERROR: could not move ${path} to ${dest}"
             failed=$(( failed + 1 ))
+        else
+            # item 46's provenance tracking: "${file}" (this file's name
+            # before the dup-rename above, if any) is the same basename
+            # deis/download.sh recorded a URL under in batch_urls.jsonl,
+            # while it still had aria2's own pre-move path - look it up
+            # by that original name, then re-key by sha256 (only stable
+            # once the file has actually landed at its final path) into
+            # source_urls.jsonl, which ingest.py reads. No entry (a file
+            # dropped in some other way, or an older batch that predates
+            # this feature) just means no known origin - not an error.
+            sha256="$(sha256sum "${dest}" | cut -d' ' -f1)"
+            url="$(jq -rs --arg filename "${file}" \
+                'map(select(.filename == $filename)) | (.[0].url // empty)' \
+                /status/batch_urls.jsonl 2>/dev/null)"
+            jq -nc --arg sha256 "${sha256}" --arg url "${url}" --arg filename "${file}" \
+                '{sha256: $sha256, url: $url, filename: $filename}' >> /status/source_urls.jsonl
         fi
     # .torcheck holds item 42's preflight probe responses, not leak data.
     # torcheck.sh deletes each probe as soon as it reads it, so this only

@@ -1303,13 +1303,13 @@ def cmd_archive(args) -> int:
     (container-logs/<service>.log) - a reference for later, not something
     `deis restore` ever reads back.
 
-    Deliberately does not archive .env (ELASTIC_PASSWORD/JUPYTER_TOKEN/
-    RPCSECRET) - restoring only ever needs a *fresh* `deis init` on the
-    target machine (a restored snapshot's indices carry no security-realm
-    data from the original cluster, so a new password works fine), and an
-    archive destined for possibly-offline/external storage shouldn't
-    carry live credentials for a stack that might still be running
-    elsewhere.
+    Also copies .env (ELASTIC_PASSWORD/JUPYTER_TOKEN/RPCSECRET) - a
+    deliberate choice, not a default: the dump itself is far more
+    sensitive than these local stack credentials, and treating the whole
+    archive with the same care as the dump (rather than trying to
+    separate out "just the secrets" for lighter handling) is what makes
+    `deis restore` alone - no separate `deis init` first - the entire
+    onboarding step on a fresh checkout.
     """
     destination: Path = args.destination
     destination.mkdir(parents=True, exist_ok=True)
@@ -1375,6 +1375,17 @@ def cmd_archive(args) -> int:
     subprocess.run(["tar", "-cf", str(destination / "extracted.tar"), "extracted", "status"], cwd=REPO_ROOT, check=True)
 
     shutil.copyfile(REPO_ROOT / "deis.cfg", destination / "deis.cfg")
+    # Included deliberately, not a safer-by-default exclusion: the dump
+    # itself is far more sensitive than these local stack credentials
+    # (ELASTIC_PASSWORD/JUPYTER_TOKEN/RPCSECRET, nothing external), and an
+    # archive handled with the same care as the dump makes "just venv &&
+    # deis restore <archive>" work as a single self-contained onboarding
+    # step - no separate `deis init` (and its own freshly-generated,
+    # different credentials) needed at all. copy2, not copyfile - .env is
+    # chmod 0600 (cmd_init's own care, since it holds secrets); a plain
+    # copyfile drops permission bits and leaves the copy at the
+    # destination filesystem's default (often world-readable).
+    shutil.copy2(REPO_ROOT / ".env", destination / ".env")
 
     console.print("Copying the Elasticsearch snapshot repository...")
     shutil.copytree(REPO_ROOT / "archive" / "es-repo" / repo_name, destination / "es-repo", dirs_exist_ok=True)
@@ -1392,11 +1403,12 @@ def cmd_archive(args) -> int:
 
 def cmd_restore(args) -> int:
     """Restores an archive written by `deis archive` - see cmd_archive's
-    own docstring for what is (and deliberately is not) captured. Assumes
-    a fresh checkout: `deis init` already run (.env/deis.cfg exist),
-    nothing else started yet - not obviously non-destructive against an
-    instance that already has other state, so this uses the same
-    confirmation gate cmd_clean/cmd_reset do.
+    own docstring for what is captured, including .env/deis.cfg, so this
+    is the entire onboarding step on a fresh checkout: `just venv` (for
+    bin/'s own dependencies) then `deis restore <archive>` alone, no
+    separate `deis init` needed first - not obviously non-destructive
+    against an instance that already has other state, though, so this
+    uses the same confirmation gate cmd_clean/cmd_reset do.
     """
     source: Path = args.source
     manifest_path = source / "manifest.json"
@@ -1438,6 +1450,15 @@ def cmd_restore(args) -> int:
             console.print("[yellow]deis.cfg already exists - leaving it alone (archive's copy not applied).[/yellow]")
         else:
             shutil.copyfile(archived_cfg, cfg_path)
+
+    env_path = REPO_ROOT / ".env"
+    archived_env = source / ".env"
+    if archived_env.is_file():
+        if env_path.exists():
+            console.print("[yellow].env already exists - leaving it alone (archive's copy not applied).[/yellow]")
+        else:
+            shutil.copy2(archived_env, env_path)
+            env_path.chmod(0o600)  # belt-and-braces on top of copy2's own preserved mode
 
     repo_name = manifest.get("es_repo_name", "deis-archive")
     snapshot_name = manifest.get("es_snapshot_name")

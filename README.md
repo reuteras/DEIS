@@ -364,13 +364,13 @@ searches built during analysis too), a `docker save` of every container image th
 `docker-compose.yml` uses (so a restore months later doesn't depend on rebuilding from
 Dockerfiles or re-pulling from a registry that may have moved on), and `extracted/`/`status/`
 themselves (the actual files - Elasticsearch only holds Tika-extracted text and metadata, not
-the originals the web viewer opens), and every service's container logs as plain text
-(a reference for later, never read back by `restore`). Deliberately does not archive `.env`'s
-secrets; restoring generates a fresh set via the usual `deis init`. `bin/deis restore <archive>`
-reverses all of
-this on a fresh checkout (`deis init` already run, nothing else started), and reports whether
-the restored funnel counts (unique files, Elasticsearch document count) match what was recorded
-at archive time.
+the originals the web viewer opens), every service's container logs as plain text (a reference
+for later, never read back by `restore`), and `.env`'s own secrets - a deliberate choice, not a
+default: the dump itself is far more sensitive than these local stack credentials, and an
+archive handled with the same care as the dump makes restoring a single self-contained step on
+a fresh checkout - `just venv` (for `bin/`'s own dependencies), then `bin/deis restore
+<archive>` alone, no separate `deis init` needed first. Reports whether the restored funnel
+counts (unique files, Elasticsearch document count) match what was recorded at archive time.
 
 Shell completion for subcommands (and `run --only`'s choices) is available for bash and zsh:
 

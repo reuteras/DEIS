@@ -13,6 +13,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("deis_pii", REPO_ROOT / "bin" / "pii.py")
 pii = importlib.util.module_from_spec(spec)
@@ -115,6 +117,42 @@ class TestCardNumbers:
 
     def test_rejects_all_same_digit_despite_passing_luhn(self):
         assert pii.find_card_numbers("Card: 0000000000000000") == []
+
+    # Standard test numbers for every network _card_network recognizes -
+    # ubiquitous in payment processor sandboxes, not real cards - each
+    # independently confirmed to pass Luhn before being hardcoded here.
+    @pytest.mark.parametrize(
+        ("network", "card"),
+        [
+            ("visa", "4111111111111111"),
+            ("mastercard", "5555555555554444"),
+            ("mastercard_2_series", "2221000000000009"),
+            ("amex", "378282246310005"),
+            ("discover", "6011111111111117"),
+            ("diners", "30569309025904"),
+            ("jcb", "3530111333300000"),
+        ],
+    )
+    def test_finds_real_network_test_numbers(self, network, card):
+        assert pii.find_card_numbers(f"Card ({network}): {card}") == [card]
+
+    # Luhn-valid but not shaped like any real card network's own
+    # issuer-prefix/length rule - found live against a real corpus (item
+    # 31 follow-up): both of these were flagged as card_numbers by
+    # deis pii-scan despite being three/two concatenated dates in a real
+    # accounting document ("BFO Timavl 180425.pdf"), not card numbers at
+    # all. Luhn alone passes roughly 1 in 10 candidates by chance, and a
+    # corpus this dense with other 13-19 digit numeric runs generates
+    # enough candidates for that to show up routinely.
+    @pytest.mark.parametrize("false_positive", ["2018040201803012018", "3020360312735"])
+    def test_rejects_luhn_valid_non_network_shaped_numbers(self, false_positive):
+        assert pii.find_card_numbers(f"Ref: {false_positive}") == []
+
+    def test_rejects_right_length_but_wrong_prefix(self):
+        # 16 digits, genuinely Luhn-valid (check digit computed via
+        # _luhn_check_digit, not guessed) but "9" isn't any recognized
+        # network's issuer prefix at this length.
+        assert pii.find_card_numbers("Ref: 9111111111111110") == []
 
 
 class TestDetectAll:

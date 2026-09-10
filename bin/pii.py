@@ -8,7 +8,12 @@ shape match - this corpus is full of financial data (amounts, dates,
 account numbers), and a bare digit-count match would produce constant false
 positives. A checksum cuts random noise to roughly a 1-in-10 chance per
 candidate, on top of already requiring the right digit count and internal
-structure (valid month/day for personnummer).
+structure (valid month/day for personnummer). Card numbers add a second,
+independent check on top of Luhn - a real network's own issuer-prefix and
+length rule (see _card_network) - since a 1-in-10 chance still isn't rare
+enough against a corpus this dense with other 13-19 digit numeric runs;
+confirmed via a real false positive ("2018040201803012018", three
+concatenated dates in an accounting document, Luhn-valid but not a card).
 
 Pure functions only - no network, no Elasticsearch. See bin/deis.py's
 `pii-scan` subcommand for how this is applied to indexed documents.
@@ -31,6 +36,37 @@ PERSONNUMMER_RE = re.compile(r"\b(\d{2})?(\d{2})(\d{2})(\d{2})[-+]?(\d{4})\b")
 IBAN_RE = re.compile(r"\b([A-Z]{2}\d{2}[A-Z0-9]{11,30})\b")
 
 CARD_NUMBER_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+
+
+# Real card networks' own issuer-prefix + exact-length rules (ISO/IEC
+# 7812), checked on top of the Luhn check below - Luhn alone isn't enough
+# evidence on a corpus this dense with other 13-19 digit numeric runs
+# (invoice numbers, accounting references, concatenated dates): a random
+# digit string passes Luhn by chance roughly 1 in 10 times, and a corpus
+# this size generates enough 13-19 digit candidates for that to show up
+# routinely. Confirmed against a real false positive from this corpus:
+# "2018040201803012018" (three concatenated dates in an accounting
+# document, not a card number) passed Luhn and was flagged before this -
+# see TestCardNumbers' regression test. Numeric prefix comparisons rather
+# than a hand-rolled regex range - much easier to verify correct against
+# the real published BIN ranges than getting an oddly-shaped range like
+# Mastercard's 2221-2720 right in regex.
+def _card_network(digits: str) -> str | None:
+    length = len(digits)
+    two, three, four = int(digits[:2]), int(digits[:3]), int(digits[:4])
+    if digits[0] == "4" and length in (13, 16, 19):
+        return "visa"
+    if (51 <= two <= 55 or 2221 <= four <= 2720) and length == 16:
+        return "mastercard"
+    if two in (34, 37) and length == 15:
+        return "amex"
+    if (four == 6011 or two == 65 or 644 <= three <= 649) and length == 16:
+        return "discover"
+    if (300 <= three <= 305 or two in (36, 38)) and length == 14:
+        return "diners"
+    if 3528 <= four <= 3589 and length == 16:
+        return "jcb"
+    return None
 
 
 def _luhn_check_digit(digits: str) -> str:
@@ -130,8 +166,10 @@ def find_ibans(text: str) -> list[str]:
 
 
 def find_card_numbers(text: str) -> list[str]:
-    """Finds and Luhn-validates card numbers (13-19 digits, spaces/dashes
-    allowed as separators).
+    """Finds card numbers (13-19 digits, spaces/dashes allowed as
+    separators) that both pass the Luhn checksum AND match a real card
+    network's own issuer-prefix/length rule (see _card_network above) -
+    Luhn alone isn't enough evidence on this kind of corpus.
     """
     found = set()
     for match in CARD_NUMBER_RE.finditer(text):
@@ -142,7 +180,7 @@ def find_card_numbers(text: str) -> list[str]:
             # All-same-digit runs pass Luhn by construction but are never
             # a real card number.
             continue
-        if _luhn_check_digit(digits[:-1]) == digits[-1]:
+        if _luhn_check_digit(digits[:-1]) == digits[-1] and _card_network(digits) is not None:
             found.add(digits)
     return sorted(found)
 

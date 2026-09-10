@@ -548,6 +548,9 @@ def cmd_search(args) -> int:
         except OSError as error:
             console.print(f"[red]Could not write {args.output}: {error}[/red]")
             return 1
+        except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+            console.print(f"[red]Search failed: {error}[/red]")
+            return 1
         finally:
             if scroll_id:
                 try:
@@ -649,6 +652,9 @@ def cmd_pii_scan(args) -> int:
 
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
     finally:
         if scroll_id:
             try:
@@ -741,6 +747,9 @@ def cmd_pii_report(args) -> int:
     except OSError as error:
         console.print(f"[red]Could not write {args.output}: {error}[/red]")
         return 1
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
     finally:
         if output_file:
             output_file.close()
@@ -788,9 +797,17 @@ def cmd_entity_scan(args) -> int:
 
     max_chars = entities_max_chars()
     query = {"match_all": {}} if args.rescan else {"bool": {"must_not": {"exists": {"field": "entities.has_entities"}}}}
+    # 5m, not the 1m every other scroll-based command here uses: spaCy NER
+    # is genuinely slow (a real 194,000-character document measured ~7.5s
+    # for tok2vec+ner alone - see entities_max_chars's own docstring), and
+    # a batch of 200 documents can take well over a minute to process
+    # between one scroll continuation and the next. Found live: 1m expired
+    # mid-batch and the next continuation 404'd ("scroll context not
+    # found"), which - see below - crashed with a raw traceback instead of
+    # a clean error, since nothing caught it either.
     try:
         response = es_request(
-            f"/{INDEX}/_search?scroll=1m",
+            f"/{INDEX}/_search?scroll=5m",
             method="POST",
             body={"size": 200, "_source": ["attachment.content", "language"], "query": query},
         )
@@ -832,8 +849,11 @@ def cmd_entity_scan(args) -> int:
             if actions:
                 failures.extend(bulk_failures(es_bulk(actions)))
 
-            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "5m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
     finally:
         if scroll_id:
             try:
@@ -920,6 +940,9 @@ def cmd_entity_report(args) -> int:
     except OSError as error:
         console.print(f"[red]Could not write {args.output}: {error}[/red]")
         return 1
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
     finally:
         if output_file:
             output_file.close()
@@ -1000,6 +1023,9 @@ def cmd_dedupe_scan(args) -> int:
                     fingerprints[hit["_id"]] = value
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
     finally:
         if scroll_id:
             try:

@@ -146,6 +146,36 @@ class TestMarkerStatus:
         assert deis_module.marker_status()["ingest"] == "running"
 
 
+class TestWithLivenessMarker:
+    def test_marker_exists_only_while_running(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / "status").mkdir()
+        marker = tmp_path / "status" / "pii_scanning"
+        seen_during_call = {}
+
+        def inner(_args):
+            seen_during_call["exists"] = marker.exists()
+            return 0
+
+        wrapped = deis_module._with_liveness_marker("pii_scanning", inner)
+        assert wrapped(None) == 0
+        assert seen_during_call["exists"] is True
+        assert not marker.exists()
+
+    def test_marker_removed_even_on_exception(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / "status").mkdir()
+        marker = tmp_path / "status" / "entity_scanning"
+
+        def inner(_args):
+            raise RuntimeError("boom")
+
+        wrapped = deis_module._with_liveness_marker("entity_scanning", inner)
+        with pytest.raises(RuntimeError):
+            wrapped(None)
+        assert not marker.exists()
+
+
 class TestCountFiles:
     def test_missing_directory_is_zero(self, deis_module, tmp_path):
         assert deis_module.count_files(tmp_path / "missing", exclude=set()) == 0

@@ -2,6 +2,7 @@
 """."""
 
 import html
+import json
 import os
 import re
 import tempfile
@@ -151,6 +152,60 @@ def elastic_document_count() -> int | None:
         return None
 
 
+def elastic_scan_progress(field: str) -> tuple[int, int] | None:
+    """Live (tagged, total) document counts for a per-document post-pass -
+    pii-scan and entity-scan both set `field` (pii.has_pii,
+    entities.has_entities) on every document they look at, whether or not
+    it actually matched, so counting field presence against the total
+    document count is real, live progress. None if Elasticsearch isn't
+    reachable. Unlike elastic_document_count(), this doesn't need to stay
+    silent about staleness - a few seconds' lag on a scan that runs for
+    minutes to hours doesn't matter the way it might on a single count.
+    """
+    password = os.environ.get("ELASTIC_PASSWORD")
+    if not password:
+        return None
+    try:
+        total_response = requests.get(f"{ELASTIC_URL}/{ELASTIC_INDEX}/_count", auth=("elastic", password), timeout=10)
+        tagged_response = requests.post(
+            f"{ELASTIC_URL}/{ELASTIC_INDEX}/_count",
+            auth=("elastic", password),
+            json={"query": {"exists": {"field": field}}},
+            timeout=10,
+        )
+        if total_response.status_code != 200 or tagged_response.status_code != 200:
+            return None
+        return tagged_response.json().get("count"), total_response.json().get("count")
+    except requests.exceptions.RequestException:
+        return None
+
+
+def dedupe_scan_summary() -> dict | None:
+    """dedupe-scan clusters the whole corpus in memory and only writes
+    duplicate_cluster assignments at the very end (see bin/deis.py's
+    cmd_dedupe_scan docstring), so a live document count would show 0 the
+    entire time a scan runs and then jump straight to the final number -
+    not real progress. bin/deis.py writes this file instead, once, when a
+    scan finishes successfully, and this just reads it back.
+    """
+    path = Path(STATUS_DIR) / "dedupe_scan_summary.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def scan_running(marker_name: str) -> bool:
+    """Whether bin/deis.py's pii-scan/entity-scan/dedupe-scan is currently
+    running - same real-liveness-marker pattern as pipeline_status()'s
+    extracting/ingesting checks, touched (and removed) by
+    _with_liveness_marker() in bin/deis.py.
+    """
+    return (Path(STATUS_DIR) / marker_name).exists()
+
+
 def latest_run_summary() -> dict | None:
     """Same query bin/deis.py's latest_run_summary() runs from the host, for
     the per-run breakdown ingest.py writes to ELASTIC_RUNS_INDEX at the end
@@ -193,6 +248,9 @@ def render_index_html() -> str:
     decrypted = count_lines(f"{STATUS_DIR}/decrypted.txt")
     doc_count = elastic_document_count()
     run = latest_run_summary()
+    pii_progress = elastic_scan_progress("pii.has_pii")
+    entity_progress = elastic_scan_progress("entities.has_entities")
+    dedupe_summary = dedupe_scan_summary()
 
     def stage_row(label: str, key: str) -> str:
         state = status[key]
@@ -238,6 +296,36 @@ def render_index_html() -> str:
 <table>{run_rows}</table>
 """
 
+    def scan_row(label: str, marker: str, progress: tuple[int, int] | None) -> str:
+        running_suffix = ' <span style="color:#f9a825;">(running)</span>' if scan_running(marker) else ""
+        if progress is None:
+            value = "could not be read"
+        else:
+            tagged, total = progress
+            value = f"{tagged} / {total}" if total else "0 / 0"
+        return f"<tr><td>{html.escape(label)}</td><td>{value}{running_suffix}</td></tr>"
+
+    if scan_running("dedupe_scanning"):
+        dedupe_row = '<tr><td>Dedupe scan</td><td><span style="color:#f9a825;">running</span></td></tr>'
+    elif dedupe_summary is None:
+        dedupe_row = "<tr><td>Dedupe scan</td><td>not yet run</td></tr>"
+    else:
+        dedupe_row = (
+            "<tr><td>Dedupe scan</td>"
+            f"<td>{dedupe_summary.get('documents_clustered', '?')} document(s) in "
+            f"{dedupe_summary.get('cluster_count', '?')} cluster(s) "
+            f"(last run {html.escape(str(dedupe_summary.get('@timestamp', '?')))})</td></tr>"
+        )
+
+    scan_section = f"""
+<h2>Post-processing</h2>
+<table>
+{scan_row("PII scan", "pii_scanning", pii_progress)}
+{scan_row("Entity scan", "entity_scanning", entity_progress)}
+{dedupe_row}
+</table>
+"""
+
     return f"""<!doctype html>
 <html>
 <head>
@@ -274,6 +362,7 @@ ul {{ padding-left: 1.2rem; }}
 {still_rows}
 </table>
 {run_section}
+{scan_section}
 <h2>Search and review</h2>
 <ul>
 <li><a href="{KIBANA_LINK}" target="_blank">Kibana</a> - search and dashboards</li>

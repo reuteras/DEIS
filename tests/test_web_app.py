@@ -335,3 +335,102 @@ class TestRenderIndexHtml:
         page = app_module.render_index_html()
 
         assert "Recovered by password-cracking" in page
+
+    def test_scan_progress_and_liveness_shown(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "pii_scanning").touch()
+        (tmp_path / "dedupe_scan_summary.json").write_text(
+            '{"@timestamp": "2026-09-10T00:00:00+00:00", "documents_clustered": 12, "cluster_count": 3}'
+        )
+
+        def fake_get(url, **_kw):
+            class FakeResponse:
+                status_code = 200
+
+                def json(self):
+                    return {"count": 100}
+
+            return FakeResponse()
+
+        def fake_post(url, **_kw):
+            class FakeResponse:
+                status_code = 200
+
+                def json(self):
+                    return {"count": 40}
+
+            return FakeResponse()
+
+        monkeypatch.setattr(app_module.requests, "get", fake_get)
+        monkeypatch.setattr(app_module.requests, "post", fake_post)
+
+        page = app_module.render_index_html()
+
+        assert "PII scan" in page
+        assert "40 / 100" in page
+        assert "(running)" in page
+        assert "12 document(s) in 3 cluster(s)" in page
+
+
+class TestElasticScanProgress:
+    def test_returns_none_without_password(self, app_module, monkeypatch):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        assert app_module.elastic_scan_progress("pii.has_pii") is None
+
+    def test_returns_tagged_and_total(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        class TotalResponse:
+            status_code = 200
+
+            def json(self):
+                return {"count": 100}
+
+        class TaggedResponse:
+            status_code = 200
+
+            def json(self):
+                return {"count": 25}
+
+        monkeypatch.setattr(app_module.requests, "get", lambda *a, **kw: TotalResponse())
+        monkeypatch.setattr(app_module.requests, "post", lambda *a, **kw: TaggedResponse())
+        assert app_module.elastic_scan_progress("pii.has_pii") == (25, 100)
+
+    def test_returns_none_when_unreachable(self, app_module, monkeypatch):
+        monkeypatch.setenv("ELASTIC_PASSWORD", "secret")
+
+        def raise_connection_error(*_a, **_kw):
+            raise requests.exceptions.ConnectionError
+
+        monkeypatch.setattr(app_module.requests, "get", raise_connection_error)
+        assert app_module.elastic_scan_progress("pii.has_pii") is None
+
+
+class TestDedupeScanSummary:
+    def test_returns_none_when_missing(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        assert app_module.dedupe_scan_summary() is None
+
+    def test_returns_parsed_summary(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        (tmp_path / "dedupe_scan_summary.json").write_text('{"cluster_count": 5}')
+        assert app_module.dedupe_scan_summary() == {"cluster_count": 5}
+
+    def test_returns_none_on_invalid_json(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        (tmp_path / "dedupe_scan_summary.json").write_text("not json")
+        assert app_module.dedupe_scan_summary() is None
+
+
+class TestScanRunning:
+    def test_false_when_marker_absent(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        assert app_module.scan_running("pii_scanning") is False
+
+    def test_true_when_marker_present(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        (tmp_path / "pii_scanning").touch()
+        assert app_module.scan_running("pii_scanning") is True

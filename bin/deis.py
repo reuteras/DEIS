@@ -605,6 +605,27 @@ def cmd_report(_args) -> int:
     return 0
 
 
+def _with_liveness_marker(marker_name: str, func):
+    """Wraps a scan command so status/<marker_name> exists for exactly as
+    long as it's running - the same real-liveness-marker pattern
+    unpack/start.sh and ingest/start.sh already use (status/extracting,
+    status/ingesting; see marker_status()'s own comment on why a liveness
+    touch is needed instead of just inferring "running" from other files).
+    web/app.py's /status mount is read-only, so this has to be written from
+    here, on the host, not from the web container.
+    """
+
+    def wrapped(args):
+        marker = REPO_ROOT / "status" / marker_name
+        marker.touch()
+        try:
+            return func(args)
+        finally:
+            marker.unlink(missing_ok=True)
+
+    return wrapped
+
+
 def cmd_pii_scan(args) -> int:
     """A post-pass (item 31), not an ingest-time enrichment: it runs
     against attachment.content, which only exists once Elasticsearch's own
@@ -1073,6 +1094,24 @@ def cmd_dedupe_scan(args) -> int:
         if len(failures) > 10:
             console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
         return 1
+
+    # Unlike pii-scan/entity-scan, a live document count can't show
+    # dedupe-scan's progress while it runs (clusters aren't written until
+    # the very end - see this function's own docstring), so the web UI
+    # instead shows the result of the last completed run from this file.
+    summary_path = REPO_ROOT / "status" / "dedupe_scan_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "@timestamp": datetime.now(UTC).isoformat(),
+                "documents_scanned": len(fingerprints),
+                "documents_clustered": len(clusters),
+                "cluster_count": len(cluster_sizes),
+                "documents_skipped_no_words": no_words,
+            }
+        ),
+        encoding="utf-8",
+    )
     return 0
 
 
@@ -1824,7 +1863,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
     p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
-    p_pii.set_defaults(func=cmd_pii_scan)
+    p_pii.set_defaults(func=_with_liveness_marker("pii_scanning", cmd_pii_scan))
 
     p_pii_report = sub.add_parser("pii-report", help="list what pii-scan already found")
     p_pii_report.add_argument(
@@ -1834,7 +1873,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_entity = sub.add_parser("entity-scan", help="extract named entities (people/orgs/locations) from indexed content")
     p_entity.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
-    p_entity.set_defaults(func=cmd_entity_scan)
+    p_entity.set_defaults(func=_with_liveness_marker("entity_scanning", cmd_entity_scan))
 
     p_entity_report = sub.add_parser("entity-report", help="list what entity-scan already found")
     p_entity_report.add_argument(
@@ -1850,7 +1889,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="max_distance",
         help="max Hamming distance (of 64 bits) to consider two documents near-duplicates (default: 10)",
     )
-    p_dedupe.set_defaults(func=cmd_dedupe_scan)
+    p_dedupe.set_defaults(func=_with_liveness_marker("dedupe_scanning", cmd_dedupe_scan))
 
     p_dedupe_report = sub.add_parser("dedupe-report", help="list what dedupe-scan already found, by cluster")
     p_dedupe_report.add_argument(

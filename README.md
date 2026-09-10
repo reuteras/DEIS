@@ -30,6 +30,8 @@ clearnet-only batch is not blocked - it never wanted TOR - but the exit address 
 printed so you can confirm it is your VPN and not your own. `deis doctor` runs the same check
 on demand.
 
+If you already have the file they can be added instead, see below.
+
 ### Extract
 
 Automated extraction of compressed files with a simple container running [7-zip][7zz].
@@ -195,11 +197,10 @@ git clone https://github.com/reuteras/DEIS.git
 cd DEIS
 ```
 
-First we need to create the venv and install Python packages. If you have `just` installed you can run `just venv`. Otherwise run:
+First we need to create the virtual environment and install Python packages.
 
 ```bash
 uv sync --dev
-source .venv/bin/activate
 ```
 
 Configure DEIS by running:
@@ -215,7 +216,7 @@ Add a list of URLs (one per line) for files to download to a file in the *urls* 
 `.onion` URLs are downloaded over TOR and everything else is downloaded directly, which is
 much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR instead.
 
-Setup Elasticsearch and Kibana by running the command below which will start a configuration container and dependent containers.
+Setup Elasticsearch and Kibana by which will start a configuration container and dependent containers.
 
 ```bash
 ./bin/deis setup
@@ -229,7 +230,7 @@ To run all steps in **DEIS** run.
 ./bin/deis run
 ```
 
-Monitor progress by running:
+Monitor progress by running the command below or visit [http://127.0.0.1:8081](http://127.0.0.1:8081).
 
 ```bash
 just progress
@@ -259,8 +260,7 @@ not reachable from other machines on your network:
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 
 ```bash
-just ingest
-.venv/bin/python3 ingest/ingest.py
+./bin/deis run --only ingest
 ```
 
 ### Skip download, using files you already have

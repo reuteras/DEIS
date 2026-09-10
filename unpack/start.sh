@@ -826,6 +826,16 @@ dispatch_round() {
     local -a primaries=()
     local -a dup_paths=() dup_shas=() dup_kinds=()
 
+    # This parent process needs PASSWORDS too, not just worker_entrypoint's
+    # xargs -P children: the duplicate-file loop below calls
+    # apply_known_result directly (in this process, not a spawned worker),
+    # which can reach maybe_decrypt_document -> decrypt_office_document/
+    # decrypt_pdf_document, both of which read PASSWORDS. Missing this
+    # call crashed the whole script with "PASSWORDS: unbound variable"
+    # under set -u the first time a real duplicate of a not-yet-decrypted
+    # PDF/Office document reached this path.
+    load_passwords
+
     mkdir -p "${WORKDIR}/results"
     rm -f "${WORKDIR}"/next.* 2>/dev/null
 

@@ -7,14 +7,6 @@ network.host: 0.0.0.0
 
 http.max_content_length: 2000mb
 
-# A fixed, bind-mounted location the "fs" snapshot repository type can
-# write into (docker-compose.yml maps this to ./archive/es-repo on the
-# host) - registered/used by `deis archive`/`deis restore`. Present
-# unconditionally, not only when archiving is actually used, since
-# path.repo is a static setting: adding it later needs a restart anyway,
-# so there is no benefit to leaving it out until the first archive.
-path.repo: ["/usr/share/elasticsearch/repo"]
-
 ## X-Pack settings
 ## see https://www.elastic.co/guide/en/elasticsearch/reference/current/security-settings.html
 #

@@ -140,11 +140,6 @@ services:
     volumes:
       - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro,Z
       - elasticsearch:/usr/share/elasticsearch/data
-      # Host-visible snapshot repository target (elasticsearch.yml's
-      # path.repo) - deis archive/restore read and write this directory
-      # directly, without ever needing to reach into the Docker-managed
-      # "elasticsearch" volume above.
-      - ./archive/es-repo:/usr/share/elasticsearch/repo
     ports:
       - 127.0.0.1:9200:9200
       - 127.0.0.1:9300:9300

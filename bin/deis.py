@@ -48,6 +48,21 @@ ES_URL = "http://127.0.0.1:9200"
 KIBANA_URL = "http://127.0.0.1:5601"
 INDEX = "leakdata-index-000001"
 RUNS_INDEX = "deis-ingest-runs"
+# docker-compose.yml names this volume implicitly (project name "deis",
+# derived from this directory's name, prefixed onto the "elasticsearch"
+# service volume - same convention Justfile's docker-clean already
+# hardcodes for `docker volume rm`) - not discovered dynamically, since
+# nothing here ever runs from a differently-named checkout.
+ES_VOLUME_NAME = "deis_elasticsearch"
+# A pinned, specific Alpine release (not `latest`) purely to tar/untar a
+# Docker volume from the host side in `deis archive`/`deis restore` (see
+# _run_in_es_volume below) - Docker volumes aren't a host filesystem path
+# on macOS/Windows (Docker Desktop's VM owns them), so this is the
+# standard, portable way to reach into one regardless of platform. Alpine
+# specifically: tiny (~3MB), official, and already used purely as
+# ephemeral `--rm` tooling, never as a long-running service - the
+# supply-chain exposure is a single `tar` invocation, not persistent code.
+VOLUME_BACKUP_IMAGE = "alpine:3.22.5"
 VIEW_URL = "http://127.0.0.1:8081/view"
 ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
 # Shared between cmd_pii_scan (what it writes) and cmd_pii_report (what it
@@ -124,14 +139,6 @@ def elastic_password() -> str | None:
     if password := os.environ.get("ELASTIC_PASSWORD"):
         return password
     return read_env().get("ELASTIC_PASSWORD")
-
-
-def kibana_system_password() -> str | None:
-    import os
-
-    if password := os.environ.get("KIBANA_SYSTEM_PASSWORD"):
-        return password
-    return read_env().get("KIBANA_SYSTEM_PASSWORD")
 
 
 def entities_max_chars(path: Path | None = None) -> int:
@@ -1445,35 +1452,82 @@ def cmd_reset(_args) -> int:
 # marked non-exportable as of this project's pinned ELASTIC_VERSION
 # (confirmed live - _export 400s with "Trying to export non-exportable
 # type(s): canvas-workspace" even with zero Canvas objects present).
-_KIBANA_EXPORT_TYPES = [
-    "index-pattern",
-    "search",
-    "visualization",
-    "dashboard",
-    "lens",
-    "map",
-    "graph-workspace",
-]
+def _backup_es_volume(destination: Path) -> None:
+    """Tars the entire ES_VOLUME_NAME Docker volume into destination/es-data.tar,
+    via a throwaway container (VOLUME_BACKUP_IMAGE) that mounts the named
+    volume - not a direct host-filesystem copy, since a Docker volume isn't
+    reachable as a host path at all on macOS/Windows (Docker Desktop's VM
+    owns it); this works identically on every platform Docker runs on.
 
+    Elasticsearch itself must already be stopped when this runs (the
+    caller's job - see cmd_archive) so the tar reads a consistent, fully
+    flushed set of files, not ones mid-write.
 
-def _kibana_export_all() -> str:
-    """Every Kibana saved object of the types above - not just the fixed
-    set setup/entrypoint.sh's own export.ndjson bakes in - since the
-    operator may have built real dashboards/saved searches during
-    analysis worth keeping. Same Saved Objects API setup/entrypoint.sh
-    already imports from (see its own _import call), used here to export
-    instead.
+    Captures everything in the volume, not just leakdata-*/deis-ingest-runs
+    the way the old snapshot-based approach did: Kibana's own saved objects
+    (dashboards, searches, index-patterns) and the security realm (elastic/
+    kibana_system passwords) both live as ordinary indices inside the same
+    Elasticsearch data directory (.kibana-*, .security-*) - a full volume
+    copy carries them along for free, verified live, with no separate
+    export/import or password-reset step needed on restore.
     """
-    password = elastic_password()
-    if not password:
-        raise RuntimeError("ELASTIC_PASSWORD is not set (check .env, or run 'deis init').")
-    body = json.dumps({"type": _KIBANA_EXPORT_TYPES}).encode("utf-8")
-    req = urllib.request.Request(KIBANA_URL + "/api/saved_objects/_export", data=body, method="POST")
-    req.add_header("Authorization", "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode("ascii"))
-    req.add_header("Content-Type", "application/json")
-    req.add_header("kbn-xsrf", "true")
-    with urllib.request.urlopen(req, timeout=120) as response:
-        return response.read().decode("utf-8")
+    destination.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{ES_VOLUME_NAME}:/data",
+            "-v",
+            f"{destination}:/backup",
+            VOLUME_BACKUP_IMAGE,
+            "tar",
+            "-cf",
+            "/backup/es-data.tar",
+            "-C",
+            "/data",
+            ".",
+        ],
+        check=True,
+    )
+
+
+def _restore_es_volume(source: Path) -> None:
+    """Recreates ES_VOLUME_NAME from source/es-data.tar (see _backup_es_volume) -
+    the volume is removed and recreated first, not extracted on top of
+    whatever is already there, so a restore always ends with exactly the
+    archive's own data, never a mix with a previous `deis init`'s fresh,
+    empty cluster.
+
+    Recreated via `docker compose create` (creates the elasticsearch
+    container and its volume without starting it - no data is written by
+    an unstarted container), not a plain `docker volume create`: a
+    volume made outside Compose lacks the project/config-hash labels
+    Compose itself stamps on, and the very next `docker compose up`
+    warns "already exists but was not created by Docker Compose" -
+    confirmed live, harmless but noisy every single restore.
+    """
+    subprocess.run(["docker", "volume", "rm", "-f", ES_VOLUME_NAME], check=False)
+    subprocess.run(["docker", "compose", "create", "elasticsearch"], cwd=REPO_ROOT, check=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{ES_VOLUME_NAME}:/data",
+            "-v",
+            f"{source}:/backup",
+            VOLUME_BACKUP_IMAGE,
+            "tar",
+            "-xf",
+            "/backup/es-data.tar",
+            "-C",
+            "/data",
+        ],
+        check=True,
+    )
 
 
 def _compose_images(profiles: list[str]) -> list[str]:
@@ -1528,15 +1582,7 @@ def _image_present_locally(image: str) -> bool:
     return subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False).returncode == 0
 
 
-def _snapshot_state(repo: str, snapshot: str) -> str:
-    response = es_request(f"/_snapshot/{repo}/{snapshot}")
-    snapshots = response.get("snapshots", [])
-    return snapshots[0]["state"] if snapshots else "UNKNOWN"
-
-
-def _build_manifest(
-    images: list[str], missing_images: list[str], counts: dict, repo_name: str, snapshot_name: str
-) -> dict:
+def _build_manifest(images: list[str], missing_images: list[str], counts: dict) -> dict:
     """Pure - the recorded facts about one archive, used both to write
     manifest.json (cmd_archive) and to sanity-check a restore against it
     (see _manifest_mismatches below).
@@ -1550,8 +1596,6 @@ def _build_manifest(
         "elastic_version": read_env().get("ELASTIC_VERSION", "unknown"),
         "images": images,
         "missing_images": missing_images,
-        "es_repo_name": repo_name,
-        "es_snapshot_name": snapshot_name,
         "counts": counts,
     }
 
@@ -1591,14 +1635,20 @@ def cmd_archive(args) -> int:
     same reasoning as unpack/VENDORED.md's and downloader/VENDORED.md's
     own pinning).
 
-    Uses Elasticsearch's own snapshot API, not a raw copy of the
-    "elasticsearch" Docker volume - verified directly against Elastic's
-    own documentation before choosing this: "You cannot back up an
-    Elasticsearch cluster by making copies of the data directories of its
-    nodes... You cannot fix this by shutting down nodes while making the
-    copies... because Elasticsearch has consistency requirements that
-    span the whole cluster." A volume copy is not a supported or reliable
-    backup method even with the container stopped first.
+    Stops Elasticsearch and tars its entire Docker volume (see
+    _backup_es_volume), rather than the ES snapshot API this used
+    originally. Elastic's own docs call a volume copy unsupported for a
+    live, multi-node cluster - this project is neither: a single stopped
+    node's data directory is just files on disk with no in-flight writes
+    or cross-node consistency to worry about, and switching to this
+    approach was a deliberate reversal after the snapshot approach's own
+    real bugs (a Kibana saved-objects export/import round-trip needing
+    its own error handling and retry logic, and a security realm -
+    kibana_system's password - that a snapshot restore doesn't carry,
+    needing to be re-bootstrapped by hand). A full volume copy carries
+    Kibana's saved objects and the security realm along for free, since
+    both live as ordinary indices inside the same Elasticsearch data
+    directory - confirmed live before switching, not assumed.
 
     Also saves every service's container logs as plain text
     (container-logs/<service>.log) - a reference for later, not something
@@ -1617,48 +1667,28 @@ def cmd_archive(args) -> int:
 
     try:
         health = es_request("/_cluster/health")
-    except ES_REQUEST_ERRORS as error:
-        console.print(f"[red]Elasticsearch is not reachable: {error}[/red]")
-        return 1
-    console.print(f"Elasticsearch reachable (status: {health.get('status', 'unknown')}).")
+        console.print(f"Elasticsearch reachable (status: {health.get('status', 'unknown')}).")
+    except ES_REQUEST_ERRORS:
+        console.print("[yellow]Elasticsearch is not reachable - archiving whatever is in its volume as-is.[/yellow]")
 
-    repo_name = "deis-archive"
-    snapshot_name = f"snapshot-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+    console.print("[yellow]Stopping Elasticsearch briefly to copy its data directory...[/yellow]")
+    subprocess.run(["docker", "compose", "stop", "elasticsearch"], cwd=REPO_ROOT, check=False)
 
-    console.print(f"Registering snapshot repository {repo_name!r}...")
-    try:
-        es_request(f"/_snapshot/{repo_name}", method="PUT", body={"type": "fs", "settings": {"location": repo_name}})
+    console.print("Backing up the Elasticsearch volume (this can take a while on a large corpus)...")
+    _backup_es_volume(destination)
 
-        console.print(f"Taking snapshot {snapshot_name!r} (leakdata-*, {RUNS_INDEX})...")
-        es_request(
-            f"/_snapshot/{repo_name}/{snapshot_name}",
-            method="PUT",
-            body={"indices": f"leakdata-*,{RUNS_INDEX}", "include_global_state": False},
-        )
-    except ES_REQUEST_ERRORS as error:
-        console.print(f"[red]Could not start the snapshot: {error}[/red]")
-        return 1
-
-    console.print("Waiting for the snapshot to complete (this can take a while on a large corpus)...")
-    while True:
+    console.print("Restarting Elasticsearch...")
+    subprocess.run(["docker", "compose", "up", "-d", "elasticsearch"], cwd=REPO_ROOT, check=True)
+    console.print("Waiting for Elasticsearch to become reachable again...")
+    for _ in range(60):
         try:
-            state = _snapshot_state(repo_name, snapshot_name)
-        except ES_REQUEST_ERRORS as error:
-            console.print(f"[red]Could not check snapshot status: {error}[/red]")
-            return 1
-        if state == "SUCCESS":
-            console.print("Snapshot complete.")
-            break
-        if state in ("FAILED", "PARTIAL", "UNKNOWN"):
-            console.print(f"[red]Snapshot ended in state {state!r} - aborting.[/red]")
-            return 1
+            if es_request("/_cluster/health").get("status") in ("yellow", "green"):
+                break
+        except ES_REQUEST_ERRORS:
+            pass
         time.sleep(5)
-
-    console.print("Exporting Kibana saved objects...")
-    try:
-        (destination / "kibana-export.ndjson").write_text(_kibana_export_all(), encoding="utf-8")
-    except ES_REQUEST_ERRORS as error:
-        console.print(f"[yellow]Could not export Kibana saved objects: {error} - continuing without them.[/yellow]")
+    else:
+        console.print("[yellow]Elasticsearch did not come back up in time - continuing anyway.[/yellow]")
 
     console.print("Saving container logs...")
     _save_container_logs(destination / "container-logs")
@@ -1688,14 +1718,11 @@ def cmd_archive(args) -> int:
     # destination filesystem's default (often world-readable).
     shutil.copy2(REPO_ROOT / ".env", destination / ".env")
 
-    console.print("Copying the Elasticsearch snapshot repository...")
-    shutil.copytree(REPO_ROOT / "archive" / "es-repo" / repo_name, destination / "es-repo", dirs_exist_ok=True)
-
     counts = {
         "unique_sha256": count_files(REPO_ROOT / "extracted" / "sha256", exclude=set()),
         "elasticsearch_documents": es_request(f"/{INDEX}/_count").get("count", 0),
     }
-    manifest = _build_manifest(images, missing, counts, repo_name, snapshot_name)
+    manifest = _build_manifest(images, missing, counts)
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     console.print(f"[green]Archive complete: {destination}[/green]")
@@ -1720,10 +1747,13 @@ def cmd_restore(args) -> int:
     uncommitted changes isn't this feature's call to make.
 
     Brings up the full review/analysis surface at the end, not just
-    Elasticsearch+Kibana - kibana_system's password (setup/entrypoint.sh's
-    job normally, not run here - see below), then web/gotenberg/notebook
-    alongside Kibana, so a restore actually leaves every viewer a fresh
-    `deis init` + `deis run` would have running, not just a queryable index.
+    Elasticsearch+Kibana - web/gotenberg/notebook too, so a restore
+    actually leaves every viewer a fresh `deis init` + `deis run` would
+    have running, not just a queryable index. Restoring the Elasticsearch
+    volume itself (see _restore_es_volume) needs no separate Kibana
+    saved-objects import or kibana_system password-reset step the way the
+    old snapshot-based restore did - both travel with the volume, since
+    both are ordinary Elasticsearch indices under the hood.
     """
     source: Path = args.source
     manifest_path = source / "manifest.json"
@@ -1816,17 +1846,26 @@ def cmd_restore(args) -> int:
         shutil.copy2(archived_env, env_path)
         env_path.chmod(0o600)  # belt-and-braces on top of copy2's own preserved mode
 
-    repo_name = manifest.get("es_repo_name", "deis-archive")
-    snapshot_name = manifest.get("es_snapshot_name")
-    if not snapshot_name:
-        console.print("[red]manifest.json has no es_snapshot_name - cannot restore Elasticsearch data.[/red]")
+    es_data_tar = source / "es-data.tar"
+    if not es_data_tar.is_file():
+        console.print(f"[red]{es_data_tar} not found - cannot restore Elasticsearch data.[/red]")
         return 1
-    es_repo_dest = REPO_ROOT / "archive" / "es-repo" / repo_name
-    es_repo_dest.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source / "es-repo", es_repo_dest, dirs_exist_ok=True)
+    console.print("Stopping Elasticsearch...")
+    subprocess.run(["docker", "compose", "stop", "elasticsearch"], cwd=REPO_ROOT, check=False)
+    console.print("Restoring the Elasticsearch volume (this can take a while on a large corpus)...")
+    _restore_es_volume(source)
 
-    console.print("Starting Elasticsearch...")
-    subprocess.run(["docker", "compose", "up", "-d", "elasticsearch"], cwd=REPO_ROOT, check=True)
+    console.print("Starting Elasticsearch, the web viewer, gotenberg, and the notebook...")
+    # Not `docker compose --profile deis up -d`: that profile also includes
+    # downloader/controller/unpack/ingest/deis, the pipeline-processing
+    # containers - restore is reopening already-processed data, not running
+    # the pipeline again, so only the review/analysis services are started.
+    # Kibana isn't started yet - starting it only once Elasticsearch is
+    # actually reachable avoids it going through its own doomed connection
+    # retries against a still-starting Elasticsearch for no reason.
+    subprocess.run(
+        ["docker", "compose", "up", "-d", "elasticsearch", "web", "gotenberg", "notebook"], cwd=REPO_ROOT, check=True
+    )
     console.print("Waiting for Elasticsearch to become reachable...")
     for _ in range(60):
         try:
@@ -1838,96 +1877,10 @@ def cmd_restore(args) -> int:
     else:
         console.print("[red]Elasticsearch did not become reachable in time.[/red]")
         return 1
-
-    console.print(f"Registering snapshot repository {repo_name!r}...")
-    es_request(f"/_snapshot/{repo_name}", method="PUT", body={"type": "fs", "settings": {"location": repo_name}})
-
-    console.print(f"Restoring snapshot {snapshot_name!r}...")
-    es_request(f"/_snapshot/{repo_name}/{snapshot_name}/_restore", method="POST", body={"include_global_state": False})
-    while True:
-        try:
-            response = es_request(f"/{INDEX}/_recovery")
-        except ES_REQUEST_ERRORS:
-            response = {}
-        if response and all(
-            shard.get("stage") == "DONE" for index in response.values() for shard in index.get("shards", [])
-        ):
-            break
-        time.sleep(5)
     console.print("Restore complete.")
 
-    # A restored cluster is a *fresh* Elasticsearch security realm - only
-    # `elastic` gets a password, from ELASTIC_PASSWORD's own bootstrap
-    # behavior (see docker-compose.yml's elasticsearch service). kibana_system
-    # never does, since that's normally setup/entrypoint.sh's job (POST
-    # _security/user/kibana_system/_password, same call as here) and restore
-    # doesn't run the setup container. Without this, confirmed live: Kibana
-    # spins forever retrying "security_exception: unable to authenticate user
-    # [kibana_system]" and never becomes usable, no matter how long you wait.
-    kibana_password = kibana_system_password()
-    if kibana_password:
-        console.print("Setting kibana_system's password...")
-        es_request("/_security/user/kibana_system/_password", method="POST", body={"password": kibana_password})
-    else:
-        console.print(
-            "[yellow]KIBANA_SYSTEM_PASSWORD is not set - Kibana will not be able to authenticate "
-            "to Elasticsearch.[/yellow]"
-        )
-
-    console.print("Starting Kibana, the web viewer, gotenberg, and the notebook...")
-    # Not `docker compose --profile deis up -d`: that profile also includes
-    # downloader/controller/unpack/ingest/deis, the pipeline-processing
-    # containers - restore is reopening already-processed data, not running
-    # the pipeline again, so only the review/analysis services are started.
-    subprocess.run(
-        ["docker", "compose", "up", "-d", "kibana", "web", "gotenberg", "notebook"], cwd=REPO_ROOT, check=True
-    )
-    kibana_export = source / "kibana-export.ndjson"
-    if kibana_export.is_file():
-        console.print("Importing Kibana saved objects...")
-        password = elastic_password()
-        # Shells out to curl rather than hand-building the multipart/
-        # form-data body via urllib - setup/entrypoint.sh already makes
-        # this exact call this way (its own _import of the baked-in
-        # export.ndjson), a real, working reference rather than a
-        # hand-rolled encoding this project has no other use for.
-        #
-        # Retries the *import itself*, not a separate "is Kibana up"
-        # probe - confirmed live: a plain GET against KIBANA_URL returns
-        # 200 (Kibana serves its app shell) well before the saved-objects
-        # backend is actually ready to accept one, so that probe was a
-        # false-positive readiness signal - the import silently failed
-        # once, with no retry, and this ended with an empty Kibana (0
-        # saved objects, despite Elasticsearch's own data restoring
-        # completely correctly) and no obvious error to explain why.
-        status = ""
-        for _ in range(60):
-            result = subprocess.run(
-                [
-                    "curl",
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "-X",
-                    "POST",
-                    f"http://elastic:{password}@127.0.0.1:5601/api/saved_objects/_import?overwrite=true",
-                    "-H",
-                    "kbn-xsrf: true",
-                    "--form",
-                    f"file=@{kibana_export}",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            status = result.stdout.strip()
-            if status == "200":
-                break
-            time.sleep(5)
-        if status != "200":
-            console.print(f"[yellow]Kibana import returned HTTP {status!r} - check manually.[/yellow]")
+    console.print("Starting Kibana...")
+    subprocess.run(["docker", "compose", "up", "-d", "kibana"], cwd=REPO_ROOT, check=True)
 
     live_counts = {
         "unique_sha256": count_files(REPO_ROOT / "extracted" / "sha256", exclude=set()),

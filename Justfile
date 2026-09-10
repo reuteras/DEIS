@@ -65,13 +65,6 @@ dist-clean: clean docker-clean
     git checkout -- files/.gitignore
     rm -rf status/* status/.[!.]* status/..?*
     git checkout -- status/.gitignore
-    # archive/es-repo is the Elasticsearch snapshot repo `deis archive`/
-    # `deis restore` read and write directly (see docker-compose.yml's
-    # elasticsearch bind mount) - leak data at rest on disk just like
-    # extracted/files/status above, so a reset that claims to delete all
-    # evidence has to clear it too. No tracked .gitignore lives under
-    # archive/ (unlike the dirs above), so no restore step needed after.
-    rm -rf archive/* archive/.[!.]* archive/..?*
     rm -f .jupyter/serverconfig/jupyterlabapputilsextensionannouncements.json
     rm -rf .jupyter/lab/workspaces/* .jupyter/lab/workspaces/.[!.]* .jupyter/lab/workspaces/..?* .jupyter/migrated
     rm -rf notebook/.ipynb_checkpoints

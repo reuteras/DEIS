@@ -343,6 +343,7 @@ is_zip_based_document() {
     *.docx | *.docm | *.dotx | *.dotm | \
         *.xlsx | *.xlsm | *.xltx | *.xltm | *.xlsb | \
         *.pptx | *.pptm | *.potx | *.potm | *.ppsx | *.ppsm | *.sldx | *.sldm | \
+        *.vsdx | *.vsdm | *.vssx | *.vssm | *.vstx | *.vstm | \
         *.odt | *.ods | *.odp | *.odg | *.odf | *.odb | *.odc | *.odi | *.odm | \
         *.ott | *.ots | *.otp | *.otg)
         return 0
@@ -351,6 +352,51 @@ is_zip_based_document() {
         return 1
         ;;
     esac
+}
+
+# is_zip_based_document() above only catches a recognized extension - a
+# real corpus turned up two gaps that leaves open: Visio's own OOXML
+# formats (.vsdx and friends - just missing from that list until the line
+# above) and, more fundamentally, Office's own temp/autosave files, which
+# are genuinely OOXML packages saved under a generic name with no useful
+# extension at all (e.g. "5358139.tmp") - unlike is_ole_document(), which
+# has a magic-byte fallback for exactly this kind of case (the legacy OLE
+# format), is_zip_based_document() had none, so a wrongly- or un-extension
+# file fell straight through to 7-Zip's generic archive detection and got
+# shredded the same way a plain .xlsx would without item 45's fix at all.
+# Confirmed via unpack.log: two "Extracted: .../5358139.tmp -> ..." and
+# "Extracted: .../ED5F5777.tmp -> ..." lines, each followed by 15+
+# "Not an archive, left/copied as-is" lines for real xl/worksheets/*.xml,
+# [Content_Types].xml, etc. - a genuine spreadsheet, wrongly shredded.
+#
+# Detection: OOXML packages conventionally include a root-level
+# "[Content_Types].xml" entry, and ODF packages are spec-required to
+# include a root-level "mimetype" entry (specifically so tools *can*
+# sniff the format this way) - a plain ZIP archive of arbitrary files
+# essentially never coincidentally contains either by that exact name.
+# Two-stage, cheap first: the ZIP local-file-header signature (four
+# bytes, same cost as is_ole_document()'s own check) skips anything that
+# isn't a zip at all without spawning a process; only for genuine zips
+# does this reach into python3's stdlib zipfile - it reads just the
+# central directory (a fixed-size index at the end of the file), not the
+# archive's actual (potentially huge) content, so this stays cheap
+# regardless of the archive's size. python3 is already a build
+# dependency of this image (msoffcrypto-tool's venv).
+is_ooxml_or_odf_zip() {
+    local sig
+    sig="$(head -c 4 -- "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    [[ "${sig}" == "504b0304" ]] || return 1
+    python3 -c '
+import sys
+import zipfile
+
+try:
+    with zipfile.ZipFile(sys.argv[1]) as zf:
+        names = zf.namelist()
+except Exception:
+    sys.exit(1)
+sys.exit(0 if ("[Content_Types].xml" in names or "mimetype" in names) else 1)
+' "$1" 2>/dev/null
 }
 
 # A real, otherwise perfectly valid PDF can still trip 7-Zip's generic
@@ -616,12 +662,13 @@ process_zip_like() {
 
     # Document formats that 7-Zip's generic archive detection would
     # "successfully" tear apart instead of leaving whole for Tika's real
-    # parsers at ingest time - see is_ole_document()/is_zip_based_document()
-    # above for why, and why this is a real content-loss bug rather than
-    # cosmetic. Skip 7-Zip entirely for both and fall straight into the same
-    # not-archive/copy path used below for anything 7-Zip itself reports as
-    # not an archive.
-    if is_ole_document "${path}" || is_zip_based_document "${path}" || is_pdf_document "${path}"; then
+    # parsers at ingest time - see is_ole_document()/is_zip_based_document()/
+    # is_ooxml_or_odf_zip() above for why, and why this is a real
+    # content-loss bug rather than cosmetic. Skip 7-Zip entirely for all of
+    # these and fall straight into the same not-archive/copy path used
+    # below for anything 7-Zip itself reports as not an archive.
+    if is_ole_document "${path}" || is_zip_based_document "${path}" || is_pdf_document "${path}" \
+        || is_ooxml_or_odf_zip "${path}"; then
         EXTRACT_RESULT="not-archive"
         EXTRACT_ERR=""
     elif ! check_archive_safety "${path}" "${dest}"; then
@@ -805,8 +852,8 @@ export -f log read_cfg config_true config_true_default config_int load_passwords
     sanitize_component safe_copy place_sanitized dispose_of_original multivolume_family \
     queue_new_files check_archive_safety maybe_ocr maybe_export_access_tables \
     maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
-    is_pst_like is_ole_document is_zip_based_document is_pdf_document process_zip_like \
-    process_pst apply_known_result worker_entrypoint process_one_file
+    is_pst_like is_ole_document is_zip_based_document is_pdf_document is_ooxml_or_odf_zip \
+    process_zip_like process_pst apply_known_result worker_entrypoint process_one_file
 
 # Extracts one round of files in parallel (up to $PARALLELISM at a time).
 # Files are deduplicated by content (sha256) plus type (.pst vs not, since

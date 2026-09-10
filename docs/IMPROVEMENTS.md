@@ -79,31 +79,6 @@ row-index/security-hardening/real-corpus-verification shape `parse_csv_rows()`/
   doesn't parse dBase at all, it's a wholly different container format, and would need its own
   tool.
 
-### I — Ingest
-
-#### 46. No provenance/lineage tracking - "which download did file.txt inside archive.zip come from?"
-
-Today a document's only location info is `filename` (`resolve_filepath()`), pointing either
-at the sqlite-recorded original name or the literal extracted-tree path
-(`/extracted/files/<parent-sha256>/...`) - which reveals one level of nesting by accident (the
-immediate parent's sha256 as a directory name) but not the full chain back to the original
-download, and isn't a structured, queryable field. Reconstructing "which URL did this ultimately
-come from" today means manually walking `logs/unpack.log`'s `[EXTRACTED] ... -> ...` lines
-backward, sha256 by sha256, then cross-referencing the top-level filename against aria2's own
-download history (`downloader:6800`'s JSON-RPC, or AriaNg) for the URL - aria2 knows the
-URL-per-file association at download time, but nothing persists or threads it forward past
-`deis/download.sh`.
-
-A real fix needs two things: (1) `deis/download.sh` (or `done.sh`) recording url→filename
-before the marker files it already writes are touched, and (2) each extraction step in
-`unpack/start.sh` appending to (rather than starting fresh at) a lineage chain per file -
-`dispatch_round`/`process_zip_like` already know both a file's own sha256 and the sha256 of
-whatever archive it came out of, so the data exists at exactly the right point, it's just
-never written down. Store the chain as a `source_chain` array field
-(`[{url}, {filename, sha256, archive_type}, ...]`) so a document is traceable end-to-end and
-Kibana can filter/aggregate by original download. *Effort: M. Impact: high for "does this leak
-contain X" answers that need to state provenance, not just content.*
-
 ### S — Search
 
 #### 32. Entity extraction - names, organisations, locations (done - see "Already fixed")
@@ -128,13 +103,11 @@ export of a result set as CSV or JSON for reporting back to whoever asked. *Effo
 All of the "analytical power" work is done: PII detection (31), OCR (the highest-value part of
 21), language detection and entity extraction (32), near-duplicate clustering (33) and the CLI.
 So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR leak test) and
-40 (log-ingest scaffolding). The rest of 21 is deferred as speculative, data-dependent future
-work (see item 21 above) rather than queued - it isn't sequenced below. What remains, in order:
+40 (log-ingest scaffolding), and item 10 (unpinned fetches) and 46 (provenance/lineage
+tracking). The rest of 21 is deferred as speculative, data-dependent future work (see item 21
+above) rather than queued. What remains:
 
-1. **10** - the v2ray installer is still fetched unpinned; small, self-contained.
-2. **46** - provenance/lineage tracking (`source_chain`). Flagged *Impact: high* in its own
-    write-up but had been missing from this list entirely until now.
-3. **36** - result quality (highlighted snippets, a saved search per entity type, CSV/JSON
+1. **36** - result quality (highlighted snippets, a saved search per entity type, CSV/JSON
     export of a search result set).
 
 ## Decided, not open
@@ -215,6 +188,7 @@ Recording these so they are not re-litigated later:
 | 41 | Multiple copies of a never-before-seen file could all be uploaded and Tika-parsed before any marker existed | `f228de5` |
 | 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
+| 46 | A document's only location info was `filename`, revealing one level of nesting by accident (the immediate parent archive's sha256 as a directory name) and nothing past that, nor the original download URL - reconstructing provenance meant manually walking `logs/unpack.log` backward. Confirmed the nesting gap doesn't just look incomplete, it genuinely doesn't compound: a nested archive B extracted from A gets a brand-new top-level `/extracted/files/<sha_B>/...` destination, not nested under A, so a grandchild of B has zero path reference to A. Fixed with a right-sized lineage log - one edge per *extracted archive*, not per file inside it (item 45 found single archives expanding into 1000+ files, so per-file would have been needlessly large) - `unpack/start.sh`'s new `record_lineage_edge()`, plus `deis/download.sh`/`deis/done.sh` capturing url→sha256 at the one point both are known (aria2 reports url+path together, but only `done.sh` computes a stable sha256, once the file has survived its own dup-rename). `ingest.py`'s `resolve_source_chain()` walks the two tables at ingest time into a `source_chain` field. Verified with 10 unit tests (including a synthetic 3-level chain, confirming it actually compounds now) plus a real 2-level nested-zip fixture pushed through the actual `dispatch_round`/`process_zip_like` wiring in the live containers end-to-end - the resulting document's `source_chain` correctly showed both hops | `d2cc369` |
 | CLI | Running DEIS meant memorizing docker compose profile incantations and checking four marker-file directories by hand | `065c714` |
 | 45 | unpack's "try extracting it" detection is signature-based, not extension-based, so `.xlsx`/`.docx`/`.pptx`/ODF files (real ZIP archives internally) and legacy `.doc`/`.xls`/`.ppt` (OLE/CFBF, 7-Zip's own "Compound" format) were shredded into internal XML parts or raw property streams instead of reaching Tika whole - found via the "Top folders" dashboard panel showing OOXML-internal folder names, then confirmed against a real corpus: one `.xlsx` became 1029 meaningless documents, one `.xls` extracted to only its two metadata streams with the actual spreadsheet data stream never surviving at all | `4837d32` |
 | 45 (extensionless/mis-extensioned OOXML) | item 45's fix is extension-based, so it left two gaps: Visio's own OOXML formats (`.vsdx` and friends) were simply missing from the list, and a genuine OOXML file saved under a generic name (Office temp/autosave files, e.g. `5358139.tmp`) had no way to be recognized at all, unlike `is_ole_document()`'s existing magic-byte fallback for the legacy OLE format - found live via `logs/unpack.log` from a real import run: 4 real files (2 `.tmp`, 2 `.vsdx`) shredded into 15+ loose internal XML documents each. `is_ooxml_or_odf_zip()` adds a cheap two-stage content check (ZIP signature, then python3's stdlib `zipfile` checking for a root-level `[Content_Types].xml`/`mimetype` entry) - verified against the exact real files this was found from (preserved by `dispose_of_original`) inside the actual container image, plus real `.zip` archives from the corpus confirming ordinary archives are still extracted normally | `558e0e0` |

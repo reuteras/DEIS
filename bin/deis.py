@@ -1412,6 +1412,12 @@ def cmd_reset(_args) -> int:
 # live against the Saved Objects _export API (which requires an explicit
 # type list - passing none is a 400, "Either `type` or `objects` are
 # required") that this list matches what _find already reports exists.
+#
+# canvas-workspace deliberately NOT included, despite _find still
+# reporting it as a registered type: Canvas was deprecated and its type
+# marked non-exportable as of this project's pinned ELASTIC_VERSION
+# (confirmed live - _export 400s with "Trying to export non-exportable
+# type(s): canvas-workspace" even with zero Canvas objects present).
 _KIBANA_EXPORT_TYPES = [
     "index-pattern",
     "search",
@@ -1419,7 +1425,6 @@ _KIBANA_EXPORT_TYPES = [
     "dashboard",
     "lens",
     "map",
-    "canvas-workspace",
     "graph-workspace",
 ]
 

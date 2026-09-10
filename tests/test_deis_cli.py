@@ -301,6 +301,27 @@ class TestManifestMismatches:
         assert deis_module._manifest_mismatches({}, {"unique_sha256": 1}) == []
 
 
+class TestArchiveCommitMismatch:
+    """_archive_commit_mismatch - whether cmd_restore should switch this
+    checkout to the archive's own commit.
+    """
+
+    def test_true_when_commits_differ(self, deis_module):
+        assert deis_module._archive_commit_mismatch("abc123", "def456") is True
+
+    def test_false_when_commits_match(self, deis_module):
+        assert deis_module._archive_commit_mismatch("abc123", "abc123") is False
+
+    def test_false_when_archive_commit_unknown(self, deis_module):
+        assert deis_module._archive_commit_mismatch("unknown", "def456") is False
+
+    def test_false_when_current_commit_empty(self, deis_module):
+        assert deis_module._archive_commit_mismatch("abc123", "") is False
+
+    def test_false_when_archive_commit_missing(self, deis_module):
+        assert deis_module._archive_commit_mismatch("", "def456") is False
+
+
 class TestInitEnvPermissions:
     def test_generated_env_is_not_world_readable(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)

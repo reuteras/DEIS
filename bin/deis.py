@@ -1544,6 +1544,16 @@ def _manifest_mismatches(manifest: dict, live_counts: dict) -> list[str]:
     return mismatches
 
 
+def _archive_commit_mismatch(target_commit: str, current_commit: str) -> bool:
+    """True if the archive's manifest names a real, different commit than
+    the current checkout - i.e. a mismatch worth acting on. Pure, so it's
+    testable without a live git checkout. False for an "unknown"
+    deis_commit (the archive was made outside a git checkout - nothing to
+    switch to) or an empty current_commit (git itself unavailable here).
+    """
+    return bool(current_commit and target_commit and target_commit not in ("unknown", current_commit))
+
+
 def cmd_archive(args) -> int:
     """Archives everything needed to reopen this case later, fully
     queryable in Kibana again, without depending on re-running the
@@ -1673,6 +1683,14 @@ def cmd_restore(args) -> int:
     separate `deis init` needed first - not obviously non-destructive
     against an instance that already has other state, though, so this
     uses the same confirmation gate cmd_clean/cmd_reset do.
+
+    Also switches this checkout to the commit that wrote the archive
+    (detached HEAD) when it differs and the tree is clean - the restored
+    data's shape (mappings, source_chain, row-index fields) depends on
+    that code version, so running later code against it is a real
+    correctness risk, not just a cosmetic mismatch. Left alone (with a
+    warning instead) on a dirty tree: switching commits out from under
+    uncommitted changes isn't this feature's call to make.
     """
     source: Path = args.source
     manifest_path = source / "manifest.json"
@@ -1682,20 +1700,57 @@ def cmd_restore(args) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     console.print(f"Archive from {manifest.get('archived_at', '?')}, DEIS commit {manifest.get('deis_commit', '?')}.")
+    target_commit = manifest.get("deis_commit", "")
     current_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
     ).stdout.strip()
-    if current_commit and manifest.get("deis_commit") not in (current_commit, "unknown"):
-        console.print(
-            "[yellow]This checkout is at a different commit than when the archive was made - "
-            "the restored data's shape (mappings, source_chain, row-index fields) depends on "
-            "the code version that wrote it.[/yellow]"
+    switch_commit = _archive_commit_mismatch(target_commit, current_commit)
+    # Only auto-switch on a clean tree - git checkout itself refuses to
+    # clobber a conflicting uncommitted change, but a *non*-conflicting one
+    # would silently ride along onto the archive's commit, which isn't
+    # this feature's call to make. Checked once here (not inside the
+    # switch itself, after confirmation) so the warning already reflects
+    # what is about to happen.
+    tree_is_dirty = False
+    if switch_commit:
+        tree_is_dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+            ).stdout.strip()
         )
+        if tree_is_dirty:
+            console.print(
+                "[yellow]This checkout is at a different commit than when the archive was made, and has "
+                "uncommitted changes - NOT switching automatically. The restored data's shape (mappings, "
+                "source_chain, row-index fields) depends on the code version that wrote it; commit or stash "
+                f"your changes and run `git checkout {target_commit}` yourself if that matters here.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[yellow]This checkout is at a different commit than when the archive was made - will "
+                f"switch to {target_commit} (detached HEAD) before restoring.[/yellow]"
+            )
 
     console.print("[red]This will load container images and write into extracted/, status/, and Elasticsearch.[/red]")
     if input("Type 'yes' to continue: ").strip().lower() != "yes":
         console.print("Aborted.")
         return 1
+
+    if switch_commit and not tree_is_dirty:
+        console.print(f"Checking out DEIS commit {target_commit}...")
+        checkout = subprocess.run(
+            ["git", "checkout", target_commit], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+        )
+        if checkout.returncode != 0:
+            console.print(
+                f"[yellow]Could not check out {target_commit}: {checkout.stderr.strip()} - "
+                "continuing on the current commit.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[green]Checked out {target_commit} (detached HEAD - `git checkout <branch>` returns to "
+                "your branch afterward). Run `just venv` first if this commit's dependencies differ.[/green]"
+            )
 
     images_tar = source / "images.tar"
     if images_tar.is_file():

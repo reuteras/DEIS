@@ -49,22 +49,6 @@ the last run's breakdown; the ingest summary prints most of it at the end of eve
 
 ## Open items
 
-### D — Download
-
-#### 10. Unpinned third-party code fetched at image build (partly fixed)
-
-`creatorrc.py` and `guard_country_resolver.py` are now vendored into `downloader/creatorrc/`
-rather than fetched over HTTPS from GitHub at every build, with source commit, license and
-sha256 recorded in `downloader/creatorrc/VENDORED.md`. `unpack/install.sh` still fetches
-7-Zip fresh at build time — a real binary, not practical to vendor into git — but the
-download is now checked against a sha256 recorded in `unpack/VENDORED.md`, and the build
-fails rather than continuing on a mismatch; verified with a deliberately wrong hash. 7-Zip
-was also bumped from 23.01 to 26.03 in the same change.
-
-Still open: v2ray itself is installed by `downloader/install-release.sh`, a fetched script
-that verifies its download only against a digest pulled from the same host it downloaded
-from — that has not been touched. *Effort: M.*
-
 ### E — Extract
 
 #### 21. More extractors (OCR, email beyond PST, MS Access table export, password-cracking for individually-encrypted documents, and `.csv`/`.xlsx` as rows done - see "Already fixed"; the rest is speculative, data-dependent future work - not queued)
@@ -198,6 +182,7 @@ Recording these so they are not re-litigated later:
 | 7 | `.env` held the passwords but was tracked by git | `92297dd` |
 | 8 | `addurl.sh` built JSON by string interpolation, so a URL containing a quote failed silently | `5ce18cc` |
 | 9 | `TORSERVNUM` was set but read by nothing, so it never changed the number of TOR circuits | `5e5232c` |
+| 10 | Two problems in `downloader/install-release.sh`'s v2ray installer, on top of `creatorrc.py`/`guard_country_resolver.py` already being vendored (`downloader/creatorrc/VENDORED.md`) and 7-Zip already being checksummed (`unpack/VENDORED.md`, `c80f15c`): it verified its download only against a `.dgst` checksum fetched from the very same GitHub release, no protection against a compromised/MITM'd download at all - and, worse, the function that did even that weak check, `verification_v2ray()`, was defined but never actually called from `main()`, so v2ray was being installed with zero integrity checking of any kind. Now pinned to a specific version (`v5.53.0`) with a real sha256 recorded in `downloader/VENDORED.md` for each architecture this project's builds actually target (x86_64/aarch64), verified end-to-end against the real GitHub release (downloaded independently, hashed directly, cross-checked against the published `.dgst`) and confirmed live: `docker compose build downloader` succeeds and the resulting container runs a working `v2ray 5.53.0` | `5397c4d` |
 | 11 | Clearnet routing policy was accidental rather than decided | `5ce18cc` |
 | 13 | The move from `downloader/data` to `files` had no collision handling, no success check, and never retried | `95fd325` |
 | 14 | Extraction was two fixed passes, so archives nested three or more levels deep were found only by accident | `996f479` |
@@ -250,10 +235,6 @@ response, and `_bulk` answers 200 OK even when every item in it failed, so `pii-
 into an HTML widget unescaped. Item 33's clustering counts were re-measured after the
 fingerprint fix; documents with no alphabetic words are now reported as skipped instead
 of being grouped together, which is where most of the earlier inflation came from.
-
-Item 10 is only partly fixed — `creatorrc.py` and `guard_country_resolver.py` are vendored
-and 7-Zip is checksummed (`c80f15c`), but the v2ray installer is still fetched unpinned. See
-item 10 above for what remains.
 
 Item 11 was resolved as a deliberate decision, worth recording: **`.onion` goes through TOR
 because nothing else resolves it, and everything else is fetched directly**, because the

@@ -1885,40 +1885,49 @@ def cmd_restore(args) -> int:
     kibana_export = source / "kibana-export.ndjson"
     if kibana_export.is_file():
         console.print("Importing Kibana saved objects...")
-        for _ in range(60):
-            try:
-                urllib.request.urlopen(KIBANA_URL, timeout=5)
-                break
-            except ES_REQUEST_ERRORS:
-                time.sleep(5)
         password = elastic_password()
         # Shells out to curl rather than hand-building the multipart/
         # form-data body via urllib - setup/entrypoint.sh already makes
         # this exact call this way (its own _import of the baked-in
         # export.ndjson), a real, working reference rather than a
         # hand-rolled encoding this project has no other use for.
-        result = subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                "-X",
-                "POST",
-                f"http://elastic:{password}@127.0.0.1:5601/api/saved_objects/_import?overwrite=true",
-                "-H",
-                "kbn-xsrf: true",
-                "--form",
-                f"file=@{kibana_export}",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.stdout.strip() != "200":
-            console.print(f"[yellow]Kibana import returned HTTP {result.stdout.strip()!r} - check manually.[/yellow]")
+        #
+        # Retries the *import itself*, not a separate "is Kibana up"
+        # probe - confirmed live: a plain GET against KIBANA_URL returns
+        # 200 (Kibana serves its app shell) well before the saved-objects
+        # backend is actually ready to accept one, so that probe was a
+        # false-positive readiness signal - the import silently failed
+        # once, with no retry, and this ended with an empty Kibana (0
+        # saved objects, despite Elasticsearch's own data restoring
+        # completely correctly) and no obvious error to explain why.
+        status = ""
+        for _ in range(60):
+            result = subprocess.run(
+                [
+                    "curl",
+                    "-s",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    "-X",
+                    "POST",
+                    f"http://elastic:{password}@127.0.0.1:5601/api/saved_objects/_import?overwrite=true",
+                    "-H",
+                    "kbn-xsrf: true",
+                    "--form",
+                    f"file=@{kibana_export}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            status = result.stdout.strip()
+            if status == "200":
+                break
+            time.sleep(5)
+        if status != "200":
+            console.print(f"[yellow]Kibana import returned HTTP {status!r} - check manually.[/yellow]")
 
     live_counts = {
         "unique_sha256": count_files(REPO_ROOT / "extracted" / "sha256", exclude=set()),

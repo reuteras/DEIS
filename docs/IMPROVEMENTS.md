@@ -93,22 +93,14 @@ outside this project's docker-compose pattern). Raised explicitly rather than pi
 unilaterally, per this project's minimize-dependencies posture - spaCy was chosen. See
 "Already fixed" below for the implementation and real-corpus verification.
 
-#### 36. Result quality
-
-Highlighted snippets rather than raw content, a saved search per detected entity type, and
-export of a result set as CSV or JSON for reporting back to whoever asked. *Effort: M.*
-
 ## Suggested sequencing
 
-All of the "analytical power" work is done: PII detection (31), OCR (the highest-value part of
-21), language detection and entity extraction (32), near-duplicate clustering (33) and the CLI.
-So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR leak test) and
-40 (log-ingest scaffolding), and item 10 (unpinned fetches) and 46 (provenance/lineage
-tracking). The rest of 21 is deferred as speculative, data-dependent future work (see item 21
-above) rather than queued. What remains:
-
-1. **36** - result quality (highlighted snippets, a saved search per entity type, CSV/JSON
-    export of a search result set).
+Every actionable item in this backlog is done: PII detection (31), OCR (the highest-value part
+of 21), language detection and entity extraction (32), near-duplicate clustering (33), the CLI,
+42 (preflight TOR leak test), 40 (log-ingest scaffolding), 10 (unpinned fetches), 46
+(provenance/lineage tracking), and 36 (result quality). What's left in "Open items" above (the
+rest of 21) is deliberately deferred as speculative, data-dependent future work, not queued -
+see item 21's own write-up for why, and what to check before picking any of it up.
 
 ## Decided, not open
 
@@ -189,6 +181,7 @@ Recording these so they are not re-litigated later:
 | 43 | `web` and `ingest.py` kept two independent, unsynchronized sha256 symlink trees | `c8b0f59` |
 | 44 | `creatorrc.py` failed on every start, so TOR ran on stock defaults and the guard tuning was never applied | `014be0f` |
 | 46 | A document's only location info was `filename`, revealing one level of nesting by accident (the immediate parent archive's sha256 as a directory name) and nothing past that, nor the original download URL - reconstructing provenance meant manually walking `logs/unpack.log` backward. Confirmed the nesting gap doesn't just look incomplete, it genuinely doesn't compound: a nested archive B extracted from A gets a brand-new top-level `/extracted/files/<sha_B>/...` destination, not nested under A, so a grandchild of B has zero path reference to A. Fixed with a right-sized lineage log - one edge per *extracted archive*, not per file inside it (item 45 found single archives expanding into 1000+ files, so per-file would have been needlessly large) - `unpack/start.sh`'s new `record_lineage_edge()`, plus `deis/download.sh`/`deis/done.sh` capturing url→sha256 at the one point both are known (aria2 reports url+path together, but only `done.sh` computes a stable sha256, once the file has survived its own dup-rename). `ingest.py`'s `resolve_source_chain()` walks the two tables at ingest time into a `source_chain` field. Verified with 10 unit tests (including a synthetic 3-level chain, confirming it actually compounds now) plus a real 2-level nested-zip fixture pushed through the actual `dispatch_round`/`process_zip_like` wiring in the live containers end-to-end - the resulting document's `source_chain` correctly showed both hops | `d2cc369` |
+| 36 | `deis search` returned a bare filename/link list, no content preview - and a scan's own findings (`pii-report`/`entity-report`, item 31/32 follow-ups) had no equivalent for arbitrary free-text search results. `cmd_search` now requests Elasticsearch's own `highlight` API against `attachment.content` (the only field it ever queries) and shows a snippet per hit - bolded in the terminal table (rich markup, with a real document's own literal `[` escaped first so it can't be misread as a style tag), plain-text in `--output <file>.csv` (the same scroll-everything CSV export shape as `pii-report`/`entity-report`, `filename`/`sha256`/`snippet`/`link`). Also added the "saved search per detected entity type" half: three new Kibana searches (persons/organizations/locations) alongside the existing combined "Documents with named entities" one. Verified live against the real corpus (5,797 real hits for a real search term, CSV row count matching the printed total exactly) plus 5 new unit tests for the snippet-formatting helpers | `a6aa37e` |
 | CLI | Running DEIS meant memorizing docker compose profile incantations and checking four marker-file directories by hand | `065c714` |
 | 45 | unpack's "try extracting it" detection is signature-based, not extension-based, so `.xlsx`/`.docx`/`.pptx`/ODF files (real ZIP archives internally) and legacy `.doc`/`.xls`/`.ppt` (OLE/CFBF, 7-Zip's own "Compound" format) were shredded into internal XML parts or raw property streams instead of reaching Tika whole - found via the "Top folders" dashboard panel showing OOXML-internal folder names, then confirmed against a real corpus: one `.xlsx` became 1029 meaningless documents, one `.xls` extracted to only its two metadata streams with the actual spreadsheet data stream never surviving at all | `4837d32` |
 | 45 (extensionless/mis-extensioned OOXML) | item 45's fix is extension-based, so it left two gaps: Visio's own OOXML formats (`.vsdx` and friends) were simply missing from the list, and a genuine OOXML file saved under a generic name (Office temp/autosave files, e.g. `5358139.tmp`) had no way to be recognized at all, unlike `is_ole_document()`'s existing magic-byte fallback for the legacy OLE format - found live via `logs/unpack.log` from a real import run: 4 real files (2 `.tmp`, 2 `.vsdx`) shredded into 15+ loose internal XML documents each. `is_ooxml_or_odf_zip()` adds a cheap two-stage content check (ZIP signature, then python3's stdlib `zipfile` checking for a root-level `[Content_Types].xml`/`mimetype` entry) - verified against the exact real files this was found from (preserved by `dispose_of_original`) inside the actual container image, plus real `.zip` archives from the corpus confirming ordinary archives are still extracted normally | `558e0e0` |

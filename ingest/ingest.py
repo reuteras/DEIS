@@ -5,11 +5,14 @@ import base64
 import configparser
 import csv
 import hashlib
+import io
 import json
 import os
 import sqlite3
 import sys
 import time
+import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
@@ -32,12 +35,13 @@ INDEX = "leakdata-index-000001"
 # below were previously only visible in the container's own stdout).
 RUNS_INDEX = "deis-ingest-runs"
 # Separate from INDEX for the same reason RUNS_INDEX is: item 21's
-# structured-data-as-rows piece, .csv only for now. One document per CSV
-# row rather than one flattened text blob per file - see parse_csv_rows()
-# and build_rows_bulk_body(). Its own index (rather than a field on the
-# file's own document) because a single CSV can have thousands of rows,
-# and "leakdata-rows-*" already matches the existing Kibana index
-# pattern's "leakdata-*" title, so no new one was needed there.
+# structured-data-as-rows piece, .csv and .xlsx so far. One document per
+# row rather than one flattened text blob per file - see parse_csv_rows(),
+# parse_xlsx_rows(), and build_rows_bulk_body(). Its own index (rather
+# than a field on the file's own document) because a single source file
+# can have thousands of rows, and "leakdata-rows-*" already matches the
+# existing Kibana index pattern's "leakdata-*" title, so no new one was
+# needed there.
 ROW_INDEX = "leakdata-rows-000001"
 # Keep individual _bulk requests to a sane size - standard Elasticsearch
 # guidance is a handful of MB per request, not so large that one slow/huge
@@ -276,6 +280,253 @@ def parse_csv_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
         return [], {"error": repr(error)}
 
 
+# item 21's .xlsx row-parsing (see parse_xlsx_rows below) is stdlib-only -
+# zipfile + xml.etree.ElementTree, not openpyxl - per this project's
+# minimize-dependencies posture: the actual need (cell values only, no
+# styles/formulas/charts) doesn't justify a real dependency with its own
+# transitive deps for what's achievable directly against the OOXML zip.
+
+# Decompression-bomb guards for a single XML part (worksheet/sharedStrings)
+# - the whole file is already bounded by ingest.py's own max_size before
+# prepare_file ever reads it, but nothing else bounds how large one part
+# inflates to, and unpack's own archive-bomb guards (item 18) never see
+# inside a .xlsx - item 45 deliberately leaves it whole, not extracted, so
+# this is the first place its internal structure gets touched. Two checks,
+# mirroring item 18's own check_archive_safety() rather than inventing a
+# new approach: a compression-ratio cap (the real defense - genuine
+# spreadsheet XML, even heavy on repeated/formatted cells, doesn't compress
+# anywhere near this; a deliberate bomb does) and a generous absolute
+# backstop regardless of ratio. The first cut of this used a 100MB absolute
+# cap alone, with no ratio check - live verification against this corpus's
+# real .xlsx files found two legitimate payroll/timesheet reconciliation
+# workbooks with a 107MB and 151MB worksheet part (heavy real formatting/
+# formula-cache bloat, ordinary spreadsheets, not hostile), both wrongly
+# rejected. Raised to match item 18's own max_extract_bytes/
+# max_compression_ratio defaults in spirit instead of guessing again.
+_XLSX_MAX_PART_BYTES = 1024 * 1024 * 1024  # 1 GiB
+_XLSX_MAX_COMPRESSION_RATIO = 200  # uncompressed:compressed, same as item 18's default
+# The fixed namespace URI OOXML uses for the "r:id" attribute on
+# <sheet>/<c> etc. elements - a spec-defined constant, not something a
+# workbook's own "r:" prefix choice can change (ElementTree resolves
+# namespace prefixes to URIs, so the attribute key it hands back is always
+# this URI regardless of source prefix).
+_XLSX_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def _xlsx_local_tag(elem) -> str:
+    """Strips the OOXML namespace prefix ElementTree keeps on every tag
+    (e.g. "{http://...}sheet" -> "sheet") so parsing code below can match
+    by plain tag name without hardcoding every namespace URI involved.
+    """
+    return elem.tag.rsplit("}", 1)[-1]
+
+
+def _xlsx_children(elem, local_name):
+    """Direct children of `elem` matching `local_name`, namespace-agnostic
+    (see _xlsx_local_tag) - deliberately not elem.iter(), which would also
+    match nested occurrences several levels down and isn't what any
+    caller below wants (a <row>'s <c> children, an <si>'s <t>/<r>
+    children, etc. are always exactly one level deep in real OOXML).
+    """
+    return [child for child in elem if _xlsx_local_tag(child) == local_name]
+
+
+def _xlsx_parse_xml_part(data: bytes) -> ET.Element:
+    """Parses one OOXML XML part, rejecting anything with a DOCTYPE/ENTITY
+    declaration first. Genuine Excel-produced XML never has one;
+    xml.etree.ElementTree is safe against *external* entity expansion by
+    default (per Python's own XML vulnerability notes) but does expand
+    *internal* ones, so a hostile crafted part could otherwise cause a
+    memory blowup ("billion laughs") despite that. A plain substring check
+    is enough here, not a full XML-aware scan: a false positive only means
+    a legitimate-but-unusual part is treated as unparseable, the same
+    graceful "this file's rows didn't parse" outcome as any other parse
+    failure below, never a crash.
+    """
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("XML part contains a DOCTYPE/ENTITY declaration - refusing to parse")
+    # Safe against external entity expansion by default; internal entity
+    # expansion is guarded above. No safer stdlib parser to swap in.
+    return ET.fromstring(data)
+
+
+def _xlsx_read_part(zf: zipfile.ZipFile, name: str) -> bytes | None:
+    """Reads one zip member by name, or None if it doesn't exist (some
+    parts, like sharedStrings.xml, are legitimately optional). Checks the
+    member's own compression ratio and uncompressed size - both known from
+    the zip's central directory, without inflating it - against
+    _XLSX_MAX_COMPRESSION_RATIO/_XLSX_MAX_PART_BYTES first; see those
+    constants' own comment for why these guards exist here.
+    """
+    try:
+        info = zf.getinfo(name)
+    except KeyError:
+        return None
+    if info.file_size > _XLSX_MAX_PART_BYTES:
+        raise ValueError(f"{name} claims {info.file_size} bytes uncompressed - refusing to read")
+    if info.compress_size > 0 and info.file_size / info.compress_size > _XLSX_MAX_COMPRESSION_RATIO:
+        raise ValueError(f"{name} compresses {info.file_size}:{info.compress_size} - refusing to read a likely bomb")
+    return zf.read(name)
+
+
+def _xlsx_shared_strings(zf: zipfile.ZipFile) -> list[str]:
+    """Parses xl/sharedStrings.xml into an index-ordered list of strings -
+    absent entirely for a workbook with no text cells, so a missing part
+    is a normal empty result, not an error.
+    """
+    data = _xlsx_read_part(zf, "xl/sharedStrings.xml")
+    if data is None:
+        return []
+    root = _xlsx_parse_xml_part(data)
+    strings = []
+    for si in _xlsx_children(root, "si"):
+        # Plain <si><t>text</t></si>, or rich text split across runs -
+        # <si><r><t>run</t></r><r><t>run2</t></r></si> - concatenate every
+        # <t> found anywhere under this <si> either way.
+        strings.append("".join(t.text or "" for t in si.iter() if _xlsx_local_tag(t) == "t"))
+    return strings
+
+
+def _xlsx_sheet_targets(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """Returns [(sheet_name, worksheet_part_path), ...] in workbook order,
+    by following xl/workbook.xml's <sheet r:id="rIdN"> through
+    xl/_rels/workbook.xml.rels's rIdN -> Target mapping. Deliberately not
+    assumed to be sheet1.xml/sheet2.xml/... in that order - real Excel
+    output happens to follow that, but nothing in the format guarantees it
+    for a workbook produced by an arbitrary exporter, plausible for a
+    leak-corpus file.
+    """
+    workbook_xml = _xlsx_read_part(zf, "xl/workbook.xml")
+    rels_xml = _xlsx_read_part(zf, "xl/_rels/workbook.xml.rels")
+    if workbook_xml is None or rels_xml is None:
+        raise ValueError("missing xl/workbook.xml or its relationships part")
+
+    rel_target = {}
+    for rel in _xlsx_children(_xlsx_parse_xml_part(rels_xml), "Relationship"):
+        rel_target[rel.get("Id")] = rel.get("Target")
+
+    targets = []
+    for sheets in _xlsx_children(_xlsx_parse_xml_part(workbook_xml), "sheets"):
+        for sheet in _xlsx_children(sheets, "sheet"):
+            target = rel_target.get(sheet.get(_XLSX_REL_NS + "id"))
+            if target is None:
+                continue
+            # Targets are relative to xl/ (e.g. "worksheets/sheet1.xml"),
+            # occasionally already absolute ("/xl/worksheets/...") -
+            # normalize both down to the same relative-to-xl/ shape, then
+            # the actual in-zip path always has "xl/" back on the front.
+            target = target.removeprefix("/xl/")
+            targets.append((sheet.get("name", "Sheet"), f"xl/{target}"))
+    return targets
+
+
+def _xlsx_column_index(cell_ref: str) -> int:
+    """Decodes a cell reference's column letters ("A1" -> 0, "B1" -> 1,
+    "AA1" -> 26, ...) to a 0-based column index. Needed because Excel only
+    emits <c> elements for non-empty cells, so a row's cells can't be
+    aligned by their position in the XML alone - a genuinely empty middle
+    cell (e.g. B1 missing between A1 and C1) must still leave a gap rather
+    than shifting every later column left by one.
+    """
+    index = 0
+    for char in cell_ref:
+        if not char.isalpha():
+            break
+        index = index * 26 + (ord(char.upper()) - ord("A") + 1)
+    return index - 1
+
+
+def _xlsx_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
+    """Resolves one <c> element to its display string. t="s" cells store a
+    shared-string index in <v>; t="inlineStr" cells carry their own text
+    directly in <is><t>; t="b" cells are "0"/"1"; anything else (numeric,
+    or t="str" formula results) is <v> taken literally - dates stay their
+    raw underlying serial number rather than being converted to a calendar
+    date, a documented tradeoff (same spirit as CSV's undetectable
+    header-less case), since resolving Excel's date system correctly needs
+    the workbook's own number-format definitions, out of scope here.
+    """
+    cell_type = cell.get("t")
+    if cell_type == "inlineStr":
+        for is_elem in _xlsx_children(cell, "is"):
+            return "".join(t.text or "" for t in is_elem.iter() if _xlsx_local_tag(t) == "t")
+        return ""
+    v_elems = _xlsx_children(cell, "v")
+    if not v_elems or v_elems[0].text is None:
+        return ""
+    value = v_elems[0].text
+    if cell_type == "s":
+        try:
+            return shared_strings[int(value)]
+        except (ValueError, IndexError):
+            return ""
+    return value
+
+
+def parse_xlsx_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
+    """Parses .xlsx bytes into one {column: value} dict per data row per
+    sheet - mirrors parse_csv_rows's contract and guarantees exactly:
+    never raises (garbage/corrupt/non-.xlsx bytes come back as
+    ([], {"error": ...}) rather than propagating into prepare_file's own
+    outer try/except, which would turn a bad .xlsx into a whole-file
+    FAILED and lose that file's normal blob indexing too); the first row
+    of each sheet is always treated as its header, same documented
+    tradeoff as CSV.
+
+    Each row dict additionally carries "_source_table" set to the sheet
+    name - the one shape CSV never needs, since a workbook can have
+    multiple sheets. row_number (assigned by the caller via enumerate, not
+    here) stays a single sequence across every sheet in the file rather
+    than resetting per sheet, which keeps the existing
+    "<sha256>:<row_number>" _id scheme unique without needing to change it.
+
+    max_rows caps the total across all sheets combined, consistent with
+    csv_max_rows's per-file (not per-table) semantics; past the cap, stops
+    and sets meta["truncated"] = True rather than continuing to parse an
+    unbounded workbook into memory.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            shared_strings = _xlsx_shared_strings(zf)
+            sheet_targets = _xlsx_sheet_targets(zf)
+
+            rows: list[dict] = []
+            truncated = False
+            for sheet_name, part_path in sheet_targets:
+                if truncated:
+                    break
+                sheet_xml = _xlsx_read_part(zf, part_path)
+                if sheet_xml is None:
+                    continue
+                sheet_root = _xlsx_parse_xml_part(sheet_xml)
+                columns = None
+                for sheet_data in _xlsx_children(sheet_root, "sheetData"):
+                    for row_elem in _xlsx_children(sheet_data, "row"):
+                        cells: dict[int, str] = {}
+                        for cell in _xlsx_children(row_elem, "c"):
+                            ref = cell.get("r")
+                            col_index = _xlsx_column_index(ref) if ref else len(cells)
+                            cells[col_index] = _xlsx_cell_value(cell, shared_strings)
+                        if not cells:
+                            continue
+                        ordered = [cells.get(i, "") for i in range(max(cells) + 1)]
+                        if columns is None:
+                            columns = [value.strip() or f"column_{i + 1}" for i, value in enumerate(ordered)]
+                            continue
+                        if len(rows) >= max_rows:
+                            truncated = True
+                            break
+                        row = {
+                            columns[i] if i < len(columns) else f"column_{i + 1}": value
+                            for i, value in enumerate(ordered)
+                        }
+                        row["_source_table"] = sheet_name
+                        rows.append(row)
+            return rows, {"truncated": truncated}
+    except Exception as error:  # noqa: BLE001 - one bad .xlsx must not stop the batch/run
+        return [], {"error": repr(error)}
+
+
 def prepare_file(fname: Path):
     """Hash and read one file, ready for a later bulk request.
 
@@ -287,32 +538,40 @@ def prepare_file(fname: Path):
     whole run.
 
     Blob indexing (the file's full content, via Tika) and row indexing
-    (item 21: .csv only, one document per row) are tracked by two
+    (item 21: .csv/.xlsx so far, one document per row) are tracked by two
     independent markers (see row_hash_link_exists), so a file already
-    blob-indexed by an earlier run - most of the corpus, once csv_rows
-    ships - still gets its rows picked up rather than being silently
-    skipped forever.
+    blob-indexed by an earlier run - most of the corpus, once a given
+    format's row indexing ships - still gets its rows picked up rather
+    than being silently skipped forever.
 
     Returns a dict, always with a "status" key: PRESENT (both already
     indexed, carries "sha256"), FAILED (could not even be hashed, carries
     "error"), "ready" (blob indexing needed, carries "fname", "sha256",
-    "content" bytes, "message", and "rows"/"row_meta" if this is a .csv
-    needing row indexing too), or "ready_rows_only" (blob already indexed,
-    only rows are needed - carries the same keys as "ready" except the
-    blob content is never sent to the file-level index, only used to parse
-    rows).
+    "content" bytes, "message", and "rows"/"row_meta" if this file's
+    extension has row indexing too), or "ready_rows_only" (blob already
+    indexed, only rows are needed - carries the same keys as "ready"
+    except the blob content is never sent to the file-level index, only
+    used to parse rows).
     """
     try:
         sha256 = get_filehash(fname)
         if sha256 is None or len(sha256) != 64:
             return {"status": FAILED, "sha256": None, "error": f"ERROR: Could not get sha256 for file: {fname}"}
 
+        suffix = fname.suffix.lower()
+        if suffix == ".csv":
+            rows_enabled, rows_max, rows_parser = csv_rows_enabled, csv_max_rows, parse_csv_rows
+        elif suffix == ".xlsx":
+            rows_enabled, rows_max, rows_parser = xlsx_rows_enabled, xlsx_max_rows, parse_xlsx_rows
+        else:
+            rows_enabled, rows_max, rows_parser = False, 0, None
+
         blob_needed = not hash_link_exists(sha256)
-        needs_rows = csv_rows_enabled and fname.suffix.lower() == ".csv" and not row_hash_link_exists(sha256)
+        needs_rows = rows_enabled and not row_hash_link_exists(sha256)
         if not blob_needed and not needs_rows:
-            # This content is already indexed (blob and, if it's a .csv,
-            # rows too), by an earlier run or by an identical copy of the
-            # file elsewhere in the tree.
+            # This content is already indexed (blob and, if this file's
+            # extension has row indexing, rows too), by an earlier run or
+            # by an identical copy of the file elsewhere in the tree.
             return {"status": PRESENT, "sha256": sha256}
 
         if fname.stat().st_size > max_size:
@@ -325,7 +584,7 @@ def prepare_file(fname: Path):
 
         rows, row_meta = (None, None)
         if needs_rows:
-            rows, row_meta = parse_csv_rows(content, csv_max_rows) if message == "ok" else ([], {"error": message})
+            rows, row_meta = rows_parser(content, rows_max) if message == "ok" else ([], {"error": message})
     except Exception as error:  # noqa: BLE001 - one bad file must not stop the batch
         return {"status": FAILED, "sha256": None, "error": f"ERROR: Failed to prepare {fname}: {error!r}"}
     return {
@@ -782,6 +1041,8 @@ use_sqlite = cfg.getboolean("ingest", "use_sqlite")
 # unpack/start.sh's config_true_default().
 csv_rows_enabled = cfg.getboolean("ingest", "csv_rows", fallback=True)
 csv_max_rows = cfg.getint("ingest", "csv_max_rows", fallback=50000)
+xlsx_rows_enabled = cfg.getboolean("ingest", "xlsx_rows", fallback=True)
+xlsx_max_rows = cfg.getint("ingest", "xlsx_max_rows", fallback=50000)
 still_encrypted = load_sha256_set("status/still_encrypted.txt")
 still_corrupt = load_sha256_set("status/still_corrupt.txt")
 still_unsafe = load_sha256_set("status/still_unsafe.txt")

@@ -120,7 +120,15 @@ at all) get synthetic-looking column names instead. Exact-match queries
 (`row.Personnummer: "<value>"` in Kibana) are fully reliable; a numeric range query is not -
 `row`'s `flattened` mapping compares values lexicographically as strings, confirmed live
 (`"906"` matches `> "1000"`). Capped at `csv_max_rows` (default 50000) per file, truncation
-logged, never silently dropped. `.xlsx`/SQL dumps/SQLite are not handled yet.
+logged, never silently dropped.
+
+`.xlsx` workbooks get the same treatment (`deis.cfg`'s `xlsx_rows`), parsed stdlib-only
+(`zipfile` + `xml.etree.ElementTree`, not `openpyxl` - see `ingest/ingest.py`'s
+`parse_xlsx_rows`). Same header-first-row rule as `.csv`. A workbook can have several sheets,
+which `.csv` never does - each row carries a `_source_table` field set to the sheet name, so
+`row._source_table: "Sheet1"` filters to one sheet, and `row_number` is one sequence across the
+whole file rather than resetting per sheet. Capped at `xlsx_max_rows` (default 50000) across all
+sheets combined. SQL dumps/SQLite are not handled yet.
 
 ### Search
 

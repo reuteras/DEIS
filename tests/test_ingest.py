@@ -3,8 +3,76 @@ dedup logic item 1 and item 41 depend on being correct, and the
 extraction_status classification item 34 depends on.
 """
 
+import io
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+_SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_REL_TYPE_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def _cell_xml(ref: str, cell_type: str | None, value: str) -> str:
+    if cell_type:
+        return f'<c r="{ref}" t="{cell_type}"><v>{value}</v></c>'
+    return f'<c r="{ref}"><v>{value}</v></c>'
+
+
+def _sheet_xml(rows_xml: str) -> str:
+    return f'<?xml version="1.0"?><worksheet xmlns="{_SPREADSHEET_NS}"><sheetData>{rows_xml}</sheetData></worksheet>'
+
+
+def _build_xlsx(sheet_xml_by_name: dict[str, str], shared_string_entries: list[str] | None = None) -> bytes:
+    """Builds minimal but real .xlsx bytes (a real zip of real OOXML XML
+    parts, not a mock) so tests exercise parse_xlsx_rows against the
+    actual format. `shared_string_entries` are already-wrapped
+    "<si>...</si>" fragments (not plain strings) so a test needing rich
+    text (multiple <r><t> runs per entry) can pass one directly.
+    """
+    sheet_names = list(sheet_xml_by_name)
+    rel_ids = {name: f"rId{i + 1}" for i, name in enumerate(sheet_names)}
+    parts_paths = {name: f"sheet{i + 1}.xml" for i, name in enumerate(sheet_names)}
+
+    sheets_xml = "".join(
+        f'<sheet name="{name}" sheetId="{i + 1}" r:id="{rel_ids[name]}"/>' for i, name in enumerate(sheet_names)
+    )
+    workbook_xml = (
+        f'<?xml version="1.0"?><workbook xmlns="{_SPREADSHEET_NS}" xmlns:r="{_REL_TYPE_NS}">'
+        f"<sheets>{sheets_xml}</sheets></workbook>"
+    )
+    rels_xml = (
+        f'<?xml version="1.0"?><Relationships xmlns="{_PACKAGE_REL_NS}">'
+        + "".join(
+            f'<Relationship Id="{rel_ids[name]}" Type="{_REL_TYPE_NS}/worksheet" '
+            f'Target="worksheets/{parts_paths[name]}"/>'
+            for name in sheet_names
+        )
+        + "</Relationships>"
+    )
+
+    parts = {
+        "xl/workbook.xml": workbook_xml,
+        "xl/_rels/workbook.xml.rels": rels_xml,
+    }
+    for name in sheet_names:
+        parts[f"xl/worksheets/{parts_paths[name]}"] = sheet_xml_by_name[name]
+    if shared_string_entries is not None:
+        items = "".join(shared_string_entries)
+        parts["xl/sharedStrings.xml"] = (
+            f'<?xml version="1.0"?><sst xmlns="{_SPREADSHEET_NS}" '
+            f'count="{len(shared_string_entries)}" uniqueCount="{len(shared_string_entries)}">{items}</sst>'
+        )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for path, data in parts.items():
+            zf.writestr(path, data)
+    return buffer.getvalue()
+
+
+def _si(text: str) -> str:
+    return f"<si><t>{text}</t></si>"
 
 
 class TestGetFilehash:
@@ -222,6 +290,173 @@ class TestPrepareFileCsvBranching:
         f = tmp_path / "extracted" / "files" / "doc.csv"
         f.parent.mkdir(parents=True)
         f.write_text("a,b\n1,2\n")
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready"
+        assert result["rows"] is None
+
+
+class TestParseXlsxRows:
+    def test_single_sheet_with_shared_strings_and_header(self, ingest_module):
+        sheet = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", "s", "0")}{_cell_xml("B1", "s", "1")}</row>'
+            f'<row r="2">{_cell_xml("A2", "s", "2")}{_cell_xml("B2", None, "30")}</row>'
+            f'<row r="3">{_cell_xml("A3", "s", "3")}{_cell_xml("B3", None, "25")}</row>'
+        )
+        content = _build_xlsx(
+            {"Sheet1": sheet}, shared_string_entries=[_si("name"), _si("age"), _si("Alice"), _si("Bob")]
+        )
+        rows, meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert rows == [
+            {"name": "Alice", "age": "30", "_source_table": "Sheet1"},
+            {"name": "Bob", "age": "25", "_source_table": "Sheet1"},
+        ]
+        assert meta["truncated"] is False
+
+    def test_multiple_sheets_tag_source_table_and_stay_sequential(self, ingest_module):
+        sheet1 = _sheet_xml(f'<row r="1">{_cell_xml("A1", "s", "0")}</row><row r="2">{_cell_xml("A2", "s", "1")}</row>')
+        sheet2 = _sheet_xml(f'<row r="1">{_cell_xml("A1", "s", "2")}</row><row r="2">{_cell_xml("A2", "s", "3")}</row>')
+        content = _build_xlsx(
+            {"Sheet1": sheet1, "Sheet2": sheet2},
+            shared_string_entries=[_si("col"), _si("one"), _si("col"), _si("two")],
+        )
+        rows, meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert [r["_source_table"] for r in rows] == ["Sheet1", "Sheet2"]
+        assert [r["col"] for r in rows] == ["one", "two"]
+        assert meta["truncated"] is False
+
+    def test_sparse_row_keeps_columns_aligned(self, ingest_module):
+        # B1/B2 are genuinely absent (Excel omits <c> for empty cells) -
+        # column alignment must come from the "r" attribute, not position.
+        sheet = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", "s", "0")}{_cell_xml("C1", "s", "1")}</row>'
+            f'<row r="2">{_cell_xml("A2", "s", "2")}{_cell_xml("C2", "s", "3")}</row>'
+        )
+        content = _build_xlsx({"Sheet1": sheet}, shared_string_entries=[_si("colA"), _si("colC"), _si("x"), _si("y")])
+        rows, _meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert rows == [{"colA": "x", "column_2": "", "colC": "y", "_source_table": "Sheet1"}]
+
+    def test_rich_text_shared_string_runs_are_concatenated(self, ingest_module):
+        sheet = _sheet_xml(f'<row r="1">{_cell_xml("A1", "s", "0")}</row><row r="2">{_cell_xml("A2", "s", "1")}</row>')
+        content = _build_xlsx(
+            {"Sheet1": sheet},
+            shared_string_entries=["<si><t>header</t></si>", "<si><r><t>Hello</t></r><r><t> World</t></r></si>"],
+        )
+        rows, _meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert rows == [{"header": "Hello World", "_source_table": "Sheet1"}]
+
+    def test_missing_shared_strings_part_is_not_an_error(self, ingest_module):
+        # A workbook with only numeric cells has no xl/sharedStrings.xml
+        # at all - a normal case, not a corrupt file.
+        sheet = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", None, "1")}</row><row r="2">{_cell_xml("A2", None, "42")}</row>'
+        )
+        content = _build_xlsx({"Sheet1": sheet})
+        rows, meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert rows == [{"1": "42", "_source_table": "Sheet1"}]
+        assert "error" not in meta
+
+    def test_truncates_past_max_rows_across_sheets(self, ingest_module):
+        sheet1 = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", None, "h")}</row>'
+            + "".join(f'<row r="{n}">{_cell_xml(f"A{n}", None, str(n))}</row>' for n in range(2, 6))
+        )
+        sheet2 = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", None, "h")}</row>'
+            + "".join(f'<row r="{n}">{_cell_xml(f"A{n}", None, str(n))}</row>' for n in range(2, 6))
+        )
+        content = _build_xlsx({"Sheet1": sheet1, "Sheet2": sheet2})
+        rows, meta = ingest_module.parse_xlsx_rows(content, max_rows=5)
+        assert len(rows) == 5
+        assert meta["truncated"] is True
+
+    def test_not_a_zip_never_raises(self, ingest_module):
+        rows, meta = ingest_module.parse_xlsx_rows(b"not a zip file", max_rows=100)
+        assert rows == []
+        assert "error" in meta
+
+    def test_zip_missing_workbook_xml_never_raises(self, ingest_module):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("unrelated.txt", "nothing useful here")
+        rows, meta = ingest_module.parse_xlsx_rows(buffer.getvalue(), max_rows=100)
+        assert rows == []
+        assert "error" in meta
+
+    def test_doctype_in_a_part_is_rejected_not_expanded(self, ingest_module):
+        hostile_workbook = (
+            f'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "boom">]><workbook xmlns="{_SPREADSHEET_NS}">'
+            "<sheets></sheets></workbook>"
+        )
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("xl/workbook.xml", hostile_workbook)
+            zf.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{_PACKAGE_REL_NS}"></Relationships>')
+        rows, meta = ingest_module.parse_xlsx_rows(buffer.getvalue(), max_rows=100)
+        assert rows == []
+        assert "error" in meta
+
+    def test_part_over_the_size_cap_is_rejected(self, ingest_module, monkeypatch):
+        monkeypatch.setattr(ingest_module, "_XLSX_MAX_PART_BYTES", 10)
+        sheet = _sheet_xml(f'<row r="1">{_cell_xml("A1", None, "1")}</row>')
+        content = _build_xlsx({"Sheet1": sheet})
+        rows, meta = ingest_module.parse_xlsx_rows(content, max_rows=100)
+        assert rows == []
+        assert "error" in meta
+
+
+class TestPrepareFileXlsxBranching:
+    """Mirrors TestPrepareFileCsvBranching - same branching logic, now
+    generalized in prepare_file() to dispatch per-extension.
+    """
+
+    def _xlsx_bytes(self):
+        sheet = _sheet_xml(
+            f'<row r="1">{_cell_xml("A1", "s", "0")}{_cell_xml("B1", "s", "1")}</row>'
+            f'<row r="2">{_cell_xml("A2", "s", "2")}{_cell_xml("B2", None, "1")}</row>'
+        )
+        return _build_xlsx({"Sheet1": sheet}, shared_string_entries=[_si("a"), _si("b"), _si("x")])
+
+    def test_new_xlsx_file_is_ready_with_rows(self, ingest_module, tmp_path):
+        f = tmp_path / "extracted" / "files" / "doc.xlsx"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(self._xlsx_bytes())
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready"
+        assert result["rows"] == [{"a": "x", "b": "1", "_source_table": "Sheet1"}]
+
+    def test_blob_indexed_xlsx_is_ready_rows_only(self, ingest_module, tmp_path):
+        f = tmp_path / "extracted" / "files" / "doc.xlsx"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(self._xlsx_bytes())
+        sha256 = ingest_module.get_filehash(f)
+        ingest_module.create_hash_link(sha256, f)
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == "ready_rows_only"
+        assert result["rows"] == [{"a": "x", "b": "1", "_source_table": "Sheet1"}]
+
+    def test_fully_done_xlsx_is_present(self, ingest_module, tmp_path):
+        f = tmp_path / "extracted" / "files" / "doc.xlsx"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(self._xlsx_bytes())
+        sha256 = ingest_module.get_filehash(f)
+        ingest_module.create_hash_link(sha256, f)
+        ingest_module.create_row_hash_link(sha256, f)
+
+        result = ingest_module.prepare_file(f)
+
+        assert result["status"] == ingest_module.PRESENT
+
+    def test_xlsx_rows_disabled_behaves_like_a_plain_file(self, ingest_module, tmp_path):
+        ingest_module.xlsx_rows_enabled = False
+        f = tmp_path / "extracted" / "files" / "doc.xlsx"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(self._xlsx_bytes())
 
         result = ingest_module.prepare_file(f)
 

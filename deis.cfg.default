@@ -12,14 +12,26 @@ use_sqlite=False
 # Delimiter (comma vs semicolon - Swedish locale exports commonly use ';')
 # and header-row presence are auto-detected per file via csv.Sniffer, never
 # assumed fixed; a genuinely header-less file has its first data row
-# misread as column names, the one undetectable case. .xlsx/SQL dumps/
-# SQLite/dBase are not handled here - see item 21's remaining open bullets.
+# misread as column names, the one undetectable case. SQL dumps/SQLite/
+# dBase are not handled here - see item 21's remaining open bullets;
+# .xlsx has its own xlsx_rows switch just below.
 csv_rows=true
 # Safety cap on rows parsed per CSV file - a hostile or unexpectedly huge
 # CSV should truncate its structured row breakdown, not exhaust worker
 # memory or stall the run. The file's own full-text blob document is
 # unaffected by this cap either way. Truncation is logged, never silent.
 csv_max_rows=50000
+# Same idea as csv_rows, for .xlsx workbooks - each sheet's rows go to the
+# same leakdata-rows-* index, with a "_source_table" field set to the
+# sheet name (a workbook can have several sheets; a CSV never does).
+# Parsed stdlib-only (zipfile + xml.etree.ElementTree, not openpyxl) - see
+# ingest.py's parse_xlsx_rows(). First row of each sheet is always its
+# header, same fixed rule and tradeoff as csv_rows. Legacy .xls (binary
+# OLE, not a zip of XML) isn't handled.
+xlsx_rows=true
+# Safety cap on rows parsed per .xlsx file, across all its sheets combined
+# - same reasoning as csv_max_rows.
+xlsx_max_rows=50000
 [unpack]
 pst=true
 pst_archive=true

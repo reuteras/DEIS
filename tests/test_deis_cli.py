@@ -214,6 +214,63 @@ class TestSearchSnippets:
         assert deis_module._plain_snippet(hit) == "some match here"
 
 
+class TestBuildManifest:
+    """_build_manifest (deis archive/deis restore, case handoff) - pure
+    apart from a best-effort `git rev-parse HEAD` and reading .env for
+    ELASTIC_VERSION.
+    """
+
+    def test_includes_every_passed_in_fact(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / ".env").write_text("ELASTIC_VERSION=9.5.3\n")
+
+        manifest = deis_module._build_manifest(
+            images=["deis-elasticsearch:latest"],
+            missing_images=["deis-kibana:latest"],
+            counts={"unique_sha256": 100, "elasticsearch_documents": 100},
+            repo_name="deis-archive",
+            snapshot_name="snapshot-20260910-120000",
+        )
+
+        assert manifest["images"] == ["deis-elasticsearch:latest"]
+        assert manifest["missing_images"] == ["deis-kibana:latest"]
+        assert manifest["elastic_version"] == "9.5.3"
+        assert manifest["es_repo_name"] == "deis-archive"
+        assert manifest["es_snapshot_name"] == "snapshot-20260910-120000"
+        assert manifest["counts"] == {"unique_sha256": 100, "elasticsearch_documents": 100}
+        assert "archived_at" in manifest
+
+    def test_git_commit_is_unknown_outside_a_repo(self, deis_module, tmp_path, monkeypatch):
+        # tmp_path is never itself a git repo - a real, deterministic way
+        # to exercise the "git rev-parse failed" fallback without mocking
+        # subprocess.
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / ".env").write_text("ELASTIC_VERSION=9.5.3\n")
+
+        manifest = deis_module._build_manifest([], [], {}, "repo", "snap")
+
+        assert manifest["deis_commit"] == "unknown"
+
+
+class TestManifestMismatches:
+    """_manifest_mismatches - a restored instance's live funnel counts vs.
+    what the archive's own manifest recorded, see cmd_restore.
+    """
+
+    def test_no_mismatches_when_counts_match(self, deis_module):
+        manifest = {"counts": {"unique_sha256": 100, "elasticsearch_documents": 100}}
+        live = {"unique_sha256": 100, "elasticsearch_documents": 100}
+        assert deis_module._manifest_mismatches(manifest, live) == []
+
+    def test_reports_each_differing_count(self, deis_module):
+        manifest = {"counts": {"unique_sha256": 100, "elasticsearch_documents": 100}}
+        live = {"unique_sha256": 95, "elasticsearch_documents": 100}
+        assert deis_module._manifest_mismatches(manifest, live) == ["unique_sha256: archived 100, now 95"]
+
+    def test_missing_manifest_counts_key_is_empty_not_an_error(self, deis_module):
+        assert deis_module._manifest_mismatches({}, {"unique_sha256": 1}) == []
+
+
 class TestInitEnvPermissions:
     def test_generated_env_is_not_world_readable(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)

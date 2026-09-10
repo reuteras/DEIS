@@ -315,6 +315,8 @@ bin/deis pii-report      # list what pii-scan already found (see below)
 bin/deis entity-scan     # extract named entities (people/orgs/locations) from indexed content (see below)
 bin/deis entity-report   # list what entity-scan already found (see below)
 bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
+bin/deis archive <dir>   # archive this case for later restore (see below)
+bin/deis restore <dir>   # restore a case archived with 'deis archive'
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
 ```
@@ -351,6 +353,24 @@ too, not just themselves) - pass `--max-distance` to loosen or tighten how simil
 documents need to be (default 10 of 64 bits). Results land in each clustered document's
 `duplicate_cluster` field (the representative member's sha256), and the "Leaked data"
 dashboard has a "Near-duplicate clusters" panel, sorted so each cluster's members sit together.
+
+This project's normal model is one instance per case, with Elasticsearch wiped and the stack
+recreated for the next one - `bin/deis archive <destination>` preserves a fully-processed case
+instead, so it can be reopened later exactly as it was: an Elasticsearch snapshot of
+`leakdata-*`/`deis-ingest-runs` (Elasticsearch's own supported backup mechanism - a raw copy of
+its data volume is explicitly unsupported and unreliable, even with the container stopped),
+every Kibana saved object (not just the fixed set `deis setup` bakes in - any dashboards/
+searches built during analysis too), a `docker save` of every container image this case's
+`docker-compose.yml` uses (so a restore months later doesn't depend on rebuilding from
+Dockerfiles or re-pulling from a registry that may have moved on), and `extracted/`/`status/`
+themselves (the actual files - Elasticsearch only holds Tika-extracted text and metadata, not
+the originals the web viewer opens), and every service's container logs as plain text
+(a reference for later, never read back by `restore`). Deliberately does not archive `.env`'s
+secrets; restoring generates a fresh set via the usual `deis init`. `bin/deis restore <archive>`
+reverses all of
+this on a fresh checkout (`deis init` already run, nothing else started), and reports whether
+the restored funnel counts (unique files, Elasticsearch document count) match what was recorded
+at archive time.
 
 Shell completion for subcommands (and `run --only`'s choices) is available for bash and zsh:
 

@@ -17,8 +17,10 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -72,6 +74,8 @@ SUBCOMMANDS = (
     "entity-scan",
     "entity-report",
     "dedupe-scan",
+    "archive",
+    "restore",
     "clean",
     "reset",
     "completion",
@@ -1141,6 +1145,396 @@ def cmd_reset(_args) -> int:
     )
 
 
+# Saved-object types actually worth preserving - Kibana's own internal/
+# system types (config, telemetry, space, ...) are excluded deliberately:
+# they're this Kibana instance's own state, not analysis content the
+# operator built, and re-importing them into a different (freshly
+# `deis init`'d) instance later could conflict rather than help. Confirmed
+# live against the Saved Objects _export API (which requires an explicit
+# type list - passing none is a 400, "Either `type` or `objects` are
+# required") that this list matches what _find already reports exists.
+_KIBANA_EXPORT_TYPES = [
+    "index-pattern",
+    "search",
+    "visualization",
+    "dashboard",
+    "lens",
+    "map",
+    "canvas-workspace",
+    "graph-workspace",
+]
+
+
+def _kibana_export_all() -> str:
+    """Every Kibana saved object of the types above - not just the fixed
+    set setup/entrypoint.sh's own export.ndjson bakes in - since the
+    operator may have built real dashboards/saved searches during
+    analysis worth keeping. Same Saved Objects API setup/entrypoint.sh
+    already imports from (see its own _import call), used here to export
+    instead.
+    """
+    password = elastic_password()
+    if not password:
+        raise RuntimeError("ELASTIC_PASSWORD is not set (check .env, or run 'deis init').")
+    body = json.dumps({"type": _KIBANA_EXPORT_TYPES}).encode("utf-8")
+    req = urllib.request.Request(KIBANA_URL + "/api/saved_objects/_export", data=body, method="POST")
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode("ascii"))
+    req.add_header("Content-Type", "application/json")
+    req.add_header("kbn-xsrf", "true")
+    with urllib.request.urlopen(req, timeout=120) as response:
+        return response.read().decode("utf-8")
+
+
+def _compose_images(profiles: list[str]) -> list[str]:
+    """The authoritative list of every image docker-compose.yml would use
+    for the given profiles - the same primitive cmd_build's own profile
+    selection already implicitly relies on, not a hand-maintained list
+    that could silently drift from docker-compose.yml itself.
+    """
+    command = ["docker", "compose"]
+    for profile in profiles:
+        command += ["--profile", profile]
+    command += ["config", "--images"]
+    result = subprocess.run(command, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def _save_container_logs(destination: Path) -> None:
+    """One plain-text file per service under `destination` - a reference
+    for later ("what did unpack.sh actually print during this run"), not
+    something `deis restore` ever reads back. `docker compose logs` works
+    against a stopped-but-not-removed container the same as a running
+    one, so this captures one-shot services (setup/unpack/ingest) too,
+    not just the long-running ones. A service with no container at all
+    yet (never started) just gets no file - not an error.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    services = subprocess.run(
+        ["docker", "compose", "--profile", "deis", "--profile", "setup", "config", "--services"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    for service in services:
+        result = subprocess.run(
+            ["docker", "compose", "logs", "--no-color", "--timestamps", service],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.stdout.strip():
+            (destination / f"{service}.log").write_text(result.stdout, encoding="utf-8")
+
+
+def _image_present_locally(image: str) -> bool:
+    """Works for both a tag reference (deis-elasticsearch:latest) and a
+    digest reference (reuteras/container-notebook@sha256:...) - `docker
+    images --format` alone doesn't cleanly match the latter, `docker
+    image inspect` handles both the same way.
+    """
+    return subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False).returncode == 0
+
+
+def _snapshot_state(repo: str, snapshot: str) -> str:
+    response = es_request(f"/_snapshot/{repo}/{snapshot}")
+    snapshots = response.get("snapshots", [])
+    return snapshots[0]["state"] if snapshots else "UNKNOWN"
+
+
+def _build_manifest(
+    images: list[str], missing_images: list[str], counts: dict, repo_name: str, snapshot_name: str
+) -> dict:
+    """Pure - the recorded facts about one archive, used both to write
+    manifest.json (cmd_archive) and to sanity-check a restore against it
+    (see _manifest_mismatches below).
+    """
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return {
+        "archived_at": datetime.now(UTC).isoformat(),
+        "deis_commit": commit or "unknown",
+        "elastic_version": read_env().get("ELASTIC_VERSION", "unknown"),
+        "images": images,
+        "missing_images": missing_images,
+        "es_repo_name": repo_name,
+        "es_snapshot_name": snapshot_name,
+        "counts": counts,
+    }
+
+
+def _manifest_mismatches(manifest: dict, live_counts: dict) -> list[str]:
+    """Compares a restored instance's live funnel counts against what the
+    archive's own manifest recorded at archive time - pure, so it's
+    testable without a live stack. Returns one human-readable line per
+    mismatch, not an exception: worth surfacing loudly, not treating as
+    fatal (the operator may have deliberately added more data since).
+    """
+    mismatches = []
+    for key, archived_value in manifest.get("counts", {}).items():
+        live_value = live_counts.get(key)
+        if live_value != archived_value:
+            mismatches.append(f"{key}: archived {archived_value}, now {live_value}")
+    return mismatches
+
+
+def cmd_archive(args) -> int:
+    """Archives everything needed to reopen this case later, fully
+    queryable in Kibana again, without depending on re-running the
+    pipeline (source URLs may be dead by then, and re-extracting/
+    re-ingesting a large corpus is slow) or on rebuilding/re-pulling the
+    exact same container versions later (a floating base image or an
+    upstream release change could silently produce a different result -
+    same reasoning as unpack/VENDORED.md's and downloader/VENDORED.md's
+    own pinning).
+
+    Uses Elasticsearch's own snapshot API, not a raw copy of the
+    "elasticsearch" Docker volume - verified directly against Elastic's
+    own documentation before choosing this: "You cannot back up an
+    Elasticsearch cluster by making copies of the data directories of its
+    nodes... You cannot fix this by shutting down nodes while making the
+    copies... because Elasticsearch has consistency requirements that
+    span the whole cluster." A volume copy is not a supported or reliable
+    backup method even with the container stopped first.
+
+    Also saves every service's container logs as plain text
+    (container-logs/<service>.log) - a reference for later, not something
+    `deis restore` ever reads back.
+
+    Deliberately does not archive .env (ELASTIC_PASSWORD/JUPYTER_TOKEN/
+    RPCSECRET) - restoring only ever needs a *fresh* `deis init` on the
+    target machine (a restored snapshot's indices carry no security-realm
+    data from the original cluster, so a new password works fine), and an
+    archive destined for possibly-offline/external storage shouldn't
+    carry live credentials for a stack that might still be running
+    elsewhere.
+    """
+    destination: Path = args.destination
+    destination.mkdir(parents=True, exist_ok=True)
+
+    try:
+        health = es_request("/_cluster/health")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Elasticsearch is not reachable: {error}[/red]")
+        return 1
+    console.print(f"Elasticsearch reachable (status: {health.get('status', 'unknown')}).")
+
+    repo_name = "deis-archive"
+    snapshot_name = f"snapshot-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+
+    console.print(f"Registering snapshot repository {repo_name!r}...")
+    try:
+        es_request(f"/_snapshot/{repo_name}", method="PUT", body={"type": "fs", "settings": {"location": repo_name}})
+
+        console.print(f"Taking snapshot {snapshot_name!r} (leakdata-*, {RUNS_INDEX})...")
+        es_request(
+            f"/_snapshot/{repo_name}/{snapshot_name}",
+            method="PUT",
+            body={"indices": f"leakdata-*,{RUNS_INDEX}", "include_global_state": False},
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Could not start the snapshot: {error}[/red]")
+        return 1
+
+    console.print("Waiting for the snapshot to complete (this can take a while on a large corpus)...")
+    while True:
+        try:
+            state = _snapshot_state(repo_name, snapshot_name)
+        except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+            console.print(f"[red]Could not check snapshot status: {error}[/red]")
+            return 1
+        if state == "SUCCESS":
+            console.print("Snapshot complete.")
+            break
+        if state in ("FAILED", "PARTIAL", "UNKNOWN"):
+            console.print(f"[red]Snapshot ended in state {state!r} - aborting.[/red]")
+            return 1
+        time.sleep(5)
+
+    console.print("Exporting Kibana saved objects...")
+    try:
+        (destination / "kibana-export.ndjson").write_text(_kibana_export_all(), encoding="utf-8")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[yellow]Could not export Kibana saved objects: {error} - continuing without them.[/yellow]")
+
+    console.print("Saving container logs...")
+    _save_container_logs(destination / "container-logs")
+
+    console.print("Saving container images (this can take a while)...")
+    images = _compose_images(["deis", "setup"])
+    to_save = [image for image in images if _image_present_locally(image)]
+    missing = [image for image in images if image not in to_save]
+    if missing:
+        console.print(f"[yellow]Not present locally, skipping (run 'deis build' first?): {', '.join(missing)}[/yellow]")
+    if to_save:
+        subprocess.run(["docker", "save", *to_save, "-o", str(destination / "images.tar")], check=True)
+
+    console.print("Archiving extracted/ and status/ (this can take a while)...")
+    subprocess.run(["tar", "-cf", str(destination / "extracted.tar"), "extracted", "status"], cwd=REPO_ROOT, check=True)
+
+    shutil.copyfile(REPO_ROOT / "deis.cfg", destination / "deis.cfg")
+
+    console.print("Copying the Elasticsearch snapshot repository...")
+    shutil.copytree(REPO_ROOT / "archive" / "es-repo" / repo_name, destination / "es-repo", dirs_exist_ok=True)
+
+    counts = {
+        "unique_sha256": count_files(REPO_ROOT / "extracted" / "sha256", exclude=set()),
+        "elasticsearch_documents": es_request(f"/{INDEX}/_count").get("count", 0),
+    }
+    manifest = _build_manifest(images, missing, counts, repo_name, snapshot_name)
+    (destination / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    console.print(f"[green]Archive complete: {destination}[/green]")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    """Restores an archive written by `deis archive` - see cmd_archive's
+    own docstring for what is (and deliberately is not) captured. Assumes
+    a fresh checkout: `deis init` already run (.env/deis.cfg exist),
+    nothing else started yet - not obviously non-destructive against an
+    instance that already has other state, so this uses the same
+    confirmation gate cmd_clean/cmd_reset do.
+    """
+    source: Path = args.source
+    manifest_path = source / "manifest.json"
+    if not manifest_path.is_file():
+        console.print(f"[red]{manifest_path} not found - is {source} a real 'deis archive' output?[/red]")
+        return 1
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    console.print(f"Archive from {manifest.get('archived_at', '?')}, DEIS commit {manifest.get('deis_commit', '?')}.")
+    current_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if current_commit and manifest.get("deis_commit") not in (current_commit, "unknown"):
+        console.print(
+            "[yellow]This checkout is at a different commit than when the archive was made - "
+            "the restored data's shape (mappings, source_chain, row-index fields) depends on "
+            "the code version that wrote it.[/yellow]"
+        )
+
+    console.print("[red]This will load container images and write into extracted/, status/, and Elasticsearch.[/red]")
+    if input("Type 'yes' to continue: ").strip().lower() != "yes":
+        console.print("Aborted.")
+        return 1
+
+    images_tar = source / "images.tar"
+    if images_tar.is_file():
+        console.print("Loading container images...")
+        subprocess.run(["docker", "load", "-i", str(images_tar)], check=True)
+    else:
+        console.print("[yellow]No images.tar in the archive - skipping (nothing was saved at archive time).[/yellow]")
+
+    console.print("Extracting extracted/ and status/...")
+    subprocess.run(["tar", "-xf", str(source / "extracted.tar")], cwd=REPO_ROOT, check=True)
+
+    cfg_path = REPO_ROOT / "deis.cfg"
+    archived_cfg = source / "deis.cfg"
+    if archived_cfg.is_file():
+        if cfg_path.exists():
+            console.print("[yellow]deis.cfg already exists - leaving it alone (archive's copy not applied).[/yellow]")
+        else:
+            shutil.copyfile(archived_cfg, cfg_path)
+
+    repo_name = manifest.get("es_repo_name", "deis-archive")
+    snapshot_name = manifest.get("es_snapshot_name")
+    if not snapshot_name:
+        console.print("[red]manifest.json has no es_snapshot_name - cannot restore Elasticsearch data.[/red]")
+        return 1
+    es_repo_dest = REPO_ROOT / "archive" / "es-repo" / repo_name
+    es_repo_dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source / "es-repo", es_repo_dest, dirs_exist_ok=True)
+
+    console.print("Starting Elasticsearch...")
+    subprocess.run(["docker", "compose", "up", "-d", "elasticsearch"], cwd=REPO_ROOT, check=True)
+    console.print("Waiting for Elasticsearch to become reachable...")
+    for _ in range(60):
+        try:
+            if es_request("/_cluster/health").get("status") in ("yellow", "green"):
+                break
+        except (RuntimeError, urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(5)
+    else:
+        console.print("[red]Elasticsearch did not become reachable in time.[/red]")
+        return 1
+
+    console.print(f"Registering snapshot repository {repo_name!r}...")
+    es_request(f"/_snapshot/{repo_name}", method="PUT", body={"type": "fs", "settings": {"location": repo_name}})
+
+    console.print(f"Restoring snapshot {snapshot_name!r}...")
+    es_request(f"/_snapshot/{repo_name}/{snapshot_name}/_restore", method="POST", body={"include_global_state": False})
+    while True:
+        try:
+            response = es_request(f"/{INDEX}/_recovery")
+        except (RuntimeError, urllib.error.URLError, TimeoutError):
+            response = {}
+        if response and all(
+            shard.get("stage") == "DONE" for index in response.values() for shard in index.get("shards", [])
+        ):
+            break
+        time.sleep(5)
+    console.print("Restore complete.")
+
+    console.print("Starting Kibana...")
+    subprocess.run(["docker", "compose", "up", "-d", "kibana"], cwd=REPO_ROOT, check=True)
+    kibana_export = source / "kibana-export.ndjson"
+    if kibana_export.is_file():
+        console.print("Importing Kibana saved objects...")
+        for _ in range(60):
+            try:
+                urllib.request.urlopen(KIBANA_URL, timeout=5)
+                break
+            except (urllib.error.URLError, TimeoutError):
+                time.sleep(5)
+        password = elastic_password()
+        # Shells out to curl rather than hand-building the multipart/
+        # form-data body via urllib - setup/entrypoint.sh already makes
+        # this exact call this way (its own _import of the baked-in
+        # export.ndjson), a real, working reference rather than a
+        # hand-rolled encoding this project has no other use for.
+        result = subprocess.run(
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "-X",
+                "POST",
+                f"http://elastic:{password}@127.0.0.1:5601/api/saved_objects/_import?overwrite=true",
+                "-H",
+                "kbn-xsrf: true",
+                "--form",
+                f"file=@{kibana_export}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.stdout.strip() != "200":
+            console.print(f"[yellow]Kibana import returned HTTP {result.stdout.strip()!r} - check manually.[/yellow]")
+
+    live_counts = {
+        "unique_sha256": count_files(REPO_ROOT / "extracted" / "sha256", exclude=set()),
+        "elasticsearch_documents": es_request(f"/{INDEX}/_count").get("count", 0),
+    }
+    mismatches = _manifest_mismatches(manifest, live_counts)
+    if mismatches:
+        console.print("[yellow]Funnel counts differ from the archive's manifest:[/yellow]")
+        for line in mismatches:
+            console.print(f"  [yellow]{line}[/yellow]")
+    else:
+        console.print("[green]Funnel counts match the archive's manifest.[/green]")
+
+    console.print("[green]Restore complete.[/green]")
+    return 0
+
+
 def _bash_completion_script() -> str:
     """A hand-written completion function, not argcomplete-generated: the
     subcommand set is small and fixed, so this avoids adding a third-party
@@ -1298,6 +1692,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="max Hamming distance (of 64 bits) to consider two documents near-duplicates (default: 10)",
     )
     p_dedupe.set_defaults(func=cmd_dedupe_scan)
+
+    p_archive = sub.add_parser(
+        "archive", help="archive Elasticsearch data, Kibana objects, extracted files, and images for later restore"
+    )
+    p_archive.add_argument("destination", type=Path, help="directory to write the archive into")
+    p_archive.set_defaults(func=cmd_archive)
+
+    p_restore = sub.add_parser("restore", help="restore an archive written by 'deis archive'")
+    p_restore.add_argument("source", type=Path, help="the archive directory 'deis archive' wrote")
+    p_restore.set_defaults(func=cmd_restore)
 
     sub.add_parser("clean", help="wrap 'just clean' behind a confirmation prompt").set_defaults(func=cmd_clean)
     sub.add_parser("reset", help="wrap 'just dist-clean' behind a confirmation prompt").set_defaults(func=cmd_reset)

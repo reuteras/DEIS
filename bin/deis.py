@@ -74,6 +74,7 @@ SUBCOMMANDS = (
     "entity-scan",
     "entity-report",
     "dedupe-scan",
+    "dedupe-report",
     "archive",
     "restore",
     "clean",
@@ -1030,6 +1031,98 @@ def cmd_dedupe_scan(args) -> int:
     return 0
 
 
+def cmd_dedupe_report(args) -> int:
+    """Lists what dedupe-scan already found, rather than finding it
+    again - same reasoning as pii-report/entity-report, but aggregated
+    by cluster rather than one row per document: cluster size is itself
+    a signal (a large cluster is usually a mass-distributed template,
+    low investigative value once read once; a document search/scan hit
+    count is inflated by near-duplicate copies unless aggregated by
+    cluster instead of counted per document). Default table shows one
+    row per cluster, largest first; --output writes one row per
+    *document* (every cluster member) for full detail.
+
+    Unlike pii-report/entity-report, this can't stream rows as it
+    scrolls - cluster size (and therefore sort order) isn't known until
+    every member has been seen, so the full result is collected first.
+    Fine at the scale dedupe-scan itself already targets (see
+    simhash.cluster's own docstring: hundreds to low thousands of
+    documents actually end up clustered, not the whole corpus).
+    """
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={
+                "size": 200,
+                "_source": ["filename", "sha256", "duplicate_cluster"],
+                "query": {"exists": {"field": "duplicate_cluster"}},
+            },
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    clusters: dict[str, list[dict[str, str]]] = {}
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+            for hit in hits:
+                source = hit.get("_source", {})
+                representative = source.get("duplicate_cluster", "")
+                clusters.setdefault(representative, []).append(
+                    {"filename": source.get("filename", ""), "sha256": source.get("sha256", "")}
+                )
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    ordered = sorted(clusters.items(), key=lambda kv: -len(kv[1]))
+    total_documents = sum(len(members) for members in clusters.values())
+
+    if args.output:
+        try:
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["duplicate_cluster", "cluster_size", "filename", "sha256"])
+                for representative, members in ordered:
+                    for member in members:
+                        writer.writerow([representative, len(members), member["filename"], member["sha256"]])
+        except OSError as error:
+            console.print(f"[red]Could not write {args.output}: {error}[/red]")
+            return 1
+        console.print(f"Wrote {total_documents} document(s) across {len(clusters)} cluster(s) to {args.output}.")
+        return 0
+
+    console.print(f"{total_documents} document(s) across {len(clusters)} near-duplicate cluster(s).")
+    table = Table()
+    table.add_column("Representative filename", overflow="ellipsis", max_width=50, no_wrap=True)
+    table.add_column("Representative sha256", overflow="ellipsis", max_width=12, no_wrap=True)
+    table.add_column("Members")
+    shown = ordered[:PII_REPORT_TABLE_LIMIT]
+    for representative, members in shown:
+        rep_filename = next((m["filename"] for m in members if m["sha256"] == representative), members[0]["filename"])
+        table.add_row(Path(rep_filename).name, representative, str(len(members)))
+    console.print(table)
+    if len(ordered) > len(shown):
+        console.print(
+            f"[yellow]{len(ordered) - len(shown)} more cluster(s) not shown - "
+            "use --output <file> to export all of them.[/yellow]"
+        )
+    return 0
+
+
 def cmd_add_urls(args) -> int:
     target = args.target
     candidates = [target] if "://" in target else Path(target).read_text(encoding="utf-8").splitlines()
@@ -1713,6 +1806,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="max Hamming distance (of 64 bits) to consider two documents near-duplicates (default: 10)",
     )
     p_dedupe.set_defaults(func=cmd_dedupe_scan)
+
+    p_dedupe_report = sub.add_parser("dedupe-report", help="list what dedupe-scan already found, by cluster")
+    p_dedupe_report.add_argument(
+        "--output", type=Path, help="write one row per cluster member to this CSV file instead of a capped table"
+    )
+    p_dedupe_report.set_defaults(func=cmd_dedupe_report)
 
     p_archive = sub.add_parser(
         "archive", help="archive Elasticsearch data, Kibana objects, extracted files, and images for later restore"

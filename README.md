@@ -315,6 +315,7 @@ bin/deis pii-report      # list what pii-scan already found (see below)
 bin/deis entity-scan     # extract named entities (people/orgs/locations) from indexed content (see below)
 bin/deis entity-report   # list what entity-scan already found (see below)
 bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
+bin/deis dedupe-report   # list what dedupe-scan already found, by cluster (see below)
 bin/deis archive <dir>   # archive this case for later restore (see below)
 bin/deis restore <dir>   # restore a case archived with 'deis archive'
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
@@ -353,6 +354,12 @@ too, not just themselves) - pass `--max-distance` to loosen or tighten how simil
 documents need to be (default 10 of 64 bits). Results land in each clustered document's
 `duplicate_cluster` field (the representative member's sha256), and the "Leaked data"
 dashboard has a "Near-duplicate clusters" panel, sorted so each cluster's members sit together.
+
+`bin/deis dedupe-report` lists what a prior `dedupe-scan` already found, aggregated by cluster
+rather than one row per document - a table of the largest clusters by default (cluster size is
+itself a signal: a large one is usually a mass-distributed template, a search/scan hit count is
+inflated by near-duplicate copies unless counted by cluster instead of by document), or every
+cluster member as CSV via `--output <file>.csv`.
 
 This project's normal model is one instance per case, with Elasticsearch wiped and the stack
 recreated for the next one - `bin/deis archive <destination>` preserves a fully-processed case

@@ -70,6 +70,29 @@ class TestReadEnv:
         assert deis_module.read_env(env_file) == {"ELASTIC_PASSWORD": "hunter2"}
 
 
+class TestKibanaSystemPassword:
+    """cmd_restore's own step to set kibana_system's password on a freshly-
+    restored Elasticsearch cluster (setup/entrypoint.sh's job normally,
+    not run by restore) reads this the same way elastic_password() reads
+    ELASTIC_PASSWORD: environment first, then .env.
+    """
+
+    def test_prefers_environment_variable(self, deis_module, monkeypatch):
+        monkeypatch.setenv("KIBANA_SYSTEM_PASSWORD", "from-env")
+        assert deis_module.kibana_system_password() == "from-env"
+
+    def test_falls_back_to_env_file(self, deis_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("KIBANA_SYSTEM_PASSWORD", raising=False)
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / ".env").write_text("KIBANA_SYSTEM_PASSWORD=from-file\n")
+        assert deis_module.kibana_system_password() == "from-file"
+
+    def test_none_when_unset_anywhere(self, deis_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("KIBANA_SYSTEM_PASSWORD", raising=False)
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        assert deis_module.kibana_system_password() is None
+
+
 class TestEntitiesMaxChars:
     def test_missing_file_falls_back_to_default(self, deis_module, tmp_path):
         assert deis_module.entities_max_chars(tmp_path / "missing.cfg") == 20000

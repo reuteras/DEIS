@@ -126,6 +126,14 @@ def elastic_password() -> str | None:
     return read_env().get("ELASTIC_PASSWORD")
 
 
+def kibana_system_password() -> str | None:
+    import os
+
+    if password := os.environ.get("KIBANA_SYSTEM_PASSWORD"):
+        return password
+    return read_env().get("KIBANA_SYSTEM_PASSWORD")
+
+
 def entities_max_chars(path: Path | None = None) -> int:
     """Reads [entities] max_chars from deis.cfg - the character cap applied
     to attachment.content before it's handed to spaCy in cmd_entity_scan
@@ -1710,6 +1718,12 @@ def cmd_restore(args) -> int:
     correctness risk, not just a cosmetic mismatch. Left alone (with a
     warning instead) on a dirty tree: switching commits out from under
     uncommitted changes isn't this feature's call to make.
+
+    Brings up the full review/analysis surface at the end, not just
+    Elasticsearch+Kibana - kibana_system's password (setup/entrypoint.sh's
+    job normally, not run here - see below), then web/gotenberg/notebook
+    alongside Kibana, so a restore actually leaves every viewer a fresh
+    `deis init` + `deis run` would have running, not just a queryable index.
     """
     source: Path = args.source
     manifest_path = source / "manifest.json"
@@ -1842,8 +1856,32 @@ def cmd_restore(args) -> int:
         time.sleep(5)
     console.print("Restore complete.")
 
-    console.print("Starting Kibana...")
-    subprocess.run(["docker", "compose", "up", "-d", "kibana"], cwd=REPO_ROOT, check=True)
+    # A restored cluster is a *fresh* Elasticsearch security realm - only
+    # `elastic` gets a password, from ELASTIC_PASSWORD's own bootstrap
+    # behavior (see docker-compose.yml's elasticsearch service). kibana_system
+    # never does, since that's normally setup/entrypoint.sh's job (POST
+    # _security/user/kibana_system/_password, same call as here) and restore
+    # doesn't run the setup container. Without this, confirmed live: Kibana
+    # spins forever retrying "security_exception: unable to authenticate user
+    # [kibana_system]" and never becomes usable, no matter how long you wait.
+    kibana_password = kibana_system_password()
+    if kibana_password:
+        console.print("Setting kibana_system's password...")
+        es_request("/_security/user/kibana_system/_password", method="POST", body={"password": kibana_password})
+    else:
+        console.print(
+            "[yellow]KIBANA_SYSTEM_PASSWORD is not set - Kibana will not be able to authenticate "
+            "to Elasticsearch.[/yellow]"
+        )
+
+    console.print("Starting Kibana, the web viewer, gotenberg, and the notebook...")
+    # Not `docker compose --profile deis up -d`: that profile also includes
+    # downloader/controller/unpack/ingest/deis, the pipeline-processing
+    # containers - restore is reopening already-processed data, not running
+    # the pipeline again, so only the review/analysis services are started.
+    subprocess.run(
+        ["docker", "compose", "up", "-d", "kibana", "web", "gotenberg", "notebook"], cwd=REPO_ROOT, check=True
+    )
     kibana_export = source / "kibana-export.ndjson"
     if kibana_export.is_file():
         console.print("Importing Kibana saved objects...")

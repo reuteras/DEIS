@@ -86,12 +86,24 @@ RUN_ONLY_CHOICES = ("setup", "download", "extract", "ingest")
 console = Console()
 
 
-def read_env(path: Path = REPO_ROOT / ".env") -> dict[str, str]:
+def read_env(path: Path | None = None) -> dict[str, str]:
     """Parses .env's KEY=VALUE lines - the only place this project reads
     that file today is docker compose itself, so there's nothing existing
     to reuse; skips blank lines and comments the same way deis.cfg's own
     reader does.
+
+    `path` defaults to REPO_ROOT / ".env", resolved fresh on every call
+    (not a plain default argument, `path: Path = REPO_ROOT / ".env"` -
+    that expression is evaluated exactly once, at function-definition
+    time, so it would silently keep pointing at wherever REPO_ROOT was
+    when this module was first imported even after test code
+    monkeypatches REPO_ROOT to a tmp_path later - confirmed live: this
+    is exactly what broke _build_manifest's own test in CI, where no
+    real .env exists to coincidentally mask it the way a developer's
+    real one can locally).
     """
+    if path is None:
+        path = REPO_ROOT / ".env"
     values: dict[str, str] = {}
     if not path.is_file():
         return values
@@ -112,7 +124,7 @@ def elastic_password() -> str | None:
     return read_env().get("ELASTIC_PASSWORD")
 
 
-def entities_max_chars(path: Path = REPO_ROOT / "deis.cfg") -> int:
+def entities_max_chars(path: Path | None = None) -> int:
     """Reads [entities] max_chars from deis.cfg - the character cap applied
     to attachment.content before it's handed to spaCy in cmd_entity_scan
     (see bin/entities.py's module docstring for why this cost is real: a
@@ -124,7 +136,14 @@ def entities_max_chars(path: Path = REPO_ROOT / "deis.cfg") -> int:
     leaves an existing one alone, so an install predating this option
     still gets a sane capped default rather than an error or an
     unintentionally uncapped scan.
+
+    `path` defaults to REPO_ROOT / "deis.cfg", resolved fresh on every
+    call rather than a plain default argument - see read_env's own
+    docstring for why that matters (the same class of bug, fixed there
+    after it broke a test in CI).
     """
+    if path is None:
+        path = REPO_ROOT / "deis.cfg"
     config = configparser.RawConfigParser()
     config.read(path)
     return config.getint("entities", "max_chars", fallback=20000)

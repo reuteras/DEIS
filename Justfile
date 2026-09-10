@@ -20,10 +20,31 @@ export:
 # oplock-break artifact from an interrupted process) that `just clean`
 # had been silently leaving behind in logs/ every time. "dir/.[!.]*
 # dir/..?*" is the standard portable idiom for "every dotfile except
-# literal . and .." - added alongside the plain glob everywhere this
-# recipe empties a directory by glob rather than removing it outright
-# (rm -rf on the directory itself, like downloader/log below, already
-# recurses into dotfiles with no such gap).
+# literal . and ..". -rf, not -f: the first cut of this fix used -f
+# (matching the pre-existing plain lines below, which really were
+# files-only), but downloader/data/.torcheck (item 42's TOR preflight
+# probe directory, deis/done.sh's own dispose-of-.torcheck comment) is a
+# real dotfile *directory* the dotfile-inclusive glob now also matches -
+# rm -f fails loudly on a directory ("is a directory") and, because it's
+# one rm invocation for the whole glob, aborts the entire recipe (found
+# live: `deis reset` failed on this line, so none of dist-clean's own
+# deletions - extracted/, files/, status/, docker-clean - ever ran).
+# -rf everywhere this recipe empties a directory by glob is the simplest
+# fix that's safe regardless of whether a directory shows up in a given
+# sweep, now or later - a plain file is removed exactly the same either
+# way. rm -rf on a directory *itself* (downloader/log below) already
+# recurses into dotfiles with no such gap.
+#
+# The dotfile-inclusive glob has a second consequence: downloader/data/,
+# extracted/, files/, and status/ each carry a real git-tracked
+# ".gitignore" (the standard "ignore everything except this file" trick,
+# so an otherwise-empty directory still exists after a fresh checkout) -
+# found the same way as the .torcheck bug above, live: a first attempt at
+# this fix silently deleted downloader/data/.gitignore before erroring
+# out on .torcheck. `git checkout --` restores each one immediately after
+# its directory's sweep, rather than trying to exclude ".gitignore" from
+# the glob itself (bash's default globbing has no clean "everything
+# except this one name" syntax without enabling extglob).
 
 # Delete downloader state, log files, and controller's web page
 clean:
@@ -31,15 +52,19 @@ clean:
     rm -f downloader/conf/nginx.conf
     rm -f downloader/conf/privoxy*
     rm -f downloader/conf/torrc
-    rm -f downloader/data/* downloader/data/.[!.]* downloader/data/..?*
+    rm -rf downloader/data/* downloader/data/.[!.]* downloader/data/..?*
+    git checkout -- downloader/data/.gitignore
     rm -rf downloader/log
-    rm -f logs/* logs/.[!.]* logs/..?*
+    rm -rf logs/* logs/.[!.]* logs/..?*
     rm -f controller/www/index.html
 
 dist-clean: clean docker-clean
     rm -rf extracted/* extracted/.[!.]* extracted/..?*
+    git checkout -- extracted/.gitignore
     rm -rf files/* files/.[!.]* files/..?*
+    git checkout -- files/.gitignore
     rm -rf status/* status/.[!.]* status/..?*
+    git checkout -- status/.gitignore
     rm -f .jupyter/serverconfig/jupyterlabapputilsextensionannouncements.json
     rm -rf .jupyter/lab/workspaces/* .jupyter/lab/workspaces/.[!.]* .jupyter/lab/workspaces/..?* .jupyter/migrated
     rm -rf notebook/.ipynb_checkpoints

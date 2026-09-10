@@ -187,6 +187,33 @@ class TestBulkFailures:
         assert deis_module.bulk_failures({"errors": True}) == []
 
 
+class TestSearchSnippets:
+    """cmd_search's highlighted-snippet helpers (item 36) - see
+    _highlight_fragment/_rich_snippet/_plain_snippet.
+    """
+
+    def test_highlight_fragment_reads_the_only_highlighted_field(self, deis_module):
+        hit = {"highlight": {"attachment.content": ["some <em>match</em> here"]}}
+        assert deis_module._highlight_fragment(hit) == "some <em>match</em> here"
+
+    def test_highlight_fragment_missing_is_empty_not_an_error(self, deis_module):
+        assert deis_module._highlight_fragment({}) == ""
+
+    def test_rich_snippet_converts_em_tags_to_rich_markup(self, deis_module):
+        hit = {"highlight": {"attachment.content": ["some <em>match</em> here"]}}
+        assert deis_module._rich_snippet(hit) == "some [bold yellow]match[/bold yellow] here"
+
+    def test_rich_snippet_escapes_literal_brackets_first(self, deis_module):
+        # A real document containing a literal "[" must not be misread as
+        # the start of one of rich's own style tags.
+        hit = {"highlight": {"attachment.content": ["price <em>list</em> [draft]"]}}
+        assert deis_module._rich_snippet(hit) == r"price [bold yellow]list[/bold yellow] \[draft]"
+
+    def test_plain_snippet_strips_em_tags_entirely(self, deis_module):
+        hit = {"highlight": {"attachment.content": ["some <em>match</em> here"]}}
+        assert deis_module._plain_snippet(hit) == "some match here"
+
+
 class TestInitEnvPermissions:
     def test_generated_env_is_not_world_readable(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)

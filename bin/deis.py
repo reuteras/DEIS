@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.table import Table
 
 # bin/ is only guaranteed to be on sys.path when this file is run directly as
@@ -445,25 +446,102 @@ def cmd_status(_args) -> int:
     return 0
 
 
+def _highlight_fragment(hit: dict) -> str:
+    """The one highlighted fragment of attachment.content Elasticsearch
+    found for this hit (see cmd_search's own "highlight" request) -
+    always present when a hit came from a match against attachment.content
+    (the only field cmd_search ever queries), so the fallback is just
+    defensive, not an expected case.
+    """
+    return (hit.get("highlight", {}).get("attachment.content") or [""])[0]
+
+
+def _rich_snippet(hit: dict) -> str:
+    """Elasticsearch's own <em>/</em> highlight markers, turned into
+    rich's console markup for a bolded terminal snippet. rich_escape
+    first - a literal "[" in real document content would otherwise be
+    misread as the start of one of rich's own style tags.
+    """
+    return rich_escape(_highlight_fragment(hit)).replace("<em>", "[bold yellow]").replace("</em>", "[/bold yellow]")
+
+
+def _plain_snippet(hit: dict) -> str:
+    """Same fragment as _rich_snippet, with the <em>/</em> markers
+    stripped rather than converted - for CSV export, where HTML-ish
+    markup isn't meaningful to whatever opens the file.
+    """
+    return _highlight_fragment(hit).replace("<em>", "").replace("</em>", "")
+
+
 def cmd_search(args) -> int:
+    """Highlighted snippets (item 36) via Elasticsearch's own "highlight"
+    API against attachment.content - the only field this ever queries, so
+    there's no ambiguity about which field to highlight. --output scrolls
+    every match into a CSV instead of the capped interactive table
+    (size 20, unscrolled) - same shape as pii-report/entity-report.
+    """
+    query = {
+        "query": {"match": {"attachment.content": args.term}},
+        "highlight": {"fields": {"attachment.content": {"fragment_size": 150, "number_of_fragments": 1}}},
+    }
     try:
-        response = es_request(
-            f"/{INDEX}/_search",
-            method="POST",
-            body={"size": 20, "query": {"match": {"attachment.content": args.term}}},
-        )
+        if args.output:
+            response = es_request(f"/{INDEX}/_search?scroll=1m", method="POST", body={"size": 200, **query})
+        else:
+            response = es_request(f"/{INDEX}/_search", method="POST", body={"size": 20, **query})
     except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+
+    if args.output:
+        scroll_id = response.get("_scroll_id")
+        written = 0
+        try:
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["filename", "sha256", "snippet", "link"])
+                while True:
+                    hits = response.get("hits", {}).get("hits", [])
+                    if not hits:
+                        break
+                    for hit in hits:
+                        source = hit["_source"]
+                        writer.writerow(
+                            [
+                                source.get("filename", ""),
+                                source.get("sha256", ""),
+                                _plain_snippet(hit),
+                                f"{VIEW_URL}/{source.get('sha256', '')}",
+                            ]
+                        )
+                        written += 1
+                    response = es_request(
+                        "/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id}
+                    )
+                    scroll_id = response.get("_scroll_id")
+        except OSError as error:
+            console.print(f"[red]Could not write {args.output}: {error}[/red]")
+            return 1
+        finally:
+            if scroll_id:
+                try:
+                    es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+                except (RuntimeError, urllib.error.URLError, TimeoutError):
+                    pass
+        console.print(f"Wrote {written} hit(s) for {args.term!r} to {args.output}.")
+        return 0
+
     hits = response.get("hits", {}).get("hits", [])
-    console.print(f"{response.get('hits', {}).get('total', {}).get('value', 0)} hit(s) for {args.term!r}.")
+    console.print(f"{total} hit(s) for {args.term!r}.")
     table = Table()
     table.add_column("Filename")
+    table.add_column("Snippet")
     table.add_column("Link")
     for hit in hits:
         source = hit["_source"]
-        table.add_row(source.get("filename", ""), f"{VIEW_URL}/{source.get('sha256', '')}")
+        table.add_row(source.get("filename", ""), _rich_snippet(hit), f"{VIEW_URL}/{source.get('sha256', '')}")
     console.print(table)
     return 0
 
@@ -1170,6 +1248,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_search = sub.add_parser("search", help="search indexed content")
     p_search.add_argument("term")
+    p_search.add_argument(
+        "--output", type=Path, help="write every match (snippet, filename, sha256, link) to this CSV file"
+    )
     p_search.set_defaults(func=cmd_search)
 
     sub.add_parser("report", help="what was found, what could not be processed").set_defaults(func=cmd_report)

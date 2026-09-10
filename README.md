@@ -142,6 +142,11 @@ sheets combined. SQL dumps/SQLite are not handled yet.
 
 Search can be done with [Kibana][kib] and a [JupyterLab][jup] notebook. The notebook is my [reuteras/container-notebook][con].
 
+`deis search <term>` searches from the terminal, showing a highlighted snippet of the matching
+text (via Elasticsearch's own `highlight` API) alongside each filename, not just a bare list of
+matches - a capped table of 20 by default, or every match as CSV (`filename`, `sha256`,
+`snippet`, `link`) via `--output <file>.csv`.
+
 Every document is tagged with a detected `language` (`english`/`swedish`/`unknown`, via a
 stopword-presence heuristic run server-side at ingest time) - filterable in Kibana, and used
 by the notebook's word cloud to pick the right stopword list automatically instead of needing
@@ -303,7 +308,7 @@ bin/deis run --only ingest   # or just one stage: setup, download, extract, or i
 bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
 bin/deis add-files <path> [path ...]  # copy already-downloaded files in, skipping the download stage
 bin/deis status          # snapshot of pipeline stage state and funnel counts
-bin/deis search <term>   # search indexed content from the terminal
+bin/deis search <term>   # search indexed content from the terminal, highlighted snippets (see below)
 bin/deis report          # what was found, what could not be processed
 bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
 bin/deis pii-report      # list what pii-scan already found (see below)

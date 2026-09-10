@@ -35,12 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pii
 import simhash
 
-# entities (item 32) is deliberately NOT imported up here alongside pii/
-# simhash: unlike those, it pulls in spaCy and two trained models (see
-# bin/VENDORED.md) - a real, ~1-2s-to-load dependency chain that every
-# other subcommand (status/search/report/...) has no reason to pay the
-# cost of, or depend on being installed at all, just to run `deis
-# --help`. Imported lazily inside cmd_entity_scan() instead.
+# entities (item 32) and language are deliberately NOT imported up here
+# alongside pii/simhash: unlike those, they pull in spaCy+two trained
+# models (~1-2s to load, see bin/VENDORED.md) and py3langid (~0.4s to
+# import) respectively - real load costs every other subcommand (status/
+# search/report/...) has no reason to pay, or depend on being installed at
+# all, just to run `deis --help`. Imported lazily inside cmd_entity_scan()
+# and cmd_language_scan() instead.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ES_URL = "http://127.0.0.1:9200"
@@ -71,6 +72,7 @@ SUBCOMMANDS = (
     "add-files",
     "pii-scan",
     "pii-report",
+    "language-scan",
     "entity-scan",
     "entity-report",
     "dedupe-scan",
@@ -797,6 +799,86 @@ def cmd_pii_report(args) -> int:
         console.print(
             f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
         )
+    return 0
+
+
+def cmd_language_scan(args) -> int:
+    """A post-pass correction on top of the ingest-time stopword script
+    (setup/entrypoint.sh's deis-detect-language): that script only tags a
+    document english/swedish if it finds 3+ hits from a fixed list of ten
+    common function words, so it only ever fires on flowing prose - a
+    genuinely Swedish payroll table or bank-transfer report (all labels
+    and numbers, no sentences) falls through to "unknown" even though a
+    human reads it as Swedish instantly. Confirmed directly against real
+    documents from this corpus. bin/language.py's statistical classifier
+    picks up a language from a handful of real words without needing them
+    arranged into sentences - see its own docstring.
+
+    Default query only re-examines documents currently tagged "unknown" -
+    the stopword script's own guess is trusted where it already made one,
+    and this only fills the gap. --rescan reclassifies everything, in case
+    a document the stopword script guessed wrong on is worth a second,
+    more accurate opinion.
+    """
+    import language  # deliberately lazy, see the top-of-file comment
+
+    query = {"match_all": {}} if args.rescan else {"term": {"language": "unknown"}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": ["attachment.content"], "query": query},
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    counts = {"english": 0, "swedish": 0, "unknown": 0}
+    failures: list[str] = []
+
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            actions = []
+            for hit in hits:
+                content = hit.get("_source", {}).get("attachment", {}).get("content", "") or ""
+                detected = language.detect_language(content)
+                counts[detected] += 1
+                actions.append({"update": {"_index": INDEX, "_id": hit["_id"]}})
+                actions.append({"doc": {"language": detected}})
+
+            if actions:
+                failures.extend(bulk_failures(es_bulk(actions)))
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    scanned = sum(counts.values())
+    console.print(
+        f"Reclassified {scanned} document(s): {counts['english']} english, "
+        f"{counts['swedish']} swedish, {counts['unknown']} still unknown."
+    )
+
+    if failures:
+        console.print(f"[red]{len(failures)} document(s) could not be updated - these results were NOT saved:[/red]")
+        for reason in failures[:10]:
+            console.print(f"  [red]{reason}[/red]")
+        if len(failures) > 10:
+            console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+        return 1
     return 0
 
 
@@ -1870,6 +1952,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, help="write every match to this CSV file instead of a capped terminal table"
     )
     p_pii_report.set_defaults(func=cmd_pii_report)
+
+    p_language = sub.add_parser("language-scan", help="reclassify documents tagged with an unknown language")
+    p_language.add_argument("--rescan", action="store_true", help="reclassify every document, not just unknown ones")
+    p_language.set_defaults(func=_with_liveness_marker("language_scanning", cmd_language_scan))
 
     p_entity = sub.add_parser("entity-scan", help="extract named entities (people/orgs/locations) from indexed content")
     p_entity.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")

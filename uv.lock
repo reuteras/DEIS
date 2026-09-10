@@ -363,6 +363,7 @@ version = "0.1.0"
 source = { editable = "bin" }
 dependencies = [
     { name = "en-core-web-sm" },
+    { name = "py3langid" },
     { name = "rich" },
     { name = "spacy" },
     { name = "sv-core-news-sm" },
@@ -373,6 +374,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
+    { name = "py3langid", specifier = "==0.3.0" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "spacy", specifier = "==3.8.16" },
     { name = "sv-core-news-sm", url = "https://github.com/explosion/spacy-models/releases/download/sv_core_news_sm-3.8.0/sv_core_news_sm-3.8.0-py3-none-any.whl" },
@@ -1000,6 +1002,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/37/aa/51e5b4109a4cdfae28c3613eeeb10764a3794ebef8de93ffbb109465bea3/preshed-3.0.13-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:670db59a52e1823b5f088c764df474e65b686592d4093adbeef14581c95ee2cb", size = 1959473, upload-time = "2026-03-23T08:57:15.706Z" },
     { url = "https://files.pythonhosted.org/packages/0e/6a/1d966f367a14c703dde629d150d996c1b727d442f620300b21c9ec1a24d1/preshed-3.0.13-cp314-cp314t-win_amd64.whl", hash = "sha256:b03e21b0bf95eb56e23973f32cabb930e94f352228652f81c0955dbd6967d904", size = 146229, upload-time = "2026-03-23T08:57:17.457Z" },
     { url = "https://files.pythonhosted.org/packages/22/80/368139067603e590a000122355f9c8576c8ebed4fb0b8849feaa2698489d/preshed-3.0.13-cp314-cp314t-win_arm64.whl", hash = "sha256:b980f3ea9bb74b7f94464bc3d6eb3c9162b6b79b531febd14c6465c24344d2cc", size = 119339, upload-time = "2026-03-23T08:57:18.882Z" },
+]
+
+[[package]]
+name = "py3langid"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/99/43/c3f7a3c5150c56a0ca70c3039e53cc58046698b7ce0913bb8fa86d71abcb/py3langid-0.3.0.tar.gz", hash = "sha256:0a875a031a58aaf9dbda7bb8285fd75e801a7bd276216ffabe037901d4b449ec", size = 752935, upload-time = "2024-06-18T11:31:04.301Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9d/1c/8212ea872d236af0aea37043fb6feeaa9a43449183782b19d342f8ddd343/py3langid-0.3.0-py3-none-any.whl", hash = "sha256:38f022eec31cf9a2bf6f142acb2a9b350fd7d0d5ae7762b1392c6d3567401fd3", size = 746125, upload-time = "2024-06-18T11:30:51.265Z" },
 ]
 
 [[package]]

@@ -151,6 +151,25 @@ def entities_max_chars(path: Path | None = None) -> int:
     return config.getint("entities", "max_chars", fallback=20000)
 
 
+# The one set of exceptions every es_request()/es_bulk() caller (and every
+# raw urlopen() call against Elasticsearch/Kibana) catches as "expected,
+# report it and move on" rather than letting it crash: RuntimeError (this
+# module's own "password isn't configured" checks), URLError (connection
+# refused/DNS failure - but only while *sending* a request; see below),
+# and TimeoutError. ConnectionError was missing here for a long time -
+# confirmed live: `deis restore` crashed with a raw, uncaught
+# http.client.RemoteDisconnected traceback while polling Elasticsearch
+# right after `docker compose up -d elasticsearch`, because urllib only
+# wraps OSError as URLError when raised while sending a request
+# (AbstractHTTPHandler.do_open's own try/except), not when raised later
+# while reading the response - which is exactly when a server whose port
+# is open but whose HTTP layer isn't serving yet (a container mid-startup)
+# drops the connection. RemoteDisconnected is a ConnectionResetError,
+# which is a ConnectionError, so this closes that gap everywhere at once
+# instead of only at the one call site that happened to crash first.
+ES_REQUEST_ERRORS = (RuntimeError, urllib.error.URLError, TimeoutError, ConnectionError)
+
+
 def es_request(path: str, method: str = "GET", body: dict | None = None, timeout: int = 30):
     """Minimal GET/POST-with-basic-auth helper. Deliberately stdlib
     (urllib), not requests: this CLI always runs on the host, never inside
@@ -270,7 +289,7 @@ def count_files(directory: Path, exclude: set[str]) -> int:
 def latest_run_summary() -> dict | None:
     try:
         response = es_request(f"/{RUNS_INDEX}/_search?size=1&sort=@timestamp:desc")
-    except (RuntimeError, urllib.error.URLError, TimeoutError):
+    except ES_REQUEST_ERRORS:
         return None
     hits = response.get("hits", {}).get("hits", [])
     return hits[0]["_source"] if hits else None
@@ -331,14 +350,14 @@ def cmd_doctor(_args) -> int:
         health = es_request("/_cluster/health")
         color = {"green": "green", "yellow": "yellow", "red": "red"}.get(health.get("status"), "red")
         console.print(f"[{color}]Elasticsearch: {health.get('status')}.[/{color}]")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Elasticsearch: not reachable ({error}).[/red]")
         ok = False
 
     try:
         urllib.request.urlopen(KIBANA_URL, timeout=10)
         console.print("[green]Kibana: reachable.[/green]")
-    except (urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Kibana: not reachable ({error}).[/red]")
         ok = False
 
@@ -462,7 +481,7 @@ def cmd_status(_args) -> int:
     try:
         doc_count = es_request(f"/{INDEX}/_count")["count"]
         counts.add_row("documents in Elasticsearch", str(doc_count))
-    except (RuntimeError, urllib.error.URLError, TimeoutError, KeyError):
+    except (*ES_REQUEST_ERRORS, KeyError):
         counts.add_row("documents in Elasticsearch", "could not be read")
 
     if run := latest_run_summary():
@@ -515,7 +534,7 @@ def cmd_search(args) -> int:
             response = es_request(f"/{INDEX}/_search?scroll=1m", method="POST", body={"size": 200, **query})
         else:
             response = es_request(f"/{INDEX}/_search", method="POST", body={"size": 20, **query})
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -550,14 +569,14 @@ def cmd_search(args) -> int:
         except OSError as error:
             console.print(f"[red]Could not write {args.output}: {error}[/red]")
             return 1
-        except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        except ES_REQUEST_ERRORS as error:
             console.print(f"[red]Search failed: {error}[/red]")
             return 1
         finally:
             if scroll_id:
                 try:
                     es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-                except (RuntimeError, urllib.error.URLError, TimeoutError):
+                except ES_REQUEST_ERRORS:
                     pass
         console.print(f"Wrote {written} hit(s) for {args.term!r} to {args.output}.")
         return 0
@@ -642,7 +661,7 @@ def cmd_pii_scan(args) -> int:
             method="POST",
             body={"size": 200, "_source": ["attachment.content"], "query": query},
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -675,14 +694,14 @@ def cmd_pii_scan(args) -> int:
 
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     console.print(f"Scanned {scanned} document(s), {with_pii} with at least one identifier found.")
@@ -728,7 +747,7 @@ def cmd_pii_report(args) -> int:
                 "query": query,
             },
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -770,7 +789,7 @@ def cmd_pii_report(args) -> int:
     except OSError as error:
         console.print(f"[red]Could not write {args.output}: {error}[/red]")
         return 1
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
@@ -779,7 +798,7 @@ def cmd_pii_report(args) -> int:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     if writer:
@@ -829,7 +848,7 @@ def cmd_language_scan(args) -> int:
             method="POST",
             body={"size": 200, "_source": ["attachment.content"], "query": query},
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -856,14 +875,14 @@ def cmd_language_scan(args) -> int:
 
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     scanned = sum(counts.values())
@@ -914,7 +933,7 @@ def cmd_entity_scan(args) -> int:
             method="POST",
             body={"size": 200, "_source": ["attachment.content", "language"], "query": query},
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -954,14 +973,14 @@ def cmd_entity_scan(args) -> int:
 
             response = es_request("/_search/scroll", method="POST", body={"scroll": "5m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     console.print(
@@ -1004,7 +1023,7 @@ def cmd_entity_report(args) -> int:
                 "query": query,
             },
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -1043,7 +1062,7 @@ def cmd_entity_report(args) -> int:
     except OSError as error:
         console.print(f"[red]Could not write {args.output}: {error}[/red]")
         return 1
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
@@ -1052,7 +1071,7 @@ def cmd_entity_report(args) -> int:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     if writer:
@@ -1091,7 +1110,7 @@ def cmd_dedupe_scan(args) -> int:
                 "script": {"source": "ctx._source.remove('duplicate_cluster')"},
             },
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Could not clear stale cluster assignments: {error}[/red]")
         return 1
 
@@ -1101,7 +1120,7 @@ def cmd_dedupe_scan(args) -> int:
             method="POST",
             body={"size": 200, "_source": ["attachment.content"], "query": {"match_all": {}}},
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -1126,14 +1145,14 @@ def cmd_dedupe_scan(args) -> int:
                     fingerprints[hit["_id"]] = value
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     clusters = simhash.cluster(fingerprints, max_distance=args.max_distance)
@@ -1225,7 +1244,7 @@ def cmd_dedupe_report(args) -> int:
                 "query": {"exists": {"field": "duplicate_cluster"}},
             },
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
 
@@ -1244,14 +1263,14 @@ def cmd_dedupe_report(args) -> int:
                 )
             response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
             scroll_id = response.get("_scroll_id")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Search failed: {error}[/red]")
         return 1
     finally:
         if scroll_id:
             try:
                 es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
-            except (RuntimeError, urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 pass
 
     ordered = sorted(clusters.items(), key=lambda kv: -len(kv[1]))
@@ -1590,7 +1609,7 @@ def cmd_archive(args) -> int:
 
     try:
         health = es_request("/_cluster/health")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Elasticsearch is not reachable: {error}[/red]")
         return 1
     console.print(f"Elasticsearch reachable (status: {health.get('status', 'unknown')}).")
@@ -1608,7 +1627,7 @@ def cmd_archive(args) -> int:
             method="PUT",
             body={"indices": f"leakdata-*,{RUNS_INDEX}", "include_global_state": False},
         )
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[red]Could not start the snapshot: {error}[/red]")
         return 1
 
@@ -1616,7 +1635,7 @@ def cmd_archive(args) -> int:
     while True:
         try:
             state = _snapshot_state(repo_name, snapshot_name)
-        except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        except ES_REQUEST_ERRORS as error:
             console.print(f"[red]Could not check snapshot status: {error}[/red]")
             return 1
         if state == "SUCCESS":
@@ -1630,7 +1649,7 @@ def cmd_archive(args) -> int:
     console.print("Exporting Kibana saved objects...")
     try:
         (destination / "kibana-export.ndjson").write_text(_kibana_export_all(), encoding="utf-8")
-    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+    except ES_REQUEST_ERRORS as error:
         console.print(f"[yellow]Could not export Kibana saved objects: {error} - continuing without them.[/yellow]")
 
     console.print("Saving container logs...")
@@ -1795,7 +1814,7 @@ def cmd_restore(args) -> int:
         try:
             if es_request("/_cluster/health").get("status") in ("yellow", "green"):
                 break
-        except (RuntimeError, urllib.error.URLError, TimeoutError):
+        except ES_REQUEST_ERRORS:
             pass
         time.sleep(5)
     else:
@@ -1810,7 +1829,7 @@ def cmd_restore(args) -> int:
     while True:
         try:
             response = es_request(f"/{INDEX}/_recovery")
-        except (RuntimeError, urllib.error.URLError, TimeoutError):
+        except ES_REQUEST_ERRORS:
             response = {}
         if response and all(
             shard.get("stage") == "DONE" for index in response.values() for shard in index.get("shards", [])
@@ -1828,7 +1847,7 @@ def cmd_restore(args) -> int:
             try:
                 urllib.request.urlopen(KIBANA_URL, timeout=5)
                 break
-            except (urllib.error.URLError, TimeoutError):
+            except ES_REQUEST_ERRORS:
                 time.sleep(5)
         password = elastic_password()
         # Shells out to curl rather than hand-building the multipart/

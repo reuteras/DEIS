@@ -1785,18 +1785,22 @@ def cmd_restore(args) -> int:
     archived_cfg = source / "deis.cfg"
     if archived_cfg.is_file():
         if cfg_path.exists():
-            console.print("[yellow]deis.cfg already exists - leaving it alone (archive's copy not applied).[/yellow]")
-        else:
-            shutil.copyfile(archived_cfg, cfg_path)
+            backup_path = REPO_ROOT / "deis.cfg.bak"
+            cfg_path.replace(backup_path)  # replace(), not rename(): overwrites an existing .bak too
+            console.print(
+                f"[yellow]Existing deis.cfg moved to {backup_path.name} - applying the archive's copy.[/yellow]"
+            )
+        shutil.copyfile(archived_cfg, cfg_path)
 
     env_path = REPO_ROOT / ".env"
     archived_env = source / ".env"
     if archived_env.is_file():
         if env_path.exists():
-            console.print("[yellow].env already exists - leaving it alone (archive's copy not applied).[/yellow]")
-        else:
-            shutil.copy2(archived_env, env_path)
-            env_path.chmod(0o600)  # belt-and-braces on top of copy2's own preserved mode
+            backup_path = REPO_ROOT / ".env.bak"
+            env_path.replace(backup_path)  # replace(), not rename(): overwrites an existing .bak too
+            console.print(f"[yellow]Existing .env moved to {backup_path.name} - applying the archive's copy.[/yellow]")
+        shutil.copy2(archived_env, env_path)
+        env_path.chmod(0o600)  # belt-and-braces on top of copy2's own preserved mode
 
     repo_name = manifest.get("es_repo_name", "deis-archive")
     snapshot_name = manifest.get("es_snapshot_name")

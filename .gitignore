@@ -4,7 +4,9 @@
 .venv/
 **/privoxy*.conf
 .env
+.env.bak
 deis.cfg
+deis.cfg.bak
 downloader/conf/aria2.session
 downloader/conf/config.json
 downloader/conf/nginx.conf

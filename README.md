@@ -146,6 +146,10 @@ Values are stored **in full**, not masked: finding every document that mentions 
 person is the question this tool exists to answer, and that needs the actual value to pivot
 on. Treat the index accordingly - it is as sensitive as the dump it came from.
 
+`deis pii-report` lists what a prior `pii-scan` already found, without rescanning anything -
+a capped preview table by default (filenames shortened to their basename, values truncated,
+just for a quick look), or the full result set as CSV via `--output <file>.csv`.
+
 `deis dedupe-scan` groups near-identical documents (the same template letter, a monthly report
 with one number changed) into `duplicate_cluster`, using a SimHash fingerprint rather than the
 exact sha256 match that ingest already deduplicates on. Documents with no alphabetic words at
@@ -289,6 +293,7 @@ bin/deis status          # snapshot of pipeline stage state and funnel counts
 bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed
 bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
+bin/deis pii-report      # list what pii-scan already found (see below)
 bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)

@@ -9,6 +9,7 @@ docs/IMPROVEMENTS.md's "CLI" section for the design.
 import argparse
 import base64
 import configparser
+import csv
 import json
 import re
 import secrets
@@ -44,6 +45,9 @@ INDEX = "leakdata-index-000001"
 RUNS_INDEX = "deis-ingest-runs"
 VIEW_URL = "http://127.0.0.1:8081/view"
 ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
+# Shared between cmd_pii_scan (what it writes) and cmd_pii_report (what it
+# reads back) - see pii.detect_all()'s own result shape in bin/pii.py.
+PII_FIELDS = ("personnummer", "emails", "phone_numbers", "ibans", "card_numbers")
 
 # Single source of truth for both build_parser() and the completion scripts
 # below, so the two can't silently drift apart.
@@ -59,6 +63,7 @@ SUBCOMMANDS = (
     "add-urls",
     "add-files",
     "pii-scan",
+    "pii-report",
     "entity-scan",
     "dedupe-scan",
     "clean",
@@ -509,7 +514,7 @@ def cmd_pii_scan(args) -> int:
         return 1
 
     scroll_id = response.get("_scroll_id")
-    totals = dict.fromkeys(("personnummer", "emails", "phone_numbers", "ibans", "card_numbers"), 0)
+    totals = dict.fromkeys(PII_FIELDS, 0)
     scanned = 0
     with_pii = 0
     failures: list[str] = []
@@ -559,6 +564,102 @@ def cmd_pii_scan(args) -> int:
         if len(failures) > 10:
             console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
         return 1
+    return 0
+
+
+# Rows shown in a terminal table before telling the user to use --output
+# instead - a real corpus can have thousands of matches (6128 in one seen
+# while building this), which both floods the terminal and takes rich
+# noticeably longer to render than reading the same hits already did.
+PII_REPORT_TABLE_LIMIT = 200
+
+
+def cmd_pii_report(args) -> int:
+    """Lists what pii-scan already found, rather than finding it again -
+    pii-scan's own summary table (see cmd_pii_scan above) only ever
+    printed per-type counts, with no way to get the actual matches back
+    out short of hand-writing an Elasticsearch query. Reads only
+    (pii.has_pii: true), never touches pii-scan's own results.
+    """
+    query = {"term": {"pii.has_pii": True}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={
+                "size": 200,
+                "_source": ["filename", "sha256", *[f"pii.{field}" for field in PII_FIELDS]],
+                "query": query,
+            },
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+    rows: list[list[str]] = []
+    writer = None
+    output_file = None
+
+    try:
+        if args.output:
+            output_file = args.output.open("w", newline="", encoding="utf-8")
+            writer = csv.writer(output_file)
+            writer.writerow(["filename", "sha256", *PII_FIELDS])
+
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                source = hit.get("_source", {})
+                pii_result = source.get("pii", {})
+                row = [source.get("filename", ""), source.get("sha256", "")]
+                row += ["; ".join(pii_result.get(field, []) or []) for field in PII_FIELDS]
+                if writer:
+                    writer.writerow(row)
+                elif len(rows) < PII_REPORT_TABLE_LIMIT:
+                    # The table is a quick-scan preview, not the real
+                    # output (--output is) - a full path plus a full
+                    # sha256 leaves rich almost no room for the fields
+                    # that actually matter here, wrapping every row
+                    # across a dozen lines. Basename only; each column
+                    # below is also capped with overflow="ellipsis".
+                    rows.append([Path(row[0]).name, row[1], *row[2:]])
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    finally:
+        if output_file:
+            output_file.close()
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    if writer:
+        console.print(f"Wrote {total} document(s) with personal identifiers to {args.output}.")
+        return 0
+
+    console.print(f"{total} document(s) with personal identifiers found.")
+    table = Table()
+    table.add_column("Filename", overflow="ellipsis", max_width=40, no_wrap=True)
+    table.add_column("SHA256", overflow="ellipsis", max_width=12, no_wrap=True)
+    for column in PII_FIELDS:
+        table.add_column(column, overflow="ellipsis", max_width=24, no_wrap=True)
+    for row in rows:
+        table.add_row(*row)
+    console.print(table)
+    if total > len(rows):
+        console.print(
+            f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
+        )
     return 0
 
 
@@ -979,6 +1080,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_pii = sub.add_parser("pii-scan", help="detect personal identifiers in indexed content")
     p_pii.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
     p_pii.set_defaults(func=cmd_pii_scan)
+
+    p_pii_report = sub.add_parser("pii-report", help="list what pii-scan already found")
+    p_pii_report.add_argument(
+        "--output", type=Path, help="write every match to this CSV file instead of a capped terminal table"
+    )
+    p_pii_report.set_defaults(func=cmd_pii_report)
 
     p_entity = sub.add_parser("entity-scan", help="extract named entities (people/orgs/locations) from indexed content")
     p_entity.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")

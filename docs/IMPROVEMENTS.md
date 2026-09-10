@@ -67,22 +67,33 @@ from — that has not been touched. *Effort: M.*
 
 ### E — Extract
 
-#### 21. More extractors (OCR, email beyond PST, MS Access table export, password-cracking for individually-encrypted documents, and `.csv`/`.xlsx` as rows done - see "Already fixed"; the rest is still open)
+#### 21. More extractors (OCR, email beyond PST, MS Access table export, password-cracking for individually-encrypted documents, and `.csv`/`.xlsx` as rows done - see "Already fixed"; the rest is speculative, data-dependent future work - not queued)
 
-Roughly in order of real-world value for leak dumps:
+Everything remaining here was scoped down deliberately rather than left open by oversight:
+building a parser for a format this corpus doesn't actually contain is pure speculative
+effort, and the pattern established for `.xlsx` (check the real corpus for real files of the
+format *first*, only build if it's actually there in meaningful volume - see `4182a6f`'s
+commit message) applies to all of it. When starting on a new dump, check for real instances of
+each of these before spending any effort - `find extracted/files -iname '*.<ext>'`, plus a
+magic-byte spot-check for anything whose extension alone is unreliable (the way `.db` turned
+out to be almost entirely `Thumbs.db`, not SQLite, in item 21's `.xlsx` round). If a format
+shows up in real volume, build its parser then, following the same
+row-index/security-hardening/real-corpus-verification shape `parse_csv_rows()`/
+`parse_xlsx_rows()` already established:
 
-- **Structured data as rows rather than blobs, the rest of it**: `.csv` and `.xlsx` are done
-  (see "Already fixed") - `.sql` dumps and SQLite are not. Same value proposition once done:
-  Tika flattens them to text today; parsing them into per-record documents turns "is my friend
-  in here?" into a precise query, confirmed for `.csv` against a real corpus (Swedish debt-
-  collection/`Kronofogden` records - `row.Personnummer: "<value>"` now finds every record for
-  one person across dozens of monthly files instantly, instead of a full-text match with no
-  way to tell which row matched).
+- **SQL dumps and SQLite as rows**: same value proposition as `.csv`/`.xlsx` - one document
+  per record instead of one flattened text blob per file - but zero real instances of either
+  were found in the corpus checked when `.xlsx` shipped (0 `.sql` files; 0 real SQLite
+  databases despite 1,622 `.db`-extension files, all `Thumbs.db`). SQL dumps specifically also
+  carry a real scope decision to make first if they do show up: MySQL-style `INSERT INTO`
+  statements alone, or also Postgres's default `COPY ... FROM stdin` block format (roughly
+  doubles the parser's size/risk - pg_dump doesn't emit `INSERT` by default at all, so
+  `INSERT`-only coverage would miss a plain `pg_dump` output entirely).
 - **Disk and VM images**: `.vmdk`, `.vhdx`, `.E01`, raw `.dd`.
 - **Mobile backups**, `.iso`/`.wim`, mail-server maildirs.
 - **dBase (`.dbf`)**: deferred alongside MS Access support (see "Already fixed") - `mdbtools`
   doesn't parse dBase at all, it's a wholly different container format, and would need its own
-  tool for a much smaller file count than the `.mdb`/`.wdb` case had. Not attempted yet.
+  tool.
 
 ### I — Ingest
 
@@ -133,12 +144,14 @@ export of a result set as CSV or JSON for reporting back to whoever asked. *Effo
 All of the "analytical power" work is done: PII detection (31), OCR (the highest-value part of
 21), language detection and entity extraction (32), near-duplicate clustering (33) and the CLI.
 So are the two opsec/housekeeping items that used to sit here, 42 (preflight TOR leak test) and
-40 (log-ingest scaffolding). What remains:
+40 (log-ingest scaffolding). The rest of 21 is deferred as speculative, data-dependent future
+work (see item 21 above) rather than queued - it isn't sequenced below. What remains, in order:
 
-1. The rest of 21 (email formats beyond PST, `.xlsx`/SQL dumps/SQLite as rows, disk/VM images,
-    mobile backups, encrypted-archive listing), 36 (result quality), and 10's v2ray remainder
-    are each individually small and can be picked up whenever the surrounding code is being
-    touched.
+1. **10** - the v2ray installer is still fetched unpinned; small, self-contained.
+2. **46** - provenance/lineage tracking (`source_chain`). Flagged *Impact: high* in its own
+    write-up but had been missing from this list entirely until now.
+3. **36** - result quality (highlighted snippets, a saved search per entity type, CSV/JSON
+    export of a search result set).
 
 ## Decided, not open
 

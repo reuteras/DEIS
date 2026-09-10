@@ -54,30 +54,45 @@ case "$(arch -s)" in
     ;;
 esac
 
+# Pinned rather than "releases/latest": the original script downloaded a
+# checksum (.dgst) from the very same GitHub release it was verifying the
+# archive against - no real protection against a compromised/MITM'd
+# download, since an attacker controlling that response controls both
+# files. Bumping VERSION means downloading both archives fresh, computing
+# their real sha256 yourself, and updating both VERSION and the table
+# below in the same change - see downloader/VENDORED.md.
+VERSION='v5.53.0'
+declare -A SHA256_BY_MACHINE=(
+    ['64']='6bbb8aee65a57d0b12599b4b7c842b3ad0daca4436e661d94015c447cb31b4fa'
+    ['arm64-v8a']='2bda03a3d6b93122cb418504dc1c9ada10f99ae6be58a1fcc4a5ca1a01e12a30'
+)
+
 TMP_DIRECTORY="$(mktemp -d)/"
 ZIP_FILE="${TMP_DIRECTORY}v2ray-linux-$MACHINE.zip"
-DOWNLOAD_LINK="https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-$MACHINE.zip"
+DOWNLOAD_LINK="https://github.com/v2fly/v2ray-core/releases/download/$VERSION/v2ray-linux-$MACHINE.zip"
 
 download_v2ray() {
     if ! curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE" "$DOWNLOAD_LINK" -#; then
         echo 'error: Download failed! Please check your network or try again.'
         exit 1
     fi
-    if ! curl -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE.dgst" "$DOWNLOAD_LINK.dgst" -#; then
-        echo 'error: Download failed! Please check your network or try again.'
-        exit 1
-    fi
 }
 
 verification_v2ray() {
-    for LISTSUM in 'md5' 'sha1' 'sha256' 'sha512'; do
-        SUM="$(${LISTSUM}sum "$ZIP_FILE" | sed 's/ .*//')"
-        CHECKSUM=$(grep "$(echo $LISTSUM | tr '[:lower:]' '[:upper:]')" "$ZIP_FILE".dgst | uniq | sed 's/.* //')
-        if [ "$SUM" != "$CHECKSUM" ]; then
-            echo 'error: Check failed! Please check your network or try again.'
-            exit 1
-        fi
-    done
+    local pinned="${SHA256_BY_MACHINE[$MACHINE]:-}"
+    if [[ -z "$pinned" ]]; then
+        echo "error: No pinned sha256 for architecture '$MACHINE' - see downloader/VENDORED.md."
+        echo "Download both v2ray-linux-$MACHINE.zip and its .dgst from the pinned release," \
+            "confirm the .dgst's SHA2-256 matches what you compute yourself, then add it to" \
+            "SHA256_BY_MACHINE above before using v2ray on this architecture."
+        exit 1
+    fi
+    local actual
+    actual="$(sha256sum "$ZIP_FILE" | sed 's/ .*//')"
+    if [[ "$actual" != "$pinned" ]]; then
+        echo 'error: sha256 mismatch against the pinned value - refusing to install.'
+        exit 1
+    fi
 }
 
 decompression() {
@@ -103,6 +118,11 @@ information() {
 
 main() {
     download_v2ray
+    # verification_v2ray was defined but never actually called here - the
+    # download was installed with no integrity check of any kind, not
+    # even the weak same-host one the original script's dead code
+    # implemented. Found while fixing item 10.
+    verification_v2ray
     decompression
     install_v2ray
     information

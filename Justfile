@@ -15,20 +15,33 @@ export:
     uv export --package deis-ingest --no-hashes --no-dev --no-emit-workspace --quiet > ingest/requirements.txt
     uv export --package deis-web    --no-hashes --no-dev --no-emit-workspace --quiet > web/requirements.txt
 
+# "dir/*" alone is a bare glob and, like any shell glob, never matches a
+# dotfile - found via a real leftover ".!<pid>!unpack.log" (an SMB
+# oplock-break artifact from an interrupted process) that `just clean`
+# had been silently leaving behind in logs/ every time. "dir/.[!.]*
+# dir/..?*" is the standard portable idiom for "every dotfile except
+# literal . and .." - added alongside the plain glob everywhere this
+# recipe empties a directory by glob rather than removing it outright
+# (rm -rf on the directory itself, like downloader/log below, already
+# recurses into dotfiles with no such gap).
+
+# Delete downloader state, log files, and controller's web page
 clean:
     rm -f downloader/conf/aria2.session
     rm -f downloader/conf/nginx.conf
     rm -f downloader/conf/privoxy*
     rm -f downloader/conf/torrc
-    rm -f downloader/data/*
+    rm -f downloader/data/* downloader/data/.[!.]* downloader/data/..?*
     rm -rf downloader/log
-    rm -f logs/*
+    rm -f logs/* logs/.[!.]* logs/..?*
     rm -f controller/www/index.html
 
 dist-clean: clean docker-clean
-    rm -rf extracted/* files/* status/*
+    rm -rf extracted/* extracted/.[!.]* extracted/..?*
+    rm -rf files/* files/.[!.]* files/..?*
+    rm -rf status/* status/.[!.]* status/..?*
     rm -f .jupyter/serverconfig/jupyterlabapputilsextensionannouncements.json
-    rm -rf .jupyter/lab/workspaces/* .jupyter/migrated
+    rm -rf .jupyter/lab/workspaces/* .jupyter/lab/workspaces/.[!.]* .jupyter/lab/workspaces/..?* .jupyter/migrated
     rm -rf notebook/.ipynb_checkpoints
     rm -rf .venv
     # docker-clean stops aria2 gracefully, which flushes a fresh (empty)

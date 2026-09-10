@@ -48,6 +48,9 @@ ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
 # Shared between cmd_pii_scan (what it writes) and cmd_pii_report (what it
 # reads back) - see pii.detect_all()'s own result shape in bin/pii.py.
 PII_FIELDS = ("personnummer", "emails", "phone_numbers", "ibans", "card_numbers")
+# Same idea, for entities - see entities.detect_entities()'s result shape
+# in bin/entities.py.
+ENTITY_FIELDS = ("persons", "organizations", "locations")
 
 # Single source of truth for both build_parser() and the completion scripts
 # below, so the two can't silently drift apart.
@@ -65,6 +68,7 @@ SUBCOMMANDS = (
     "pii-scan",
     "pii-report",
     "entity-scan",
+    "entity-report",
     "dedupe-scan",
     "clean",
     "reset",
@@ -692,7 +696,7 @@ def cmd_entity_scan(args) -> int:
         return 1
 
     scroll_id = response.get("_scroll_id")
-    totals = dict.fromkeys(("persons", "organizations", "locations"), 0)
+    totals = dict.fromkeys(ENTITY_FIELDS, 0)
     scanned = 0
     with_entities = 0
     skipped_unknown_language = 0
@@ -752,6 +756,93 @@ def cmd_entity_scan(args) -> int:
         if len(failures) > 10:
             console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
         return 1
+    return 0
+
+
+def cmd_entity_report(args) -> int:
+    """Lists what entity-scan already found, rather than finding it again -
+    mirrors cmd_pii_report exactly, same reasoning: entity-scan's own
+    summary table only ever printed per-type counts, with no way to get
+    the actual matches back out short of hand-writing an Elasticsearch
+    query. Reads only (entities.has_entities: true), never touches
+    entity-scan's own results.
+    """
+    query = {"term": {"entities.has_entities": True}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={
+                "size": 200,
+                "_source": ["filename", "sha256", *[f"entities.{field}" for field in ENTITY_FIELDS]],
+                "query": query,
+            },
+        )
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+    rows: list[list[str]] = []
+    writer = None
+    output_file = None
+
+    try:
+        if args.output:
+            output_file = args.output.open("w", newline="", encoding="utf-8")
+            writer = csv.writer(output_file)
+            writer.writerow(["filename", "sha256", *ENTITY_FIELDS])
+
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                source = hit.get("_source", {})
+                entities_result = source.get("entities", {})
+                row = [source.get("filename", ""), source.get("sha256", "")]
+                row += ["; ".join(entities_result.get(field, []) or []) for field in ENTITY_FIELDS]
+                if writer:
+                    writer.writerow(row)
+                elif len(rows) < PII_REPORT_TABLE_LIMIT:
+                    # Same reasoning as cmd_pii_report's own table: a full
+                    # path/sha256 leaves rich almost no room for the
+                    # fields that actually matter in a quick-scan preview.
+                    rows.append([Path(row[0]).name, row[1], *row[2:]])
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    finally:
+        if output_file:
+            output_file.close()
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except (RuntimeError, urllib.error.URLError, TimeoutError):
+                pass
+
+    if writer:
+        console.print(f"Wrote {total} document(s) with named entities to {args.output}.")
+        return 0
+
+    console.print(f"{total} document(s) with named entities found.")
+    table = Table()
+    table.add_column("Filename", overflow="ellipsis", max_width=40, no_wrap=True)
+    table.add_column("SHA256", overflow="ellipsis", max_width=12, no_wrap=True)
+    for column in ENTITY_FIELDS:
+        table.add_column(column, overflow="ellipsis", max_width=24, no_wrap=True)
+    for row in rows:
+        table.add_row(*row)
+    console.print(table)
+    if total > len(rows):
+        console.print(
+            f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
+        )
     return 0
 
 
@@ -1090,6 +1181,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_entity = sub.add_parser("entity-scan", help="extract named entities (people/orgs/locations) from indexed content")
     p_entity.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
     p_entity.set_defaults(func=cmd_entity_scan)
+
+    p_entity_report = sub.add_parser("entity-report", help="list what entity-scan already found")
+    p_entity_report.add_argument(
+        "--output", type=Path, help="write every match to this CSV file instead of a capped terminal table"
+    )
+    p_entity_report.set_defaults(func=cmd_entity_report)
 
     p_dedupe = sub.add_parser("dedupe-scan", help="cluster near-duplicate documents")
     p_dedupe.add_argument(

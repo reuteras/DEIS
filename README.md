@@ -150,6 +150,11 @@ on. Treat the index accordingly - it is as sensitive as the dump it came from.
 a capped preview table by default (filenames shortened to their basename, values truncated,
 just for a quick look), or the full result set as CSV via `--output <file>.csv`.
 
+`deis entity-scan` fills each document's `entities` field with named entities found in its
+text - people, organizations, and locations - via spaCy's trained NER models
+(English/Swedish; documents in another language are skipped rather than guessed at). `deis
+entity-report` lists what a prior `entity-scan` already found, same shape as `pii-report`.
+
 `deis dedupe-scan` groups near-identical documents (the same template letter, a monthly report
 with one number changed) into `duplicate_cluster`, using a SimHash fingerprint rather than the
 exact sha256 match that ingest already deduplicates on. Documents with no alphabetic words at
@@ -294,6 +299,8 @@ bin/deis search <term>   # search indexed content from the terminal
 bin/deis report          # what was found, what could not be processed
 bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
 bin/deis pii-report      # list what pii-scan already found (see below)
+bin/deis entity-scan     # extract named entities (people/orgs/locations) from indexed content (see below)
+bin/deis entity-report   # list what entity-scan already found (see below)
 bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
 bin/deis clean           # wraps 'just clean' behind a confirmation prompt
 bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)

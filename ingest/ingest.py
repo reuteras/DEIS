@@ -637,6 +637,32 @@ def load_lineage(path):
     return edges
 
 
+def load_decrypted_passwords(path):
+    """Reads status/decrypted_passwords.jsonl (unpack/start.sh's
+    record_decrypted_password) into a dict keyed by the recovered
+    document's own sha256 - one entry per document individually
+    password-protected (Office/PDF, not an archive - see that function's
+    own comment on why archive passwords aren't recorded the same way)
+    and successfully cracked. Same never-raise reasoning as load_lineage:
+    a missing file just means nothing's been recovered this way yet.
+    """
+    passwords = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    passwords[record["sha"]] = record["password"]
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return passwords
+
+
 def load_source_urls(path):
     """Reads status/source_urls.jsonl (deis/done.sh) into a dict keyed by
     sha256 - one entry per downloaded file, each the root of its own
@@ -783,6 +809,14 @@ def build_bulk_body(items):
             # original name.
             "source_chain": resolve_source_chain(str(item["fname"]), item["sha256"]),
         }
+        # Only set when this exact document was individually
+        # password-protected and recovered (extraction_status ==
+        # "decrypted") - see load_decrypted_passwords/
+        # record_decrypted_password. Omitted rather than set to null for
+        # every other document, since it would otherwise be empty on
+        # nearly every doc in the index.
+        if password := decrypted_passwords_by_sha.get(item["sha256"]):
+            doc["decrypt_password"] = password
         lines.append(json.dumps(doc))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -1160,6 +1194,7 @@ still_corrupt = load_sha256_set("status/still_corrupt.txt")
 still_unsafe = load_sha256_set("status/still_unsafe.txt")
 still_multivolume = load_sha256_set("status/still_multivolume.txt")
 decrypted = load_sha256_set("status/decrypted.txt")
+decrypted_passwords_by_sha = load_decrypted_passwords("status/decrypted_passwords.jsonl")
 lineage_by_sha = load_lineage("status/lineage.jsonl")
 source_urls_by_sha = load_source_urls("status/source_urls.jsonl")
 if use_sqlite:

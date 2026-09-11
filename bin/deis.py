@@ -598,6 +598,12 @@ def cmd_search_sha256(args) -> int:
             doc["_id"],
             doc.get("_source", {}).get("filename", ""),
             doc.get("_source", {}).get("extraction_status", ""),
+            # Only present on a "decrypted" document (an individually
+            # password-protected Office/PDF file unpack.sh's password
+            # cracking recovered) - see ingest.py's
+            # load_decrypted_passwords/build_bulk_body. Empty string for
+            # everything else, same as the other columns above.
+            doc.get("_source", {}).get("decrypt_password", ""),
             f"{VIEW_URL}/{doc['_id']}",
         )
         for doc in found
@@ -607,7 +613,7 @@ def cmd_search_sha256(args) -> int:
         try:
             with args.output.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["sha256", "filename", "extraction_status", "link"])
+                writer.writerow(["sha256", "filename", "extraction_status", "decrypt_password", "link"])
                 writer.writerows(rows)
         except OSError as error:
             console.print(f"[red]Could not write {args.output}: {error}[/red]")
@@ -619,6 +625,7 @@ def cmd_search_sha256(args) -> int:
         table.add_column("SHA256")
         table.add_column("Filename", overflow="ellipsis", max_width=60)
         table.add_column("Status")
+        table.add_column("Password")
         # overflow="fold" (wrap instead of cut) plus _rich_link's OSC-8
         # markup: even if the column still has to wrap the URL across
         # lines, the link stays clickable end-to-end (see _rich_link) -
@@ -626,12 +633,12 @@ def cmd_search_sha256(args) -> int:
         # visibly cut the URL short and, in terminals without OSC-8
         # support, leave a chopped-off address nothing could open.
         table.add_column("Link", overflow="fold")
-        for sha, filename, status, link in rows:
+        for sha, filename, status, password, link in rows:
             # Full hash only in the CSV/lookup args - once it's the row
             # key for a hash the operator already typed in, showing all
             # 64 hex chars here just steals column width from Link for
             # no reader benefit.
-            table.add_row(f"{sha[:12]}…", filename, status, _rich_link(link))
+            table.add_row(f"{sha[:12]}…", filename, status, password, _rich_link(link))
         console.print(table)
 
     if missing:

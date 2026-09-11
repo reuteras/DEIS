@@ -8,6 +8,16 @@ STILL_CORRUPT=/status/still_corrupt.txt
 STILL_UNSAFE=/status/still_unsafe.txt
 STILL_MULTIVOLUME=/status/still_multivolume.txt
 DECRYPTED=/status/decrypted.txt
+# One JSON line per document recovered by decrypt_office_document/
+# decrypt_pdf_document (see record_decrypted_password) - the password
+# itself, keyed by sha256, for ingest.py to attach to that document's
+# Elasticsearch record. Deliberately not scoped to try_extract's archive
+# passwords: -p is always passed to 7-Zip there even against an
+# unprotected archive (see try_extract's own comment), so "the candidate
+# that made it succeed" doesn't reliably mean "the archive's real
+# password" the way it does here, where application/encrypted or qpdf
+# --is-encrypted already confirmed the document truly was protected.
+DECRYPTED_PASSWORDS=/status/decrypted_passwords.jsonl
 MAX_DEPTH_DEFAULT=6
 PARALLELISM="${PARALLELISM:-$(command -v nproc > /dev/null && nproc || echo 4)}"
 # Defaults for the hostile-archive guards in check_archive_safety() and the
@@ -257,6 +267,16 @@ record_lineage_edge() {
     [[ "${path}" =~ ^/extracted/files/([a-f0-9]{64})/ ]] && parent="${BASH_REMATCH[1]}"
     printf '{"sha":"%s","parent_sha":"%s","filename":"%s","archive_type":"%s"}\n' \
         "${sha}" "${parent}" "$(json_escape "${path}")" "${kind}" >> /status/lineage.jsonl
+}
+
+# Records the password that recovered an individually password-protected
+# document - see decrypt_office_document/decrypt_pdf_document, the only
+# two callers. $sha is the document's own (already-decrypted) content
+# hash, matching what it's indexed under at ingest time, so ingest.py's
+# load_decrypted_passwords can attach this straight to that document.
+record_decrypted_password() {
+    local sha="$1" password="$2"
+    printf '{"sha":"%s","password":"%s"}\n' "${sha}" "$(json_escape "${password}")" >> "${DECRYPTED_PASSWORDS}"
 }
 
 # Pre-extraction check against a hostile archive, using 7-Zip's own -slt
@@ -621,8 +641,13 @@ maybe_export_access_tables() {
 # archive, so the existing not-archive handling (the file already left in
 # place under /files) applies unchanged - only the live copy under
 # /extracted/files is replaced in place with the recovered plaintext. The
-# password itself is never logged, matching try_extract's existing
-# precedent for archives.
+# password itself is never written to LOG (still true - that log is a plain
+# text file operators tail/grep freely), but is recorded, keyed by this
+# document's sha256, via record_decrypted_password - see that function and
+# DECRYPTED_PASSWORDS's own comment for why: unlike try_extract's archive
+# passwords, application/encrypted already confirms this document really
+# was protected, so the password that opens it is real, recoverable
+# forensic signal (e.g. password reuse across the case), not noise.
 decrypt_office_document() {
     local final_path="$1" candidate stage sha
     config_true_default document_decrypt_office true || return 0
@@ -634,6 +659,7 @@ decrypt_office_document() {
             mv "${stage}" "${final_path}"
             sha="$(sha256sum "${final_path}" | awk '{print $1}')"
             echo "${sha}" >> "${DECRYPTED}"
+            record_decrypted_password "${sha}" "${candidate}"
             log DECRYPTED "Recovered password-protected Office document: ${final_path}"
             return
         fi
@@ -665,6 +691,7 @@ decrypt_pdf_document() {
             mv "${stage}" "${final_path}"
             sha="$(sha256sum "${final_path}" | awk '{print $1}')"
             echo "${sha}" >> "${DECRYPTED}"
+            record_decrypted_password "${sha}" "${candidate}"
             log DECRYPTED "Recovered password-protected PDF: ${final_path}"
             return
         fi
@@ -897,8 +924,8 @@ process_one_file() {
 
 export -f log read_cfg config_true config_true_default config_int load_passwords \
     sanitize_component safe_copy place_sanitized dispose_of_original multivolume_family \
-    queue_new_files json_escape record_lineage_edge check_archive_safety maybe_ocr maybe_export_access_tables \
-    maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
+    queue_new_files json_escape record_lineage_edge record_decrypted_password check_archive_safety maybe_ocr \
+    maybe_export_access_tables maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
     is_pst_like is_ole_document is_zip_based_document is_pdf_document is_ooxml_or_odf_zip \
     process_zip_like process_pst apply_known_result worker_entrypoint process_one_file
 
@@ -1045,8 +1072,9 @@ unpack() {
     : > "${STILL_UNSAFE}"
     : > "${STILL_MULTIVOLUME}"
     : > "${DECRYPTED}"
+    : > "${DECRYPTED_PASSWORDS}"
     WORKDIR="$(mktemp -d)"
-    export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT STILL_UNSAFE STILL_MULTIVOLUME DECRYPTED
+    export WORKDIR LOG STILL_ENCRYPTED STILL_CORRUPT STILL_UNSAFE STILL_MULTIVOLUME DECRYPTED DECRYPTED_PASSWORDS
     build_password_list | awk '!seen[$0]++' > "${WORKDIR}/passwords.list"
 
     # -name '.*' excludes /files/.gitignore - status/progress markers no

@@ -498,6 +498,22 @@ class TestLoadLineage:
         assert edges == {"aaa": {"sha": "aaa", "parent_sha": "", "filename": "x", "archive_type": "zip"}}
 
 
+class TestLoadDecryptedPasswords:
+    def test_missing_file_yields_empty_dict(self, ingest_module, tmp_path):
+        assert ingest_module.load_decrypted_passwords(str(tmp_path / "missing.jsonl")) == {}
+
+    def test_parses_one_password_per_line_keyed_by_sha(self, ingest_module, tmp_path):
+        f = tmp_path / "decrypted_passwords.jsonl"
+        f.write_text('{"sha":"aaa","password":"hunter2"}\n{"sha":"bbb","password":"correct horse"}\n')
+        passwords = ingest_module.load_decrypted_passwords(str(f))
+        assert passwords == {"aaa": "hunter2", "bbb": "correct horse"}
+
+    def test_malformed_line_is_skipped_not_fatal(self, ingest_module, tmp_path):
+        f = tmp_path / "decrypted_passwords.jsonl"
+        f.write_text('not json\n{"sha":"aaa","password":"hunter2"}\n{"missing":"password"}\n')
+        assert ingest_module.load_decrypted_passwords(str(f)) == {"aaa": "hunter2"}
+
+
 class TestLoadSourceUrls:
     def test_missing_file_yields_empty_dict(self, ingest_module, tmp_path):
         assert ingest_module.load_source_urls(str(tmp_path / "missing.jsonl")) == {}

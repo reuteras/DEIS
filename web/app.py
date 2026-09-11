@@ -197,6 +197,26 @@ def dedupe_scan_summary() -> dict | None:
         return None
 
 
+def language_scan_summary() -> dict | None:
+    """language-scan (bin/deis.py's cmd_language_scan) reclassifies
+    documents in place - unlike pii-scan/entity-scan, which each set a
+    dedicated <field>.has_pii/entities.has_entities the moment a document
+    is visited, "language" is already set on every document from ingest
+    time onward (setup/entrypoint.sh's stopword-based first guess), so
+    field presence can't distinguish "language-scan's more accurate pass
+    ran" from "still just the ingest-time guess". Same fix as
+    dedupe_scan_summary(): bin/deis.py writes this file once, when a scan
+    finishes successfully, and this just reads it back.
+    """
+    path = Path(STATUS_DIR) / "language_scan_summary.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def scan_running(marker_name: str) -> bool:
     """Whether bin/deis.py's pii-scan/entity-scan/dedupe-scan is currently
     running - same real-liveness-marker pattern as pipeline_status()'s
@@ -251,6 +271,7 @@ def render_index_html() -> str:
     pii_progress = elastic_scan_progress("pii.has_pii")
     entity_progress = elastic_scan_progress("entities.has_entities")
     dedupe_summary = dedupe_scan_summary()
+    language_summary = language_scan_summary()
 
     def stage_row(label: str, key: str) -> str:
         state = status[key]
@@ -317,12 +338,26 @@ def render_index_html() -> str:
             f"(last run {html.escape(str(dedupe_summary.get('@timestamp', '?')))})</td></tr>"
         )
 
+    if scan_running("language_scanning"):
+        language_row = '<tr><td>Language scan</td><td><span style="color:#f9a825;">running</span></td></tr>'
+    elif language_summary is None:
+        language_row = "<tr><td>Language scan</td><td>not yet run</td></tr>"
+    else:
+        language_row = (
+            "<tr><td>Language scan</td>"
+            f"<td>{language_summary.get('documents_scanned', '?')} document(s) reclassified "
+            f"({language_summary.get('english', '?')} english, {language_summary.get('swedish', '?')} swedish, "
+            f"{language_summary.get('unknown', '?')} still unknown) "
+            f"(last run {html.escape(str(language_summary.get('@timestamp', '?')))})</td></tr>"
+        )
+
     scan_section = f"""
 <h2>Post-processing</h2>
 <table>
 {scan_row("PII scan", "pii_scanning", pii_progress)}
 {scan_row("Entity scan", "entity_scanning", entity_progress)}
 {dedupe_row}
+{language_row}
 </table>
 """
 

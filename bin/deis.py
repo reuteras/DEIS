@@ -1044,6 +1044,28 @@ def cmd_language_scan(args) -> int:
         if len(failures) > 10:
             console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
         return 1
+
+    # Unlike pii-scan/entity-scan, "language" is set on every document
+    # from ingest time onward (setup/entrypoint.sh's stopword-based first
+    # guess - see this function's own docstring), so field-presence can't
+    # tell the web UI "has language-scan's more accurate pass run yet" the
+    # way pii.has_pii/entities.has_entities do. Same fix as dedupe-scan's
+    # own summary file: write the result of the last completed run here,
+    # for the web UI to read back instead.
+    summary_path = REPO_ROOT / "status" / "language_scan_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "@timestamp": datetime.now(UTC).isoformat(),
+                "rescan": bool(args.rescan),
+                "documents_scanned": scanned,
+                "english": counts["english"],
+                "swedish": counts["swedish"],
+                "unknown": counts["unknown"],
+            }
+        ),
+        encoding="utf-8",
+    )
     return 0
 
 

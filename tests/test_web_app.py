@@ -374,6 +374,43 @@ class TestRenderIndexHtml:
         assert "(running)" in page
         assert "12 document(s) in 3 cluster(s)" in page
 
+    def test_language_scan_not_yet_run(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+
+        page = app_module.render_index_html()
+
+        assert "Language scan" in page
+        assert "not yet run" in page
+
+    def test_language_scan_summary_shown(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "language_scan_summary.json").write_text(
+            '{"@timestamp": "2026-09-10T00:00:00+00:00", "documents_scanned": 30, '
+            '"english": 10, "swedish": 18, "unknown": 2}'
+        )
+
+        page = app_module.render_index_html()
+
+        assert "30 document(s) reclassified (10 english, 18 swedish, 2 still unknown)" in page
+
+    def test_language_scan_running(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELASTIC_PASSWORD", raising=False)
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        monkeypatch.setattr(app_module, "FILES_DIR", str(tmp_path / "files"))
+        monkeypatch.setattr(app_module, "SYMLINKS_DIR", str(tmp_path / "sha256"))
+        (tmp_path / "language_scanning").touch()
+
+        page = app_module.render_index_html()
+
+        assert "Language scan" in page
+        assert '<span style="color:#f9a825;">running</span>' in page
+
 
 class TestElasticScanProgress:
     def test_returns_none_without_password(self, app_module, monkeypatch):
@@ -423,6 +460,22 @@ class TestDedupeScanSummary:
         monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
         (tmp_path / "dedupe_scan_summary.json").write_text("not json")
         assert app_module.dedupe_scan_summary() is None
+
+
+class TestLanguageScanSummary:
+    def test_returns_none_when_missing(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        assert app_module.language_scan_summary() is None
+
+    def test_returns_parsed_summary(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        (tmp_path / "language_scan_summary.json").write_text('{"documents_scanned": 5}')
+        assert app_module.language_scan_summary() == {"documents_scanned": 5}
+
+    def test_returns_none_on_invalid_json(self, app_module, monkeypatch, tmp_path):
+        monkeypatch.setattr(app_module, "STATUS_DIR", str(tmp_path))
+        (tmp_path / "language_scan_summary.json").write_text("not json")
+        assert app_module.language_scan_summary() is None
 
 
 class TestScanRunning:

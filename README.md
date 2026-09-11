@@ -335,18 +335,18 @@ uv run deis run
 Then monitor [http://127.0.0.1:8081](http://127.0.0.1:8081) until the process is done. Afterwards run:
 
 ```bash
-uv run language-scan
-uv run pii-scan
-uv run entity-scan
-uv run dedupe-scan
+uv run deis language-scan
+uv run deis pii-scan
+uv run deis entity-scan
+uv run deis dedupe-scan
 ```
 
 To save the reports from the scans:
 
 ```bash
-uv run pii-report --output logs/pii-report.csv
-uv run entity-report --output logs/entity-report.csv
-uv run dedupe-report --output logs/dedupe-report.csv
+uv run deis pii-report --output logs/pii-report.csv
+uv run deis entity-report --output logs/entity-report.csv
+uv run deis dedupe-report --output logs/dedupe-report.csv
 ```
 
 `bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already

@@ -533,13 +533,135 @@ def _plain_snippet(hit: dict) -> str:
     return _highlight_fragment(hit).replace("<em>", "").replace("</em>", "")
 
 
+def _rich_link(url: str) -> str:
+    """rich console markup for a clickable OSC-8 hyperlink whose visible
+    text and target are the same URL. A plain URL string in a Table cell
+    is only ever clickable by luck - a terminal auto-detecting it as a
+    link - and rich's default column overflow ("ellipsis") actively
+    breaks even that by cutting the visible text (and the URL it names)
+    down to fit the column, e.g. "http://127.0.0.1:8081/view/1836e9…".
+    Wrapping it in [link=...] instead makes the full target a style
+    attribute independent of how much of the visible text a narrow
+    column ends up showing - it stays clickable (in terminals that
+    support OSC-8: iTerm2, kitty, WezTerm, Windows Terminal, VS Code's
+    integrated terminal, ...) even if the cell itself has to fold or
+    truncate for display.
+    """
+    return f"[link={url}]{url}[/link]"
+
+
+def cmd_search_sha256(args) -> int:
+    """Looks up document(s) directly by sha256, via _mget - every document
+    is indexed with _id == its sha256 (see ingest.py's build_bulk_body), so
+    this is an exact ID lookup, not a query, and finds a file regardless of
+    whether Tika ever extracted any searchable text from it. Built for the
+    status/*.txt files (still_encrypted.txt, still_multivolume.txt, etc.),
+    which are exactly one sha256 per line - the plain use case is "what is
+    this hash, and where did it come from" for a hash already in hand,
+    rather than cmd_search's "find documents matching this term". Excludes
+    the "data" source field (the document's own base64-encoded original
+    bytes) since it's never wanted here and can be large enough to bloat a
+    multi-hash lookup for nothing.
+
+    -f/--file reads one sha256 per line from a status file, e.g. the
+    exact shape status/still_multivolume.txt or status/decrypted.txt
+    already are - the two flags combine (both contribute to the same
+    lookup) rather than one overriding the other. dict.fromkeys()
+    dedupes while keeping first-seen order, in case the same hash shows
+    up in both --sha256 and the file.
+    """
+    shas = list(args.sha256 or [])
+    if args.file:
+        try:
+            lines = args.file.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            console.print(f"[red]Could not read {args.file}: {error}[/red]")
+            return 1
+        shas.extend(line.strip() for line in lines if line.strip())
+    shas = list(dict.fromkeys(shas))
+    if not shas:
+        console.print("[red]No sha256 hashes given - use --sha256 <hash> and/or -f/--file <path>.[/red]")
+        return 1
+
+    try:
+        response = es_request(f"/{INDEX}/_mget?_source_excludes=data", method="POST", body={"ids": shas})
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Lookup failed: {error}[/red]")
+        return 1
+
+    docs = response.get("docs", [])
+    found = [doc for doc in docs if doc.get("found")]
+    missing = [doc["_id"] for doc in docs if not doc.get("found")]
+
+    rows = [
+        (
+            doc["_id"],
+            doc.get("_source", {}).get("filename", ""),
+            doc.get("_source", {}).get("extraction_status", ""),
+            f"{VIEW_URL}/{doc['_id']}",
+        )
+        for doc in found
+    ]
+
+    if args.output:
+        try:
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["sha256", "filename", "extraction_status", "link"])
+                writer.writerows(rows)
+        except OSError as error:
+            console.print(f"[red]Could not write {args.output}: {error}[/red]")
+            return 1
+        console.print(f"Wrote {len(rows)} of {len(shas)} sha256(s) to {args.output}.")
+    else:
+        console.print(f"{len(rows)} of {len(shas)} sha256(s) found in the index.")
+        table = Table()
+        table.add_column("SHA256")
+        table.add_column("Filename", overflow="ellipsis", max_width=60)
+        table.add_column("Status")
+        # overflow="fold" (wrap instead of cut) plus _rich_link's OSC-8
+        # markup: even if the column still has to wrap the URL across
+        # lines, the link stays clickable end-to-end (see _rich_link) -
+        # unlike the default "ellipsis" overflow, which used to both
+        # visibly cut the URL short and, in terminals without OSC-8
+        # support, leave a chopped-off address nothing could open.
+        table.add_column("Link", overflow="fold")
+        for sha, filename, status, link in rows:
+            # Full hash only in the CSV/lookup args - once it's the row
+            # key for a hash the operator already typed in, showing all
+            # 64 hex chars here just steals column width from Link for
+            # no reader benefit.
+            table.add_row(f"{sha[:12]}…", filename, status, _rich_link(link))
+        console.print(table)
+
+    if missing:
+        console.print(
+            f"[yellow]Not indexed yet (not ingested, or its content was fully absorbed into a "
+            f"resolved multi-volume archive): {', '.join(missing)}[/yellow]"
+        )
+    return 0
+
+
 def cmd_search(args) -> int:
     """Highlighted snippets (item 36) via Elasticsearch's own "highlight"
     API against attachment.content - the only field this ever queries, so
     there's no ambiguity about which field to highlight. --output scrolls
     every match into a CSV instead of the capped interactive table
     (size 20, unscrolled) - same shape as pii-report/entity-report.
+    Dispatches to cmd_search_sha256 instead when --sha256 and/or -f/--file
+    is given: that's an exact ID lookup, not a term search. "term" is
+    optional in argparse to allow that sha256-only invocation, so it's
+    checked for here instead. `args.sha256 is not None` (rather than a
+    plain truthiness check) matters because --sha256 alone (no hashes,
+    paired with -f/--file for all of them - see cmd_search_sha256) parses
+    to [], which is falsy but still means "sha256 lookup mode".
     """
+    if args.sha256 is not None or args.file is not None:
+        return cmd_search_sha256(args)
+    if not args.term:
+        console.print("[red]Provide a search term, or use --sha256 <hash> [<hash> ...] and/or -f/--file.[/red]")
+        return 1
+
     query = {
         "query": {"match": {"attachment.content": args.term}},
         "highlight": {"fields": {"attachment.content": {"fragment_size": 150, "number_of_fragments": 1}}},
@@ -599,12 +721,14 @@ def cmd_search(args) -> int:
     hits = response.get("hits", {}).get("hits", [])
     console.print(f"{total} hit(s) for {args.term!r}.")
     table = Table()
-    table.add_column("Filename")
+    table.add_column("Filename", overflow="ellipsis", max_width=60)
     table.add_column("Snippet")
-    table.add_column("Link")
+    table.add_column("Link", overflow="fold")
     for hit in hits:
         source = hit["_source"]
-        table.add_row(source.get("filename", ""), _rich_snippet(hit), f"{VIEW_URL}/{source.get('sha256', '')}")
+        table.add_row(
+            source.get("filename", ""), _rich_snippet(hit), _rich_link(f"{VIEW_URL}/{source.get('sha256', '')}")
+        )
     console.print(table)
     return 0
 
@@ -2004,7 +2128,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="snapshot of pipeline state and funnel counts").set_defaults(func=cmd_status)
 
     p_search = sub.add_parser("search", help="search indexed content")
-    p_search.add_argument("term")
+    p_search.add_argument("term", nargs="?", help="text to search for in document content")
+    p_search.add_argument(
+        "--sha256",
+        nargs="*",
+        metavar="HASH",
+        help="look up document(s) directly by sha256 instead of a content search; ignores 'term' if both are "
+        "given. Combine with -f/--file to read hashes from a file, e.g. --sha256 -f status/decrypted.txt",
+    )
+    p_search.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        metavar="PATH",
+        help="read sha256 hashes to look up from this file, one per line (e.g. status/still_multivolume.txt, "
+        "status/decrypted.txt); combines with any hashes passed directly to --sha256",
+    )
     p_search.add_argument(
         "--output", type=Path, help="write every match (snippet, filename, sha256, link) to this CSV file"
     )

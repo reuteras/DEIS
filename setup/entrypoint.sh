@@ -447,3 +447,30 @@ log 'Add defualt configuration and dashboards'
 sleep 30
 curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/api/saved_objects/_import?overwrite=true" -H "kbn-xsrf: true" --form file=@/export.ndjson > /dev/null
 sublog 'Done'
+
+# The "Leaked data" dashboard's own default range (its saved object's
+# timeRestore/timeFrom, imported above from export.ndjson) survives every
+# setup/restore because it's a real saved object, version-controlled here.
+# Discover's default range is not a saved object at all - it's the global
+# "timepicker:timeDefaults" advanced setting, which lives only in Kibana's
+# own .kibana index. Setting that by hand in the UI doesn't survive a
+# saved-objects reset the way the dashboard's own setting does, so it's
+# set here instead, every run, the same way the rest of this script treats
+# every other piece of default configuration. Same instant as the
+# dashboard's own timeFrom above, for consistency between the two.
+#
+# The legacy /api/kibana/settings endpoint (still in Kibana's docs) 400s on
+# this version - "exists but is not available with the current
+# configuration" - so this uses /internal/kibana/settings instead, the one
+# actually confirmed live against this stack (9.5.3): it needs the
+# x-elastic-internal-origin header or Kibana rejects it as an unlabeled
+# internal API call.
+log 'Set Discover default time range to match the dashboard'
+curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${kibana_host}:5601/internal/kibana/settings" \
+    -H 'kbn-xsrf: true' -H 'Content-Type: application/json' -H 'x-elastic-internal-origin: Kibana' -d'
+{
+    "changes" : {
+        "timepicker:timeDefaults" : "{\"from\":\"1969-12-31T23:00:00.000Z\",\"to\":\"now\"}"
+    }
+}
+' > /dev/null && sublog 'Done'

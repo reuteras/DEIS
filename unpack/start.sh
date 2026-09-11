@@ -644,10 +644,10 @@ maybe_export_access_tables() {
 # password itself is never written to LOG (still true - that log is a plain
 # text file operators tail/grep freely), but is recorded, keyed by this
 # document's sha256, via record_decrypted_password - see that function and
-# DECRYPTED_PASSWORDS's own comment for why: unlike try_extract's archive
-# passwords, application/encrypted already confirms this document really
-# was protected, so the password that opens it is real, recoverable
-# forensic signal (e.g. password reuse across the case), not noise.
+# DECRYPTED_PASSWORDS's own comment for why: the application/encrypted mime
+# check above already confirms this document really was protected (unlike
+# try_extract's archive case), so what recovers it is real, recoverable
+# forensic signal (e.g. reuse across the case), not noise.
 decrypt_office_document() {
     local final_path="$1" candidate stage sha
     config_true_default document_decrypt_office true || return 0

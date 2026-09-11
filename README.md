@@ -206,7 +206,7 @@ uv sync --dev
 Configure DEIS by running:
 
 ```bash
-./bin/deis init
+uv run deis init
 ```
 
 Look through the created *.env* and *deis.cfg* files and update as needed.
@@ -219,7 +219,7 @@ much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR
 Setup Elasticsearch and Kibana by which will start a configuration container and dependent containers.
 
 ```bash
-./bin/deis setup
+uv run deis setup
 ```
 
 ## Run all steps
@@ -227,7 +227,7 @@ Setup Elasticsearch and Kibana by which will start a configuration container and
 To run all steps in **DEIS** run.
 
 ```bash
-./bin/deis run
+uv run deis run
 ```
 
 Monitor progress by running the command below or visit [http://127.0.0.1:8081](http://127.0.0.1:8081).
@@ -260,7 +260,7 @@ not reachable from other machines on your network:
 If you already have the files available you can skip the download and extraction steps and only ingest the files to Elasticsearch. The files must be in the directory *extracted* or you have to update *deis.cfg*.
 
 ```bash
-./bin/deis run --only ingest
+uv run deis run --only ingest
 ```
 
 ### Skip download, using files you already have
@@ -272,9 +272,9 @@ extraction. It accepts one or more files and/or directories (directories are sea
 recursively), so a shell glob like `bin/deis add-files /path/to/*.rar` works too:
 
 ```bash
-bin/deis add-files <file-or-directory> [file-or-directory ...]
-bin/deis run --only extract
-bin/deis run --only ingest
+uv run deis add-files <file-or-directory> [file-or-directory ...]
+uv run deis run --only extract
+uv run deis run --only ingest
 ```
 
 `run --only ingest` doesn't need to be re-run after every extraction batch once the `ingest`
@@ -299,37 +299,54 @@ ingest` and start it with `bin/deis run --only ingest` if it's missing.
 run once, so `.venv` exists):
 
 ```bash
-bin/deis init            # bootstrap .env and deis.cfg if they don't exist yet
-bin/deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
-bin/deis build           # build every container image (docker compose build), before setup or run
-bin/deis setup           # alias for 'run --only setup': start the setup container and follow its logs until it exits
-bin/deis run             # start the full pipeline (docker compose --profile deis up -d)
-bin/deis run --only ingest   # or just one stage: setup, download, extract, or ingest
-bin/deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
-bin/deis add-files <path> [path ...]  # copy already-downloaded files in, skipping the download stage
-bin/deis status          # snapshot of pipeline stage state and funnel counts
-bin/deis search <term>   # search indexed content from the terminal, highlighted snippets (see below)
-bin/deis report          # what was found, what could not be processed
-bin/deis pii-scan        # detect personal identifiers in indexed content (see below)
-bin/deis pii-report      # list what pii-scan already found (see below)
-bin/deis entity-scan     # extract named entities (people/orgs/locations) from indexed content (see below)
-bin/deis entity-report   # list what entity-scan already found (see below)
-bin/deis dedupe-scan     # cluster near-duplicate documents (see below)
-bin/deis dedupe-report   # list what dedupe-scan already found, by cluster (see below)
-bin/deis archive <dir>   # archive this case for later restore (see below)
-bin/deis restore <dir>   # restore a case archived with 'deis archive'
-bin/deis clean           # wraps 'just clean' behind a confirmation prompt
-bin/deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
+deis init            # bootstrap .env and deis.cfg if they don't exist yet
+deis doctor          # preflight checks: Docker, memory, Elasticsearch/Kibana, containers
+deis build           # build every container image (docker compose build), before setup or run
+deis setup           # alias for 'run --only setup': start the setup container and follow its logs until it exits
+deis run             # start the full pipeline (docker compose --profile deis up -d)
+deis run --only ingest   # or just one stage: setup, download, extract, or ingest
+deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
+deis add-files <path> [path ...]  # copy already-downloaded files in, skipping the download stage
+deis status          # snapshot of pipeline stage state and funnel counts
+deis search <term>   # search indexed content from the terminal, highlighted snippets (see below)
+deis report          # what was found, what could not be processed
+deis pii-scan        # detect personal identifiers in indexed content (see below)
+deis pii-report      # list what pii-scan already found (see below)
+deis entity-scan     # extract named entities (people/orgs/locations) from indexed content (see below)
+deis entity-report   # list what entity-scan already found (see below)
+deis dedupe-scan     # cluster near-duplicate documents (see below)
+deis dedupe-report   # list what dedupe-scan already found, by cluster (see below)
+deis archive <dir>   # archive this case for later restore (see below)
+deis restore <dir>   # restore a case archived with 'deis archive'
+deis clean           # wraps 'just clean' behind a confirmation prompt
+deis reset           # wraps 'just dist-clean' behind a confirmation prompt (deletes evidence)
 ```
 
 A full run from a clean checkout:
 
 ```bash
 just venv
-./bin/deis init
-./bin/deis build   # optional - setup/run build images on demand too, this just does it upfront
-./bin/deis setup
-./bin/deis run
+uv run deis init
+uv run deis build   # optional - setup/run build images on demand too, this just does it upfront
+uv run deis setup
+uv run deis run
+```
+
+Then monitor [http://127.0.0.1:8081](http://127.0.0.1:8081) until the process is done. Afterwards run:
+
+```bash
+uv run language-scan
+uv run pii-scan
+uv run entity-scan
+uv run dedupe-scan
+```
+
+To save the reports from the scans:
+
+```bash
+uv run pii-report --output logs/pii-report.csv
+uv run entity-report --output logs/entity-report.csv
+uv run dedupe-report --output logs/dedupe-report.csv
 ```
 
 `bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already

@@ -90,6 +90,26 @@ class TestEntitiesMaxChars:
         assert deis_module.entities_max_chars(cfg_file) == 0
 
 
+class TestMapsUseElasticMapData:
+    def test_missing_file_defaults_to_false(self, deis_module, tmp_path):
+        assert deis_module.maps_use_elastic_map_data(tmp_path / "missing.cfg") is False
+
+    def test_missing_section_defaults_to_false(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[ingest]\nmax_size=1\n")
+        assert deis_module.maps_use_elastic_map_data(cfg_file) is False
+
+    def test_reads_true(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[maps]\nuse_elastic_map_data=true\n")
+        assert deis_module.maps_use_elastic_map_data(cfg_file) is True
+
+    def test_reads_false(self, deis_module, tmp_path):
+        cfg_file = tmp_path / "deis.cfg"
+        cfg_file.write_text("[maps]\nuse_elastic_map_data=false\n")
+        assert deis_module.maps_use_elastic_map_data(cfg_file) is False
+
+
 class TestMarkerStatus:
     def test_all_waiting_on_empty_tree(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)

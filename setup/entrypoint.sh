@@ -235,7 +235,8 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                         "filenames" : { "type" : "keyword" },
                         "archive_types" : { "type" : "keyword" }
                     }
-                }
+                },
+                "location" : { "type" : "geo_point" }
             },
             "runtime" : {
                 "top_folder" : {
@@ -321,7 +322,7 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
 # existing index's mapping doesn't require a reindex). This index's filename
 # field is still text+keyword (see above), so its script still reads
 # filename.keyword, unlike the template's version above.
-log 'Backfill top_folder runtime field, extraction_status, content fielddata, attachment.modifier/publisher, pii, entities, source_chain, language and duplicate_cluster onto the existing leakdata index'
+log 'Backfill top_folder runtime field, extraction_status, content fielddata, attachment.modifier/publisher, pii, entities, source_chain, language, duplicate_cluster and location onto the existing leakdata index'
 curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_mapping?pretty" -H 'Content-Type: application/json' -d'
 {
     "properties" : {
@@ -369,7 +370,8 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
                 "filenames" : { "type" : "keyword" },
                 "archive_types" : { "type" : "keyword" }
             }
-        }
+        },
+        "location" : { "type" : "geo_point" }
     },
     "runtime" : {
         "top_folder" : {

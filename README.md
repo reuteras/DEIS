@@ -316,6 +316,8 @@ deis entity-scan     # extract named entities (people/orgs/locations) from index
 deis entity-report   # list what entity-scan already found (see below)
 deis dedupe-scan     # cluster near-duplicate documents (see below)
 deis dedupe-report   # list what dedupe-scan already found, by cluster (see below)
+deis geo-scan        # extract GPS coordinates from JPEG EXIF data (see below)
+deis geo-report      # list what geo-scan already found, with the nearest big city (see below)
 deis archive <dir>   # archive this case for later restore (see below)
 deis restore <dir>   # restore a case archived with 'deis archive'
 deis clean           # wraps 'just clean' behind a confirmation prompt
@@ -339,6 +341,7 @@ uv run deis language-scan
 uv run deis pii-scan
 uv run deis entity-scan
 uv run deis dedupe-scan
+uv run deis geo-scan
 ```
 
 To save the reports from the scans:
@@ -347,6 +350,7 @@ To save the reports from the scans:
 uv run deis pii-report --output logs/pii-report.csv
 uv run deis entity-report --output logs/entity-report.csv
 uv run deis dedupe-report --output logs/dedupe-report.csv
+uv run deis geo-report --output logs/geo-report.csv
 ```
 
 `bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already
@@ -377,6 +381,22 @@ rather than one row per document - a table of the largest clusters by default (c
 itself a signal: a large one is usually a mass-distributed template, a search/scan hit count is
 inflated by near-duplicate copies unless counted by cluster instead of by document), or every
 cluster member as CSV via `--output <file>.csv`.
+
+`bin/deis geo-scan` extracts GPS coordinates from JPEG EXIF data - real camera/phone photos in a
+leak dump often carry them, including phone photos of paper documents, where the coordinate is
+where the photo was taken, not the site the document describes. Only Tika/`file`-detected
+`image/jpeg` documents without a `location` field are processed by default; pass `--rescan` to
+redo every JPEG. Results land in each matched document's `location` field (a real Elasticsearch
+`geo_point`), and a separate "Photo locations" dashboard has a map plotting them - each point
+links straight to the document. That map's basemap tiles come from Elastic Maps Service (a
+cloud service, not something this otherwise fully self-hosted stack talks to by default) -
+`deis.cfg`'s `[maps] use_elastic_map_data` opts in explicitly; `deis run --only setup` applies
+whichever setting is current every time it runs.
+
+`bin/deis geo-report` lists what a prior `geo-scan` already found, enriched with the nearest
+city of at least 100,000 people to each point (a local, vendored lookup - see `bin/cities.tsv` -
+not a network call) for a human-readable sense of place without needing to open the map, or
+every match (including the raw lat/lon) as CSV via `--output <file>.csv`.
 
 This project's normal model is one instance per case, with Elasticsearch wiped and the stack
 recreated for the next one - `bin/deis archive <destination>` preserves a fully-processed case

@@ -24,9 +24,13 @@ build-backend = "hatchling.build"
 # finds its siblings (pii/simhash/entities) via a sys.path.insert of its
 # own directory, deliberately not package-relative imports (see its own
 # comment) - that only keeps working if they land next to each other the
-# same way in an installed wheel too.
+# same way in an installed wheel too. cities.tsv is geo.py's own sibling
+# data file (nearest_city(), loaded via a path relative to geo.py's own
+# __file__) - same reasoning, needs to ship next to it in a built wheel
+# too, not just in the checked-out source tree this project actually runs
+# from today.
 [tool.hatch.build.targets.wheel]
-include = ["*.py"]
+include = ["*.py", "cities.tsv"]
 
 [tool.uv.sources]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }

@@ -98,3 +98,17 @@ document_decrypt_pdf=true
 # to disable the cap and scan each document's full indexed text, accepting
 # the multi-hour cost on a large corpus.
 max_chars=20000
+
+[maps]
+# Whether `deis run --only setup` adds Elastic Maps Service's basemap
+# tile layer to the "Photo locations" dashboard's map (see `deis
+# geo-scan`, which populates the points it plots). EMS is Elastic's own
+# cloud service - every time that map is open, the browser sends it live
+# tile requests, including the viewport's pan/zoom bounds. For a
+# self-hosted leak-investigation tool that's otherwise fully local, that
+# is worth an explicit opt-in rather than a silent default: false leaves
+# the map fully usable (points, tooltips, the document link all still
+# work) just without a basemap image behind them. Applied idempotently
+# every time setup runs, so flipping this and re-running `deis run
+# --only setup` adds or removes the layer to match.
+use_elastic_map_data=false

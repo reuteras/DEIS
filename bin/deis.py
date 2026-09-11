@@ -32,6 +32,7 @@ from rich.table import Table
 # dynamically the way tests/test_deis_cli.py does, it isn't - so this makes
 # the sibling import work either way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import geo
 import pii
 import simhash
 
@@ -71,6 +72,25 @@ PII_FIELDS = ("personnummer", "emails", "phone_numbers", "ibans", "card_numbers"
 # Same idea, for entities - see entities.detect_entities()'s result shape
 # in bin/entities.py.
 ENTITY_FIELDS = ("persons", "organizations", "locations")
+# setup/export.ndjson's "Photo GPS locations" map (deis geo-scan's own
+# dashboard) - a known, exactly-one saved object id, hardcoded the same
+# way INDEX/RUNS_INDEX are rather than looked up by title. See
+# _sync_geo_map_basemap()/maps_use_elastic_map_data().
+GEO_MAP_ID = "41392fa6-a00a-4086-9e11-302d9a549998"
+GEO_MAP_BASEMAP_LAYER = {
+    "id": "9718a10c-b838-4973-82c0-db161533c93d",
+    "label": "Basemap (Elastic Maps Service)",
+    "minZoom": 0,
+    "maxZoom": 24,
+    "alpha": 1,
+    "sourceDescriptor": {
+        "type": "EMS_TMS",
+        "isAutoSelect": True,
+        "id": "9718a10c-b838-4973-82c0-db161533c93d-src",
+    },
+    "visible": True,
+    "type": "EMS_VECTOR_TILE",
+}
 
 # Single source of truth for both build_parser() and the completion scripts
 # below, so the two can't silently drift apart.
@@ -92,6 +112,8 @@ SUBCOMMANDS = (
     "entity-report",
     "dedupe-scan",
     "dedupe-report",
+    "geo-scan",
+    "geo-report",
     "archive",
     "restore",
     "clean",
@@ -166,6 +188,27 @@ def entities_max_chars(path: Path | None = None) -> int:
     return config.getint("entities", "max_chars", fallback=20000)
 
 
+def maps_use_elastic_map_data(path: Path | None = None) -> bool:
+    """Reads [maps] use_elastic_map_data from deis.cfg - whether
+    cmd_run's setup step is allowed to add Elastic Maps Service's
+    basemap tile layer to the "Photo locations" dashboard's map (see
+    GEO_MAP_ID/_sync_geo_map_basemap). Defaults to False, not True: EMS
+    is Elastic's own cloud service, so unlike entities_max_chars's
+    "missing key = safe default that keeps existing behavior" reasoning,
+    an absent key here means "not yet explicitly allowed" - fully
+    functional without it, so there is no default-on behavior to
+    preserve for an install predating this option.
+
+    `path` defaults to REPO_ROOT / "deis.cfg", resolved fresh on every
+    call - see entities_max_chars's own docstring for why.
+    """
+    if path is None:
+        path = REPO_ROOT / "deis.cfg"
+    config = configparser.RawConfigParser()
+    config.read(path)
+    return config.getboolean("maps", "use_elastic_map_data", fallback=False)
+
+
 # The one set of exceptions every es_request()/es_bulk() caller (and every
 # raw urlopen() call against Elasticsearch/Kibana) catches as "expected,
 # report it and move on" rather than letting it crash: RuntimeError (this
@@ -198,6 +241,26 @@ def es_request(path: str, method: str = "GET", body: dict | None = None, timeout
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(ES_URL + path, data=data, method=method)
     req.add_header("Authorization", "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode("ascii"))
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.load(response)
+
+
+def kibana_request(path: str, method: str = "GET", body: dict | None = None, timeout: int = 30):
+    """Same shape as es_request(), against KIBANA_URL instead - used only
+    by _sync_geo_map_basemap() today. Adds the kbn-xsrf header Kibana's
+    write endpoints require on every request that isn't a real browser
+    navigation (a CSRF guard, not related to the elastic user's own
+    auth) - a write without it is rejected regardless of credentials.
+    """
+    password = elastic_password()
+    if not password:
+        raise RuntimeError("ELASTIC_PASSWORD is not set (check .env, or run 'deis init').")
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(KIBANA_URL + path, data=data, method=method)
+    req.add_header("Authorization", "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode("ascii"))
+    req.add_header("kbn-xsrf", "true")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -455,6 +518,62 @@ def cmd_build(_args) -> int:
     return subprocess.run(command, cwd=REPO_ROOT, check=False).returncode
 
 
+def _sync_geo_map_basemap() -> None:
+    """Adds or removes GEO_MAP_BASEMAP_LAYER on the "Photo GPS locations"
+    map to match deis.cfg's [maps] use_elastic_map_data (see
+    maps_use_elastic_map_data). Idempotent either way - re-running `deis
+    run --only setup` after flipping the setting converges the map to
+    match, rather than only ever adding the layer once. Never fatal to
+    setup as a whole: a Kibana hiccup here just means the map keeps
+    whatever basemap state it already had, not a failed setup run over a
+    non-essential dashboard layer.
+    """
+    try:
+        current = kibana_request(f"/api/saved_objects/map/{GEO_MAP_ID}")
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            console.print(
+                "[yellow]'Photo GPS locations' map not found in Kibana - skipping basemap setup "
+                "(setup/export.ndjson's own import should have created it).[/yellow]"
+            )
+        else:
+            console.print(f"[yellow]Could not read the map from Kibana to set its basemap: {error}[/yellow]")
+        return
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[yellow]Could not reach Kibana to set the map's basemap: {error}[/yellow]")
+        return
+
+    layers = json.loads(current["attributes"]["layerListJSON"])
+    has_basemap = any(layer.get("type") == "EMS_VECTOR_TILE" for layer in layers)
+    wants_basemap = maps_use_elastic_map_data()
+    if wants_basemap == has_basemap:
+        return
+
+    if wants_basemap:
+        layers.insert(0, GEO_MAP_BASEMAP_LAYER)
+    else:
+        layers = [layer for layer in layers if layer.get("type") != "EMS_VECTOR_TILE"]
+    current["attributes"]["layerListJSON"] = json.dumps(layers)
+
+    try:
+        kibana_request(
+            f"/api/saved_objects/map/{GEO_MAP_ID}",
+            method="PUT",
+            body={"attributes": current["attributes"], "references": current["references"]},
+        )
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[yellow]Could not update the map's basemap layer: {error}[/yellow]")
+        return
+
+    if wants_basemap:
+        console.print("[green]Enabled Elastic Maps Service's basemap on the 'Photo locations' map.[/green]")
+    else:
+        console.print(
+            "[green]Disabled Elastic Maps Service's basemap on the 'Photo locations' map "
+            "(deis.cfg's [maps] use_elastic_map_data is false).[/green]"
+        )
+
+
 def cmd_run(args) -> int:
     profile = {"setup": "setup", "download": "download", "extract": "unpack", "ingest": "ingest"}.get(args.only, "deis")
     command = ["docker", "compose", "--profile", profile, "up", "-d"]
@@ -468,7 +587,15 @@ def cmd_run(args) -> int:
     # its own when the container exits, so this blocks until setup is done
     # instead of leaving the caller to poll or tail logs separately.
     console.print("Following setup container logs until it exits...")
-    return subprocess.run(["docker", "compose", "logs", "setup", "-f"], cwd=REPO_ROOT, check=False).returncode
+    log_result = subprocess.run(["docker", "compose", "logs", "setup", "-f"], cwd=REPO_ROOT, check=False)
+    if log_result.returncode == 0:
+        # setup/export.ndjson's own "Photo GPS locations" map never
+        # includes the EMS basemap layer itself (see that file) - applied
+        # here instead, from the host, since deis.cfg isn't read inside
+        # the setup container and this is the one place that already
+        # knows setup just finished importing it.
+        _sync_geo_map_basemap()
+    return log_result.returncode
 
 
 def cmd_status(_args) -> int:
@@ -1252,6 +1379,215 @@ def cmd_entity_report(args) -> int:
     table.add_column("SHA256", overflow="ellipsis", max_width=12, no_wrap=True)
     for column in ENTITY_FIELDS:
         table.add_column(column, overflow="ellipsis", max_width=24, no_wrap=True)
+    for row in rows:
+        table.add_row(*row)
+    console.print(table)
+    if total > len(rows):
+        console.print(
+            f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
+        )
+    return 0
+
+
+def cmd_geo_scan(args) -> int:
+    """GPS EXIF extraction (see bin/geo.py's own docstring for the
+    investigative motivation - a manual spot check found real coordinates
+    on 40 of 138 JPEGs in this corpus). Unlike pii-scan/entity-scan, this
+    can't read attachment.content - EXIF lives in the image's own raw
+    bytes, which the ingest pipeline never keeps (the attachment
+    processor's "remove_binary" drops them once Tika's done with them) -
+    so this reads each candidate file back off disk instead, via the
+    same extracted/sha256/<sha> symlink ingest.py itself creates
+    (create_hash_link), rather than attachment.content_type.keyword's own
+    "filename" field, which resolve_filepath() can remap to an unrelated
+    sqlite-resolved name.
+
+    Scoped to attachment.content_type.keyword: image/jpeg - the only
+    format this corpus's spot check covered, and the only one
+    bin/geo.py's extract_gps() understands (JPEG's Exif APP1 segment).
+    PNG can carry Exif too (a rarer, newer addition to the format), but
+    no evidence yet that this corpus's PNGs do - left as a known gap
+    rather than guessed at.
+    """
+    query = {"term": {"attachment.content_type.keyword": "image/jpeg"}}
+    if not args.rescan:
+        query = {"bool": {"must": query, "must_not": {"exists": {"field": "location"}}}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": False, "query": query},
+        )
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    scanned = 0
+    with_location = 0
+    missing_on_disk = 0
+    failures: list[str] = []
+
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            actions = []
+            for hit in hits:
+                sha256 = hit["_id"]
+                scanned += 1
+                path = REPO_ROOT / "extracted" / "sha256" / sha256
+                try:
+                    content = path.read_bytes()
+                except OSError:
+                    missing_on_disk += 1
+                    continue
+                location = geo.extract_gps(content)
+                if location is None:
+                    continue
+                with_location += 1
+                actions.append({"update": {"_index": INDEX, "_id": sha256}})
+                actions.append({"doc": {"location": location}})
+
+            if actions:
+                failures.extend(bulk_failures(es_bulk(actions)))
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except ES_REQUEST_ERRORS:
+                pass
+
+    console.print(f"Scanned {scanned} image(s), {with_location} with GPS coordinates found.")
+    if missing_on_disk:
+        console.print(
+            f"[yellow]{missing_on_disk} image(s) skipped: not found under extracted/sha256/ (moved/removed "
+            "since ingest, or ingested before that symlink existed).[/yellow]"
+        )
+
+    if failures:
+        console.print(f"[red]{len(failures)} document(s) could not be updated - these results were NOT saved:[/red]")
+        for reason in failures[:10]:
+            console.print(f"  [red]{reason}[/red]")
+        if len(failures) > 10:
+            console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+        return 1
+
+    # Same reasoning as language-scan's own summary file: "location" is
+    # absent on most documents by design (only images can carry it, and
+    # most images never had a GPS fix), so unlike pii.has_pii/
+    # entities.has_entities, a live tagged/total count against the whole
+    # corpus would be misleading rather than genuine progress.
+    summary_path = REPO_ROOT / "status" / "geo_scan_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "@timestamp": datetime.now(UTC).isoformat(),
+                "rescan": bool(args.rescan),
+                "images_scanned": scanned,
+                "with_location": with_location,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return 0
+
+
+def cmd_geo_report(args) -> int:
+    """Lists what geo-scan already found, rather than finding it again -
+    same reasoning as pii-report/entity-report: reads only (an `exists:
+    location` query), never touches geo-scan's own results. Each row is
+    enriched with the nearest city of at least 100,000 people (see
+    bin/geo.py's nearest_city()/bin/cities.tsv) to that point - computed
+    fresh here, on the ~40-in-this-corpus scale a report reads at, rather
+    than stored back on the document: it's a display convenience for a
+    human reading this table, not a fact about the document itself worth
+    persisting or searching on in Kibana.
+    """
+    query = {"exists": {"field": "location"}}
+    try:
+        response = es_request(
+            f"/{INDEX}/_search?scroll=1m",
+            method="POST",
+            body={"size": 200, "_source": ["filename", "sha256", "location"], "query": query},
+        )
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    scroll_id = response.get("_scroll_id")
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+    rows: list[list[str]] = []
+    writer = None
+    output_file = None
+
+    try:
+        if args.output:
+            output_file = args.output.open("w", newline="", encoding="utf-8")
+            writer = csv.writer(output_file)
+            writer.writerow(["filename", "sha256", "lat", "lon", "nearest_city", "country", "distance_km", "link"])
+
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                source = hit.get("_source", {})
+                sha256 = source.get("sha256", hit["_id"])
+                location = source.get("location", {})
+                lat, lon = location.get("lat"), location.get("lon")
+                city = geo.nearest_city(lat, lon) if lat is not None and lon is not None else None
+                city_name = city["name"] if city else ""
+                city_country = city["country"] if city else ""
+                city_distance = f"{city['distance_km']:g}" if city else ""
+                link = f"{VIEW_URL}/{sha256}"
+                if writer:
+                    writer.writerow(
+                        [source.get("filename", ""), sha256, lat, lon, city_name, city_country, city_distance, link]
+                    )
+                elif len(rows) < PII_REPORT_TABLE_LIMIT:
+                    # Filename only, not the full path - same reasoning as
+                    # pii-report/entity-report's own table: a full
+                    # extracted/files/<sha>/... path leaves rich almost no
+                    # room for the columns that actually matter here.
+                    nearest = f"{city_name} ({city_country}), {city_distance} km" if city else ""
+                    rows.append([Path(source.get("filename", "")).name, nearest, _rich_link(link)])
+
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if output_file:
+            output_file.close()
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except ES_REQUEST_ERRORS:
+                pass
+
+    if writer:
+        console.print(f"Wrote {total} document(s) with GPS coordinates to {args.output}.")
+        return 0
+
+    console.print(f"{total} document(s) with GPS coordinates found.")
+    table = Table()
+    table.add_column("Filename", overflow="ellipsis", max_width=40, no_wrap=True)
+    table.add_column("Nearest city")
+    table.add_column("Link", overflow="fold")
     for row in rows:
         table.add_row(*row)
     console.print(table)
@@ -2233,6 +2569,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, help="write one row per cluster member to this CSV file instead of a capped table"
     )
     p_dedupe_report.set_defaults(func=cmd_dedupe_report)
+
+    p_geo = sub.add_parser("geo-scan", help="extract GPS coordinates from JPEG EXIF data")
+    p_geo.add_argument("--rescan", action="store_true", help="re-check every JPEG, not just ones without a location")
+    p_geo.set_defaults(func=_with_liveness_marker("geo_scanning", cmd_geo_scan))
+
+    p_geo_report = sub.add_parser("geo-report", help="list what geo-scan already found, with the nearest big city")
+    p_geo_report.add_argument(
+        "--output", type=Path, help="write every match (incl. raw lat/lon) to this CSV file instead of a capped table"
+    )
+    p_geo_report.set_defaults(func=cmd_geo_report)
 
     p_archive = sub.add_parser(
         "archive", help="archive Elasticsearch data, Kibana objects, extracted files, and images for later restore"

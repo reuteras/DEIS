@@ -24,8 +24,8 @@ images) and docker-compose.yml's directly pre-built images (the notebook
 service's reuteras/container-notebook, pinned by digest).
 
 Two subcommands:
-  list                 read-only - current vs latest for every item
-  upgrade <name>        mechanically fetches the latest artifact(s),
+    list                read-only - current vs latest for every item
+    upgrade <name>      mechanically fetches the latest artifact(s),
                         computes/verifies their sha256, and edits the
                         exact pinned line(s) in the real pin file (never
                         VENDORED.md's own free-form prose, which stays a

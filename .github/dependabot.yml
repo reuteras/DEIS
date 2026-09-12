@@ -22,3 +22,127 @@ updates:
       pre-commit-deps:
         patterns:
           - "*"
+
+  # One entry per directory containing a Dockerfile - Dependabot's docker
+  # ecosystem only ever looks at a single Dockerfile per directory entry,
+  # not recursively, so each of this project's 9 needs its own block.
+  # Bumps each Dockerfile's own FROM line(s) directly (alpine/python/
+  # debian/docker.elastic.co base images). Does NOT cover
+  # docker-compose.yml's ELASTIC_VERSION build arg (passed in from .env,
+  # not a literal version in any Dockerfile's own FROM line, so
+  # Dependabot has nothing to resolve there) - see
+  # scripts/check_vendored.py's "elastic-stack" item for that instead.
+  - package-ecosystem: "docker"
+    directory: "/controller"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/deis"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/downloader"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/elasticsearch"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/ingest"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/kibana"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/setup"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/unpack"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  # docker-compose.yml's own pre-built `image:` lines (not built from a
+  # local Dockerfile, so the "docker" ecosystem entries above never see
+  # them) - today that's the notebook service (pinned by digest) and
+  # gotenberg (no tag at all, defaults to "latest" - nothing for
+  # Dependabot to version-bump until that's pinned to something real).
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-compose-deps:
+        patterns:
+          - "*"

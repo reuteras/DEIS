@@ -15,6 +15,30 @@ export:
     uv export --package deis-ingest --no-hashes --no-dev --no-emit-workspace --quiet > ingest/requirements.txt
     uv export --package deis-web    --no-hashes --no-dev --no-emit-workspace --quiet > web/requirements.txt
 
+# Check every hand-pinned version against its latest upstream release - spaCy/its
+# models, 7-Zip, v2ray-core, the geonamescache snapshot behind bin/cities.tsv (each
+# documented in a VENDORED.md), elasticsearch-py/wordcloud pinned in
+# notebook/Elastic.ipynb's own first cell, and .env.default's ELASTIC_VERSION. See
+# bin/check_vendored.py's own docstring for exactly what this does and doesn't
+# cover - Docker image references are Dependabot's job now (.github/dependabot.yml),
+# and `just update` above is the separate mechanism for ordinary uv-managed deps.
+#
+# "|| true": the script itself exits 1 when an update is available (real signal,
+# useful for `uv run python3 bin/check_vendored.py list` in a script/CI check),
+# but that turns into just's own "error: recipe ... failed" here, which reads as
+# something broke rather than "here's what's outdated" - `just` is for interactive/
+# manual use, so this recipe always exits 0 and leaves the real exit code to
+# whatever calls the script directly.
+check-vendored:
+    uv run python3 bin/check_vendored.py list || true
+
+# Mechanically apply an available update for one vendored item - fetches the new
+# artifact(s), computes/verifies their sha256, and edits the exact pinned line(s);
+# never touches a VENDORED.md's own prose, which stays a manual edit (the command's
+# own output lists exactly what to change by hand). e.g. `just upgrade-vendored 7-zip`
+upgrade-vendored name:
+    uv run python3 bin/check_vendored.py upgrade {{ name }}
+
 # "dir/*" alone is a bare glob and, like any shell glob, never matches a
 # dotfile - found via a real leftover ".!<pid>!unpack.log" (an SMB
 # oplock-break artifact from an interrupted process) that `just clean`

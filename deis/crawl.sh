@@ -166,7 +166,7 @@ while (( SECONDS < TICK_BUDGET )); do
     while (( $(date +%s) < deadline )); do
         result="$(rpc "$(jq -n -c --arg secret "token:${RPCSECRET}" --arg gid "${gid}" \
             '{jsonrpc: "2.0", id: "crawl", method: "aria2.tellStatus",
-              params: [$secret, $gid, ["status", "errorMessage", "files"]]}')")"
+            params: [$secret, $gid, ["status", "errorMessage", "files"]]}')")"
         status="$(jq -r '.result.status // empty' <<< "${result}")"
         case "${status}" in
             complete)

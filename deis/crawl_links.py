@@ -9,8 +9,8 @@ correctly, and this is the one piece of deis crawl-site where a resolution
 bug would mean silently wandering off the site the operator asked to crawl.
 
 A link is kept only if, once resolved to an absolute URL, it is both:
-  - same-origin as the crawl's root URL (scheme+host+port), and
-  - under the root URL's own path (its directory subtree), not just its host.
+    - same-origin as the crawl's root URL (scheme+host+port), and
+    - under the root URL's own path (its directory subtree), not just its host.
 Both restrictions exist for the same reason: a "Parent Directory" link (or a
 stray absolute link elsewhere on the same host) must not let the crawl walk
 into an unrelated part of the site the operator never asked about.

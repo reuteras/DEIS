@@ -38,9 +38,7 @@ class TestExtractLinks:
 
     def test_resolves_relative_links_against_page_url(self, crawl_links):
         html = '<a href="../sibling/">sibling/</a>'
-        result = crawl_links.extract_links(
-            html, "https://example.onion/case/sub/", "https://example.onion/case/"
-        )
+        result = crawl_links.extract_links(html, "https://example.onion/case/sub/", "https://example.onion/case/")
         assert result["dirs"] == ["https://example.onion/case/sibling/"]
 
     def test_drops_links_outside_root_origin(self, crawl_links):

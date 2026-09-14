@@ -203,6 +203,4 @@ class TestTorcheckScript:
         """
         text = (REPO_ROOT / "deis" / "urls.sh").read_text(encoding="utf-8")
         assert "source" in text and "lib.sh" in text, "urls.sh must source lib.sh"
-        assert "url_is_bittorrent" in text and "url_bt_refused" in text, (
-            "urls.sh must use the shared BitTorrent checks"
-        )
+        assert "url_is_bittorrent" in text and "url_bt_refused" in text, "urls.sh must use the shared BitTorrent checks"

@@ -1,3 +1,4 @@
 * * * * * /deis/bin/done.sh
 * * * * * /deis/bin/download.sh
+* * * * * /deis/bin/crawl.sh
 * * * * * /deis/bin/urls.sh

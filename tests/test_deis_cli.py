@@ -52,6 +52,28 @@ class TestIsValidUrl:
         assert deis_module.is_valid_url(url) is False
 
 
+class TestCrawlSite:
+    def test_queues_root_and_appends_trailing_slash(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_crawl_site(argparse.Namespace(root_url="https://example.onion/case"))
+        assert rc == 0
+        assert (tmp_path / "urls" / "crawl_roots.txt").read_text() == "https://example.onion/case/\n"
+
+    def test_does_not_duplicate_an_already_queued_root(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        deis_module.cmd_crawl_site(argparse.Namespace(root_url="https://example.onion/case/"))
+        rc = deis_module.cmd_crawl_site(argparse.Namespace(root_url="https://example.onion/case/"))
+        assert rc == 0
+        assert (tmp_path / "urls" / "crawl_roots.txt").read_text().count("https://example.onion/case/") == 1
+
+    @pytest.mark.parametrize("root", ["ftp://example.com/case/", "magnet:?xt=urn:btih:abc", "example.com/case/"])
+    def test_rejects_non_http_roots(self, deis_module, tmp_path, monkeypatch, root):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_crawl_site(argparse.Namespace(root_url=root))
+        assert rc == 1
+        assert not (tmp_path / "urls" / "crawl_roots.txt").exists()
+
+
 class TestReadEnv:
     def test_missing_file_yields_empty_dict(self, deis_module, tmp_path):
         assert deis_module.read_env(tmp_path / "missing.env") == {}

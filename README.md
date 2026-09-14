@@ -32,6 +32,22 @@ on demand.
 
 If you already have the file they can be added instead, see below.
 
+#### Directory-listing leak sites
+
+Some leak sites don't offer one archive to download - just an Apache/nginx "Index of /" (or
+similar) page with links to files and subfolders. `deis crawl-site <root-url>` walks that tree
+for you: it discovers every file URL under the root and queues them the normal way, so
+download/extract/ingest all work unchanged once it's done.
+
+The crawl reuses the exact same TOR-vs-clearnet routing and egress preflight described above
+for every listing page it fetches, not just the files at the end - `.onion` roots go through
+TOR the same way `add-urls` URLs do. It never follows a link off the root URL's own site (a
+different host, port, or scheme) or above its own subtree (an autoindex "Parent Directory"
+link included), and it stops after `[crawl] max_depth` listing-page levels or `[crawl]
+max_urls` discovered URLs (`deis.cfg`, defaults 10/20000) in case a site's structure is
+unexpectedly deep or a listing loops back on itself. Progress shows up in `deis status`/`just
+progress` as a "crawl" stage; downloading doesn't start until the crawl finishes.
+
 ### Extract
 
 Automated extraction of compressed files with a simple container running [7-zip][7zz].
@@ -211,7 +227,10 @@ uv run deis init
 
 Look through the created *.env* and *deis.cfg* files and update as needed.
 
-Add a list of URLs (one per line) for files to download to a file in the *urls* directory. If you already have the files downloaded look for the `add-files` subcommand of `./bin/deis`.
+Add a list of URLs (one per line) for files to download to a file in the *urls* directory. If
+the site only offers a directory listing rather than files to download directly, use `deis
+crawl-site <root-url>` instead (see below) to discover its file URLs first. If you already have
+the files downloaded look for the `add-files` subcommand of `./bin/deis`.
 
 `.onion` URLs are downloaded over TOR and everything else is downloaded directly, which is
 much faster. Set **FORCE_TOR=true** in *.env* to send every download through TOR instead.
@@ -306,6 +325,7 @@ deis setup           # alias for 'run --only setup': start the setup container a
 deis run             # start the full pipeline (docker compose --profile deis up -d)
 deis run --only ingest   # or just one stage: setup, download, extract, or ingest
 deis add-urls <url>  # queue a URL (or a file of URLs) for download, with validation
+deis crawl-site <root-url>  # discover a directory-listing site's file URLs before download (see below)
 deis add-files <path> [path ...]  # copy already-downloaded files in, skipping the download stage
 deis status          # snapshot of pipeline stage state and funnel counts
 deis search <term>   # search indexed content from the terminal, highlighted snippets (see below)

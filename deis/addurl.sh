@@ -16,6 +16,13 @@ set -u
 source "${BASH_SOURCE[0]%/*}/lib.sh"
 
 url="${1}"
+# Optional: save under this subdirectory of aria2's /data instead of its
+# root. deis/crawl.sh passes ".crawl" so listing pages it fetches to
+# discover a site's file tree land next to, but separate from, real
+# downloads - deis/done.sh prunes this directory rather than sweeping a
+# leak site's own "Index of /" pages into /files/ as if they were evidence,
+# the same way it already prunes torcheck.sh's .torcheck probe directory.
+dir="${2:-}"
 
 if url_needs_tor "${url}"; then
     # Use the proxy from aria2.conf.
@@ -23,6 +30,10 @@ if url_needs_tor "${url}"; then
 else
     # Empty values override the global proxy for this download only.
     options='{"all-proxy":"","http-proxy":"","https-proxy":""}'
+fi
+
+if [[ -n "${dir}" ]]; then
+    options="$(jq -c --arg dir "/data/${dir}" '. + {dir: $dir}' <<< "${options}")"
 fi
 
 # jq builds the payload so that a URL containing quotes or backslashes can't

@@ -106,16 +106,18 @@ class TestTorcheckScript:
 
     def test_probe_is_written_outside_the_swept_download_tree(self):
         """done.sh sweeps /downloader/data into /files, where anything it
-        finds is indexed as evidence. The probe must therefore land in the
-        one directory done.sh prunes.
+        finds is indexed as evidence. The probe must therefore land in one
+        of the directories done.sh prunes - alongside deis/crawl.sh's own
+        .crawl (its fetched listing pages are not leak data either).
         """
         torcheck = TORCHECK.read_text(encoding="utf-8")
         done = (REPO_ROOT / "deis" / "done.sh").read_text(encoding="utf-8")
         # Overridable for host-side testing, but the default - which is what
-        # runs in the container - must be the pruned directory.
+        # runs in the container - must be a pruned directory.
         assert 'PROBE_DIR_LOCAL="${PROBE_DIR_LOCAL:-/downloader/data/.torcheck}"' in torcheck
-        assert "-name .torcheck -prune" in done
-        assert done.count("-name .torcheck -prune") == 2, "both find calls in done.sh must prune it"
+        assert "-name .torcheck" in done
+        assert "-name .crawl" in done
+        assert done.count("-prune") == 2, "both find calls in done.sh must prune these directories"
 
     def test_probe_overrides_infinite_retries(self):
         """aria2.conf sets max-tries=0 (retry forever), which is right for a

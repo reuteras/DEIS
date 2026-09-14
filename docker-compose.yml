@@ -39,6 +39,7 @@ services:
       - ./status:/status
       - ./logs:/logs
       - ./urls:/urls
+      - ./deis.cfg:/deis.cfg
     networks:
       - download
 

@@ -51,14 +51,18 @@ if [[ -f /status/downloaded ]] && [[ ! -f /status/unpack ]]; then
             jq -nc --arg sha256 "${sha256}" --arg url "${url}" --arg filename "${file}" \
                 '{sha256: $sha256, url: $url, filename: $filename}' >> /status/source_urls.jsonl
         fi
-    # .torcheck holds item 42's preflight probe responses, not leak data.
-    # torcheck.sh deletes each probe as soon as it reads it, so this only
-    # matters if one was left behind by a crash - but sweeping it into
-    # /files would index a check.torproject.org response as evidence, so
-    # prune the directory rather than rely on that cleanup.
-    done < <(find /downloader/data -name .torcheck -prune -o -type f ! -name '.gitignore' -print0 | sort -z)
+    # .torcheck holds item 42's preflight probe responses, and .crawl holds
+    # deis/crawl.sh's own fetched directory-listing pages (see addurl.sh's
+    # optional "dir" argument) - neither is leak data. torcheck.sh deletes
+    # each probe as soon as it reads it and crawl.sh deletes each listing
+    # page once parsed, so this only matters if one was left behind by a
+    # crash - but sweeping either into /files would index a
+    # check.torproject.org response, or the leak site's own "Index of /"
+    # pages, as if they were evidence, so prune both directories rather
+    # than rely on that cleanup.
+    done < <(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o -type f ! -name '.gitignore' -print0 | sort -z)
 
-    remaining="$(find /downloader/data -name .torcheck -prune -o -type f ! -name '.gitignore' -print | wc -l | tr -d ' ')"
+    remaining="$(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o -type f ! -name '.gitignore' -print | wc -l | tr -d ' ')"
     if (( failed > 0 || remaining > 0 )); then
         echo "Move incomplete: ${failed} failed, ${remaining} file(s) left in /downloader/data. Will retry."
     else

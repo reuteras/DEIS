@@ -104,6 +104,7 @@ SUBCOMMANDS = (
     "search",
     "report",
     "add-urls",
+    "crawl-site",
     "add-files",
     "pii-scan",
     "pii-report",
@@ -320,6 +321,12 @@ def marker_status() -> dict[str, str]:
     """
     status_dir = REPO_ROOT / "status"
     status = {}
+
+    # Only reported at all once `deis crawl-site` has actually queued a
+    # root - a run that never used it shouldn't show an irrelevant stage.
+    crawl_roots = REPO_ROOT / "urls" / "crawl_roots.txt"
+    if crawl_roots.is_file() and crawl_roots.stat().st_size > 0:
+        status["crawl"] = "done" if (status_dir / "crawl_done").exists() else "running"
 
     if (status_dir / "download_failed").exists():
         status["download"] = "failed"
@@ -603,8 +610,9 @@ def cmd_status(_args) -> int:
     table = Table(title="DEIS status")
     table.add_column("Stage")
     table.add_column("State")
-    for stage in ("download", "extract", "ingest"):
-        table.add_row(stage, status[stage])
+    for stage in ("crawl", "download", "extract", "ingest"):
+        if stage in status:
+            table.add_row(stage, status[stage])
     console.print(table)
 
     # files/ holds a tracked .gitignore (see unpack/start.sh's own
@@ -1841,6 +1849,40 @@ def cmd_add_urls(args) -> int:
     return 0
 
 
+def cmd_crawl_site(args) -> int:
+    """Queues a root URL for deis/crawl.sh to expand, for leak sites that
+    only offer a directory listing (an Apache/nginx "Index of /" or
+    similar) - links to files and subfolders, no single archive to
+    download. Unlike add-urls, this isn't itself a file to fetch: it's a
+    page for crawl.sh to walk, discovering the concrete file URLs that
+    add-urls's own scheme/host checks were designed for, so it accepts only
+    http(s) - ftp and magnet links have no listing page to walk, and the
+    crawler's same-origin/same-subtree restriction (crawl_links.py) is only
+    meaningful for a URL with a real host and path in the first place.
+    """
+    root = args.root_url.strip()
+    if not root.startswith(("http://", "https://")):
+        console.print("[red]crawl-site only supports http:// and https:// listing roots.[/red]")
+        return 1
+    if not is_valid_url(root):
+        console.print(f"[red]Not a valid URL: {root}[/red]")
+        return 1
+    if not root.endswith("/"):
+        root += "/"
+
+    roots_file = REPO_ROOT / "urls" / "crawl_roots.txt"
+    roots_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = set(roots_file.read_text(encoding="utf-8").splitlines()) if roots_file.is_file() else set()
+    if root in existing:
+        console.print(f"[yellow]Already queued for crawling: {root}[/yellow]")
+        return 0
+
+    with roots_file.open("a", encoding="utf-8") as f:
+        f.write(root + "\n")
+    console.print(f"[green]Queued for crawling: {root}[/green]")
+    return 0
+
+
 def cmd_add_files(args) -> int:
     """Feeds already-downloaded files into the pipeline as if deis/done.sh
     had just moved them there, for when the original URLs are dead but the
@@ -2519,6 +2561,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add-urls", help="queue a URL, or a file of URLs, for download")
     p_add.add_argument("target", help="a single URL, or a path to a file of URLs (one per line)")
     p_add.set_defaults(func=cmd_add_urls)
+
+    p_crawl = sub.add_parser(
+        "crawl-site",
+        help="queue a directory-listing leak site's root URL, discovering its file URLs before download",
+    )
+    p_crawl.add_argument("root_url", help="the listing page's root URL (http:// or https://)")
+    p_crawl.set_defaults(func=cmd_crawl_site)
 
     p_add_files = sub.add_parser(
         "add-files", help="copy already-downloaded files into the pipeline, skipping the download stage"

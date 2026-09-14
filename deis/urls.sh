@@ -5,6 +5,15 @@ log_error() {
     echo "$(date -Iseconds) $1" >> /logs/download_errors.log
 }
 
+# deis/crawl.sh expands a directory-listing root (deis crawl-site) into the
+# concrete file URLs it drops in /urls/discovered.txt over one or more cron
+# ticks. The one-shot sweep below only ever runs once (it touches
+# added_urls itself), so it must not fire - and lock in an incomplete batch
+# - before that expansion has actually finished.
+if [[ -s /urls/crawl_roots.txt && ! -f /status/crawl_done ]]; then
+    exit 0
+fi
+
 if [[ ! -f /status/added_urls ]]; then
     if [[ "$(wc -l /urls/* | tail -1 | awk '{print $1}')" != "0" ]]; then
         echo "Waiting for Aria2"

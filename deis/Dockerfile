@@ -5,6 +5,7 @@ FROM alpine:3.24
 RUN mkdir -p /deis/bin
 
 COPY *.sh /deis/bin/
+COPY crawl_links.py /deis/bin/
 COPY crontab.txt /deis/
 
 # hadolint ignore=DL3018
@@ -12,7 +13,8 @@ RUN apk add --no-cache \
         bash \
         curl \
         dcron \
-        jq && \
+        jq \
+        python3 && \
     /usr/bin/crontab /deis/crontab.txt
 
 ENV OWNER_UID=1000

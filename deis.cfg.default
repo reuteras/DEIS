@@ -112,3 +112,20 @@ max_chars=20000
 # every time setup runs, so flipping this and re-running `deis run
 # --only setup` adds or removes the layer to match.
 use_elastic_map_data=false
+
+[crawl]
+# Settings for `deis crawl-site <root-url>`, which discovers a leak site's
+# concrete file URLs by walking a directory-listing-style page tree (an
+# Apache/nginx "Index of /" or similar) instead of relying on the site
+# offering one archive to download. Read by deis/crawl.sh - the same
+# section-aware read_cfg/config_int pattern unpack/start.sh already uses.
+#
+# How many listing-page levels deep to follow below the root URL before
+# giving up on a branch. Bounds a pathological or maliciously deep/looping
+# site tree the same way [unpack]'s max_depth bounds nested-archive
+# recursion.
+max_depth=10
+# Total number of URLs (directories and files combined) a single crawl may
+# discover before it stops adding new ones. Bounds a runaway crawl against
+# an unexpectedly huge or adversarial listing site.
+max_urls=20000

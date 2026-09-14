@@ -67,6 +67,15 @@ try:
         else:
             print_status("Adding URLS to download", "DONE")
 
+        # Crawling a directory-listing site (deis crawl-site), if one was
+        # queued - only shown at all when urls/crawl_roots.txt exists, so a
+        # run that never used crawl-site doesn't show an irrelevant stage.
+        if os.path.exists("urls/crawl_roots.txt") and os.path.getsize("urls/crawl_roots.txt") > 0:
+            if os.path.exists("status/crawl_done"):
+                print_status("Crawling site for file URLs", "DONE")
+            else:
+                print_status("Crawling site for file URLs", "RUNNING")
+
         # Download
         if os.path.exists("status/download_failed"):
             print_status("Download", "FAILED")

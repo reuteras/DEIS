@@ -32,6 +32,21 @@ on demand.
 
 If you already have the file they can be added instead, see below.
 
+#### Magnet links and .torrent files
+
+`deis add-urls` also accepts magnet URIs and URLs pointing at a `.torrent` file. These come
+with a real limitation, not a bug: aria2 has no proxy support at all for BitTorrent traffic -
+none of its trackers/DHT/peer-exchange options can be routed through TOR or any other proxy,
+unlike every HTTP(S)/FTP download above. A BitTorrent download therefore always uses your real
+address for its trackers, peers, and the DHT network, regardless of **FORCE_TOR**.
+
+Because of that, a magnet/`.torrent` URL is refused - not silently downloaded unprotected -
+whenever this pipeline's TOR policy says it should have been protected: **FORCE_TOR=true**
+refuses all of them, and a `.torrent` file hosted on an `.onion` site is refused even without
+**FORCE_TOR**, since the BitTorrent download it triggers can't honor the anonymity that hosting
+implies. Everything else (magnet links and clearnet-hosted `.torrent` files, on a normal run) is
+queued and fetched directly, the same as a plain clearnet URL.
+
 #### Directory-listing leak sites
 
 Some leak sites don't offer one archive to download - just an Apache/nginx "Index of /" (or

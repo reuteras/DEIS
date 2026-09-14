@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# shellcheck disable=SC1091
+source "${BASH_SOURCE[0]%/*}/lib.sh"
+
 log_error() {
     echo "$1"
     echo "$(date -Iseconds) $1" >> /logs/download_errors.log
@@ -41,15 +44,29 @@ if [[ ! -f /status/added_urls ]]; then
             [[ -z "${url}" || "${url}" == \#* ]] && continue
 
             # aria2 is only set up to fetch files over these schemes. Anything
-            # else (magnet:, file:, ...) would either fail or bypass the proxy
-            # rules in addurl.sh, so refuse it loudly instead of dropping it.
+            # else (file:, javascript:, ...) would either fail or bypass the
+            # proxy rules in addurl.sh, so refuse it loudly instead of
+            # dropping it. magnet: is allowed here but gets its own,
+            # separate check just below - a valid scheme is not the same
+            # question as "can this be routed the way our TOR policy says
+            # it should be".
             case "${url}" in
-                http://*|https://*|ftp://*) ;;
+                http://*|https://*|ftp://*|magnet:*) ;;
                 *)
                     log_error "Skipping URL with unsupported scheme: ${url}"
                     continue
                     ;;
             esac
+
+            # See lib.sh's url_bt_refused() docstring: aria2 has no proxy
+            # support at all for BitTorrent traffic, so a magnet/.torrent
+            # URL can never honor this pipeline's TOR policy the way every
+            # other URL here does - refuse it outright rather than
+            # silently downloading it unprotected.
+            if url_is_bittorrent "${url}" && url_bt_refused "${url}"; then
+                log_error "Skipping BitTorrent URL that cannot be routed through TOR: ${url}"
+                continue
+            fi
 
             echo "Adding URL: ${url}"
             if gid="$(/deis/bin/addurl.sh "${url}")" && [[ -n "${gid}" && "${gid}" != "null" ]]; then

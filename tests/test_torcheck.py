@@ -96,6 +96,65 @@ class TestUrlNeedsTor:
         assert answer == "no"
 
 
+class TestUrlIsBittorrent:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "magnet:?xt=urn:btih:abc",
+            "http://example.com/file.torrent",
+            "https://example.onion/leak.torrent",
+            "http://example.com/file.torrent?dl=1",
+            "HTTP://EXAMPLE.COM/FILE.TORRENT",
+        ],
+    )
+    def test_recognizes_bittorrent_urls(self, url):
+        assert run_lib(f'url_is_bittorrent "{url}" && echo yes || echo no') == "yes"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.com/file.zip",
+            "https://example.com/not-a-torrent",
+            "http://example.com/file.torrent.txt",
+            "ftp://example.com/x.zip",
+        ],
+    )
+    def test_rejects_non_bittorrent_urls(self, url):
+        assert run_lib(f'url_is_bittorrent "{url}" && echo yes || echo no') == "no"
+
+
+class TestUrlBtRefused:
+    """aria2 has no proxy support for BitTorrent traffic at all (see
+    url_bt_refused's own docstring in lib.sh) - a magnet/.torrent URL is
+    refused whenever this pipeline's TOR policy would otherwise apply to
+    it, rather than silently downloading it unprotected.
+    """
+
+    def test_magnet_allowed_by_default(self):
+        assert run_lib('url_bt_refused "magnet:?xt=urn:btih:abc" && echo yes || echo no') == "no"
+
+    def test_magnet_refused_under_force_tor(self):
+        answer = run_lib(
+            'url_bt_refused "magnet:?xt=urn:btih:abc" && echo yes || echo no',
+            env={"FORCE_TOR": "true"},
+        )
+        assert answer == "yes"
+
+    def test_clearnet_torrent_file_allowed(self):
+        assert run_lib('url_bt_refused "https://example.com/leak.torrent" && echo yes || echo no') == "no"
+
+    def test_onion_hosted_torrent_file_refused(self):
+        answer = run_lib('url_bt_refused "https://abcdef.onion/leak.torrent" && echo yes || echo no')
+        assert answer == "yes"
+
+    def test_onion_hosted_torrent_file_refused_even_without_force_tor(self):
+        answer = run_lib(
+            'url_bt_refused "https://abcdef.onion/leak.torrent" && echo yes || echo no',
+            env={"FORCE_TOR": "false"},
+        )
+        assert answer == "yes"
+
+
 class TestTorcheckScript:
     def test_is_syntactically_valid(self):
         subprocess.run(["bash", "-n", str(TORCHECK)], check=True)
@@ -136,3 +195,14 @@ class TestTorcheckScript:
             assert "source" in text and "lib.sh" in text, f"{script} must source lib.sh"
             assert "url_needs_tor" in text, f"{script} must use the shared routing decision"
             assert "*.onion" not in text, f"{script} must not re-implement the .onion test"
+
+    def test_bt_refusal_is_not_duplicated(self):
+        """Same idea as the routing decision above, for the "BitTorrent
+        can never be proxied" refusal: it must live once in lib.sh
+        (url_bt_refused), not be reimplemented ad hoc in urls.sh.
+        """
+        text = (REPO_ROOT / "deis" / "urls.sh").read_text(encoding="utf-8")
+        assert "source" in text and "lib.sh" in text, "urls.sh must source lib.sh"
+        assert "url_is_bittorrent" in text and "url_bt_refused" in text, (
+            "urls.sh must use the shared BitTorrent checks"
+        )

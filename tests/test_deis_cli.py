@@ -33,6 +33,10 @@ class TestIsValidUrl:
             "http://example.com/file.zip",
             "https://example.com/file.zip",
             "ftp://example.com/file.zip",
+            # A valid scheme, not a safe-to-queue one - is_valid_url is only
+            # ever the first of two checks for a magnet/.torrent URL, see
+            # TestBtBlockedReason/TestAddUrls for the second.
+            "magnet:?xt=urn:btih:abc",
         ],
     )
     def test_allowed_schemes(self, deis_module, url):
@@ -41,7 +45,6 @@ class TestIsValidUrl:
     @pytest.mark.parametrize(
         "url",
         [
-            "magnet:?xt=urn:btih:abc",
             "file:///etc/passwd",
             "javascript:alert(1)",
             "example.com/file.zip",
@@ -50,6 +53,86 @@ class TestIsValidUrl:
     )
     def test_rejected_schemes(self, deis_module, url):
         assert deis_module.is_valid_url(url) is False
+
+
+class TestIsBittorrentUrl:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "magnet:?xt=urn:btih:abc",
+            "http://example.com/file.torrent",
+            "https://example.onion/leak.torrent",
+            "http://example.com/file.torrent?dl=1",
+            "HTTP://EXAMPLE.COM/FILE.TORRENT",
+        ],
+    )
+    def test_recognizes_bittorrent_urls(self, deis_module, url):
+        assert deis_module.is_bittorrent_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.com/file.zip",
+            "https://example.com/not-a-torrent",
+            "http://example.com/file.torrent.txt",
+        ],
+    )
+    def test_rejects_non_bittorrent_urls(self, deis_module, url):
+        assert deis_module.is_bittorrent_url(url) is False
+
+
+class TestBtBlockedReason:
+    def test_magnet_allowed_by_default(self, deis_module):
+        assert deis_module.bt_blocked_reason("magnet:?xt=urn:btih:abc", force_tor=False) is None
+
+    def test_magnet_refused_under_force_tor(self, deis_module):
+        assert deis_module.bt_blocked_reason("magnet:?xt=urn:btih:abc", force_tor=True) is not None
+
+    def test_clearnet_torrent_file_allowed(self, deis_module):
+        assert deis_module.bt_blocked_reason("https://example.com/leak.torrent", force_tor=False) is None
+
+    def test_onion_hosted_torrent_file_refused_even_without_force_tor(self, deis_module):
+        assert deis_module.bt_blocked_reason("https://abcdef.onion/leak.torrent", force_tor=False) is not None
+
+
+class TestAddUrls:
+    def test_queues_bittorrent_urls_by_default(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_add_urls(argparse.Namespace(target="magnet:?xt=urn:btih:abc"))
+        assert rc == 0
+        assert (tmp_path / "urls" / "urls.txt").read_text() == "magnet:?xt=urn:btih:abc\n"
+
+    def test_refuses_magnet_under_force_tor(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / ".env").write_text("FORCE_TOR=true\n")
+        rc = deis_module.cmd_add_urls(argparse.Namespace(target="magnet:?xt=urn:btih:abc"))
+        assert rc == 0
+        assert not (tmp_path / "urls" / "urls.txt").exists() or (
+            "magnet:" not in (tmp_path / "urls" / "urls.txt").read_text()
+        )
+
+    def test_refuses_onion_hosted_torrent_file_even_without_force_tor(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_add_urls(argparse.Namespace(target="https://abcdef1234567890.onion/leak.torrent"))
+        assert rc == 0
+        assert not (tmp_path / "urls" / "urls.txt").exists() or (
+            "abcdef1234567890.onion" not in (tmp_path / "urls" / "urls.txt").read_text()
+        )
+
+    def test_queues_clearnet_torrent_file(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_add_urls(argparse.Namespace(target="https://example.com/leak.torrent"))
+        assert rc == 0
+        assert (tmp_path / "urls" / "urls.txt").read_text() == "https://example.com/leak.torrent\n"
+
+    def test_magnet_uri_is_not_mistaken_for_a_file_path(self, deis_module, tmp_path, monkeypatch):
+        """A magnet URI has no "://", unlike every other supported scheme -
+        it must still be queued as a single URL, not read as a path to a
+        (nonexistent) file of URLs.
+        """
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        rc = deis_module.cmd_add_urls(argparse.Namespace(target="magnet:?xt=urn:btih:abc"))
+        assert rc == 0
 
 
 class TestCrawlSite:

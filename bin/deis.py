@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,7 +66,10 @@ ES_VOLUME_NAME = "deis_elasticsearch"
 # supply-chain exposure is a single `tar` invocation, not persistent code.
 VOLUME_BACKUP_IMAGE = "alpine:3.22.5"
 VIEW_URL = "http://127.0.0.1:8081/view"
-ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://")
+# magnet: added alongside http(s)/ftp - see is_bittorrent_url()/
+# bt_blocked_reason() just below for why it's still refused whenever this
+# pipeline's TOR policy would otherwise apply to it.
+ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://", "magnet:")
 # Shared between cmd_pii_scan (what it writes) and cmd_pii_report (what it
 # reads back) - see pii.detect_all()'s own result shape in bin/pii.py.
 PII_FIELDS = ("personnummer", "emails", "phone_numbers", "ibans", "card_numbers")
@@ -311,6 +315,50 @@ def is_valid_url(url: str) -> bool:
     logs/download_errors.log once urls.sh gets to it.
     """
     return url.startswith(ALLOWED_URL_SCHEMES)
+
+
+def is_bittorrent_url(url: str) -> bool:
+    """A magnet URI or a URL naming a .torrent file - the two entry points
+    aria2 uses to switch into BitTorrent mode (--follow-torrent is on by
+    default, so fetching a .torrent file transitions straight into a BT
+    download of whatever it describes). Query string is stripped first so
+    "foo.torrent?dl=1" still counts.
+    """
+    if url.startswith("magnet:"):
+        return True
+    return url.split("?", 1)[0].lower().endswith(".torrent")
+
+
+def bt_blocked_reason(url: str, force_tor: bool) -> str | None:
+    """None if this BitTorrent URL is safe to queue, else why it isn't.
+
+    aria2 has no proxy support at all for BitTorrent traffic: every
+    *-proxy option (--all-proxy/--http-proxy/--https-proxy/--ftp-proxy) is
+    tagged only #http/#https/#ftp in aria2's own option metadata, and none
+    of the dozens of options tagged #bittorrent (trackers, peers, DHT,
+    peer exchange) is proxy-aware - there is no --bt-proxy option at all.
+    Confirmed directly against aria2 1.37.0 (`aria2c --help=#bittorrent`),
+    the version downloader/Dockerfile builds, not assumed from memory.
+
+    That means a magnet/.torrent URL can never be routed through TOR the
+    way url_needs_tor() (deis/lib.sh) routes every other URL in this
+    pipeline: FORCE_TOR is this pipeline's explicit "route everything
+    through TOR" opt-in, so it opts BitTorrent out entirely rather than
+    silently downloading it in the clear anyway. An .onion-hosted .torrent
+    file's own metadata fetch would itself be proxied correctly by
+    url_needs_tor()'s ordinary host check, but the BT content download
+    aria2 automatically starts once it has parsed that file never is - so
+    that case is refused too, not silently downgraded to an unprotected
+    direct download once the .torrent file has already been fetched.
+    """
+    if force_tor:
+        return "FORCE_TOR is set, and BitTorrent traffic can never be routed through TOR"
+    if url.startswith("magnet:"):
+        return None
+    host = urllib.parse.urlparse(url).hostname or ""
+    if host.endswith(".onion"):
+        return "it is hosted on an .onion site, but the BitTorrent download it starts cannot be routed through TOR"
+    return None
 
 
 def marker_status() -> dict[str, str]:
@@ -1822,7 +1870,14 @@ def cmd_dedupe_report(args) -> int:
 
 def cmd_add_urls(args) -> int:
     target = args.target
-    candidates = [target] if "://" in target else Path(target).read_text(encoding="utf-8").splitlines()
+    # A magnet URI has no "://" (it's "magnet:?xt=..."), so it needs its
+    # own check here alongside every other single-URL scheme this project
+    # supports - without it, a magnet URI would be misread as a path to a
+    # file of URLs and fail on Path.read_text() instead of being queued.
+    is_single_url = "://" in target or target.startswith("magnet:")
+    candidates = [target] if is_single_url else Path(target).read_text(encoding="utf-8").splitlines()
+
+    force_tor = read_env().get("FORCE_TOR", "false").lower() == "true"
 
     urls_file = REPO_ROOT / "urls" / "urls.txt"
     urls_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1839,6 +1894,9 @@ def cmd_add_urls(args) -> int:
                 continue
             if not is_valid_url(candidate):
                 console.print(f"[red]Skipping (unsupported scheme): {candidate}[/red]")
+                continue
+            if is_bittorrent_url(candidate) and (reason := bt_blocked_reason(candidate, force_tor)):
+                console.print(f"[red]Skipping (BitTorrent cannot be queued - {reason}): {candidate}[/red]")
                 continue
             f.write(candidate + "\n")
             existing.add(candidate)

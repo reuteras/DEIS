@@ -30,3 +30,43 @@ url_needs_tor() {
     host="$(url_host "$1")"
     [[ "${host}" == *.onion ]] || [[ "${FORCE_TOR:-false}" == "true" ]]
 }
+
+# True for a magnet URI or a URL naming a .torrent file - the two entry
+# points aria2 uses to switch into BitTorrent mode (--follow-torrent is on
+# by default, so fetching a .torrent file transitions straight into a BT
+# download of whatever it describes). Query string is stripped first so
+# "foo.torrent?dl=1" still counts.
+url_is_bittorrent() {
+    local url="$1" path
+    [[ "${url}" == magnet:* ]] && return 0
+    path="${url%%\?*}"
+    # tr, not bash 4's ${path,,} - the container's bash is modern enough
+    # either way, but macOS's own /bin/bash (3.2, still the system default)
+    # isn't, and this only needs to be portable, not fast.
+    path="$(printf '%s' "${path}" | tr '[:upper:]' '[:lower:]')"
+    [[ "${path}" == *.torrent ]]
+}
+
+# True when a BitTorrent URL must be refused rather than queued.
+#
+# aria2 has no proxy support at all for BitTorrent traffic: every
+# *-proxy option is tagged only #http/#https/#ftp in aria2's own option
+# metadata, and none of the dozens of options tagged #bittorrent (trackers,
+# peers, DHT, peer exchange) is proxy-aware - there is no --bt-proxy option
+# at all. Confirmed directly against aria2 1.37.0 (`aria2c
+# --help=#bittorrent`), the version downloader/Dockerfile builds, not
+# assumed from memory. That means a magnet/.torrent URL can never be
+# routed through TOR the way url_needs_tor() routes everything else, so
+# FORCE_TOR (this pipeline's explicit "route everything through TOR"
+# opt-in) opts BitTorrent out entirely rather than silently downloading it
+# in the clear anyway. An .onion-hosted .torrent file's own metadata fetch
+# would itself be proxied correctly by url_needs_tor()'s ordinary host
+# check, but the BT content download aria2 automatically starts once it
+# has parsed that file never is - so that case is refused too, not
+# silently downgraded to an unprotected direct download.
+url_bt_refused() {
+    local url="$1"
+    [[ "${FORCE_TOR:-false}" == "true" ]] && return 0
+    [[ "${url}" == magnet:* ]] && return 1
+    [[ "$(url_host "${url}")" == *.onion ]]
+}

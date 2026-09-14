@@ -40,7 +40,7 @@ while true; do
         --argjson offset "${offset}" \
         --argjson num "${page_size}" \
         '{jsonrpc: "2.0", id: $id, method: "aria2.tellStopped",
-        params: [$secret, $offset, $num, ["gid", "status", "errorMessage", "files"]]}')")"
+        params: [$secret, $offset, $num, ["gid", "status", "errorMessage", "files", "followedBy"]]}')")"
     entries="$(echo "${page}" | jq -c '.result[]?')"
     [[ -z "${entries}" ]] && break
     stopped+="${entries}"$'\n'
@@ -54,6 +54,12 @@ done
 pending=""
 pending_count=0
 errors=""
+# GIDs discovered via followedBy below (see the comment further down) -
+# appended to /status/batch_gids only after this loop finishes reading it,
+# never mid-loop. Snapshotted into a variable rather than re-reading the
+# file from inside the loop below, which already has it open for reading.
+known_gids="$(cat /status/batch_gids)"
+new_gids=""
 while IFS= read -r gid; do
     [[ -z "${gid}" ]] && continue
     entry="$(echo "${stopped}" | jq -c --arg gid "${gid}" 'select(.gid == $gid)' | head -1)"
@@ -86,8 +92,37 @@ while IFS= read -r gid; do
             jq -nc --arg filename "$(basename "${path}")" --arg url "${uri}" \
                 '{filename: $filename, url: $url}' >> /status/batch_urls.jsonl
         fi
+
+        # A .torrent-by-URL download "completing" only means the small
+        # torrent metadata file itself finished - aria2's --follow-torrent
+        # (on by default) then starts a brand new GID for the actual
+        # BitTorrent content, reported here as this GID's followedBy. Only
+        # magnet URIs skip this: they have no separate metadata fetch, so
+        # the same GID carries the real download throughout. Without this,
+        # the batch would be declared downloaded (and swept into /files/
+        # by done.sh) as soon as the metadata file was fetched, regardless
+        # of whether the real content had downloaded a single byte -
+        # exactly the silent-corruption failure mode this pipeline exists
+        # to avoid. batch_gids is never deduplicated across ticks (see the
+        # comment above), so the same followedBy is seen again every tick
+        # the metadata GID is re-checked - only append a followed GID once.
+        while IFS= read -r fgid; do
+            [[ -z "${fgid}" ]] && continue
+            if ! grep -Fxq "${fgid}" <<< "${known_gids}"; then
+                new_gids+="${fgid}"$'\n'
+            fi
+        done < <(echo "${entry}" | jq -r '.followedBy[]? // empty')
     fi
-done < /status/batch_gids
+done <<< "${known_gids}"
+
+if [[ -n "${new_gids}" ]]; then
+    printf '%s' "${new_gids}" >> /status/batch_gids
+    # Not checked even once yet this tick - report the batch as still
+    # waiting rather than risk finalizing before a newly-discovered
+    # followed GID's real status is known at all.
+    pending+="${new_gids}"
+    pending_count=$(( pending_count + $(printf '%s' "${new_gids}" | grep -c '^') ))
+fi
 
 if [[ -n "${pending}" ]]; then
     # Report the count whenever it changes, so a slow batch still shows signs

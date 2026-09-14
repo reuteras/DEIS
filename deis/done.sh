@@ -60,9 +60,20 @@ if [[ -f /status/downloaded ]] && [[ ! -f /status/unpack ]]; then
     # check.torproject.org response, or the leak site's own "Index of /"
     # pages, as if they were evidence, so prune both directories rather
     # than rely on that cleanup.
-    done < <(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o -type f ! -name '.gitignore' -print0 | sort -z)
+    #
+    # *.aria2 and *.torrent are excluded for the same reason, not pruned as
+    # directories since they sit as plain files alongside the real
+    # download: a *.aria2 control file only ever exists for a download
+    # aria2 has not finished yet (it deletes its own on real completion),
+    # so sweeping one in is never correct regardless of BitTorrent being
+    # involved - and *.torrent is the site's own torrent descriptor, not
+    # the leaked content it describes, the same reasoning as .torcheck's
+    # probe responses above.
+    done < <(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o \
+        -type f ! -name '.gitignore' ! -name '*.aria2' ! -name '*.torrent' -print0 | sort -z)
 
-    remaining="$(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o -type f ! -name '.gitignore' -print | wc -l | tr -d ' ')"
+    remaining="$(find /downloader/data \( -name .torcheck -o -name .crawl \) -prune -o \
+        -type f ! -name '.gitignore' ! -name '*.aria2' ! -name '*.torrent' -print | wc -l | tr -d ' ')"
     if (( failed > 0 || remaining > 0 )); then
         echo "Move incomplete: ${failed} failed, ${remaining} file(s) left in /downloader/data. Will retry."
     else

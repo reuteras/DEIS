@@ -204,3 +204,47 @@ class TestTorcheckScript:
         text = (REPO_ROOT / "deis" / "urls.sh").read_text(encoding="utf-8")
         assert "source" in text and "lib.sh" in text, "urls.sh must source lib.sh"
         assert "url_is_bittorrent" in text and "url_bt_refused" in text, "urls.sh must use the shared BitTorrent checks"
+
+
+class TestDoneScript:
+    def test_is_syntactically_valid(self):
+        subprocess.run(["bash", "-n", str(REPO_ROOT / "deis" / "done.sh")], check=True)
+
+    @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not available")
+    def test_shellcheck_clean(self):
+        subprocess.run(["shellcheck", str(REPO_ROOT / "deis" / "done.sh")], check=True)
+
+    def test_aria2_and_torrent_sidecar_files_are_not_swept(self):
+        """A *.aria2 control file only exists for a download aria2 has not
+        finished yet (it deletes its own on real completion), and *.torrent
+        is the site's own torrent descriptor, not the leaked content it
+        describes - neither belongs in /files/, the same reasoning as the
+        .torcheck/.crawl directory pruning right above these in done.sh.
+        """
+        done = (REPO_ROOT / "deis" / "done.sh").read_text(encoding="utf-8")
+        assert done.count("! -name '*.aria2'") == 2, "both find calls in done.sh must exclude *.aria2"
+        assert done.count("! -name '*.torrent'") == 2, "both find calls in done.sh must exclude *.torrent"
+
+
+class TestDownloadScript:
+    def test_is_syntactically_valid(self):
+        subprocess.run(["bash", "-n", str(REPO_ROOT / "deis" / "download.sh")], check=True)
+
+    @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not available")
+    def test_shellcheck_clean(self):
+        subprocess.run(["shellcheck", str(REPO_ROOT / "deis" / "download.sh")], check=True)
+
+    def test_tracks_followed_bittorrent_content_downloads(self):
+        """A .torrent-by-URL download "completing" only means the small
+        torrent metadata file itself finished - aria2's --follow-torrent
+        (on by default) then starts a brand new, untracked GID for the
+        actual BitTorrent content. Without following that GID too, the
+        batch is declared downloaded - and swept into /files/ by done.sh -
+        as soon as the metadata file is fetched, regardless of whether the
+        real content has downloaded a single byte.
+        """
+        download = (REPO_ROOT / "deis" / "download.sh").read_text(encoding="utf-8")
+        assert "followedBy" in download, "download.sh must request/track aria2's followedBy relationship"
+        assert ">> /status/batch_gids" in download, (
+            "a newly-discovered followed GID must be persisted into batch_gids so later ticks track it too"
+        )

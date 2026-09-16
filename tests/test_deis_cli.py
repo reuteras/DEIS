@@ -592,3 +592,88 @@ class TestCompletionScripts:
         )
         assert "TOP:" + " ".join(deis_module.SUBCOMMANDS) in result.stdout
         assert "ONLY:" + " ".join(deis_module.RUN_ONLY_CHOICES) in result.stdout
+
+
+class TestHumanSize:
+    def test_bytes_and_units(self, deis_module):
+        assert deis_module.human_size(512) == "512 B"
+        assert deis_module.human_size(2048) == "2.0 KB"
+        assert deis_module.human_size(5 * 1024**3) == "5.0 GB"
+
+
+class TestClassifyIdentifier:
+    def test_personnummer(self, deis_module):
+        number = "800101" + "123" + deis_module.pii.compute_personnummer_check_digit("800101123")
+        assert deis_module.classify_identifier(f"{number[:6]}-{number[6:]}") == "personnummer"
+        assert "personnummer" in deis_module.subject_queries(number)
+
+    def test_email(self, deis_module):
+        assert deis_module.classify_identifier("Anna@Example.se") == "email"
+        queries = deis_module.subject_queries("Anna@Example.se")
+        assert queries["pii.emails"] == {"term": {"pii.emails": "anna@example.se"}}
+        assert "mail sender" in queries
+
+    def test_name_is_text(self, deis_module):
+        assert deis_module.classify_identifier("Anna Svensson") == "text"
+        queries = deis_module.subject_queries("Anna Svensson")
+        assert queries["content"] == {"match_phrase": {"attachment.content": "Anna Svensson"}}
+        assert "entities.persons" in queries
+
+    def test_invalid_personnummer_shape_is_text(self, deis_module):
+        assert deis_module.classify_identifier("800101-1234") in ("text", "personnummer")
+        assert deis_module.classify_identifier("123456") == "text"
+
+
+class TestReadWatchlist:
+    def test_skips_comments_blanks_and_duplicates(self, deis_module, tmp_path):
+        f = tmp_path / "watch.txt"
+        f.write_text("# employees\nAnna Svensson\n\nanna@example.se\nAnna Svensson\n")
+        assert deis_module.read_watchlist(f) == ["Anna Svensson", "anna@example.se"]
+
+
+class TestHtmlReport:
+    def test_escapes_hostile_values_and_survives_no_elasticsearch(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / "status").mkdir()
+        (tmp_path / "files").mkdir()
+        (tmp_path / "extracted").mkdir()
+
+        def no_es(*_a, **_k):
+            raise ConnectionError("down")
+
+        monkeypatch.setattr(deis_module, "es_request", no_es)
+        monkeypatch.setattr(deis_module, "_agg_buckets", lambda *_a, **_k: [("<img src=x onerror=alert(1)>", 3)])
+        html = deis_module.build_html_report()
+        assert "<img src=x" not in html
+        assert "&lt;img src=x onerror=alert(1)&gt;" in html
+        assert "could not be read" in html
+
+    def test_watchlist_summary_is_included(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        (tmp_path / "status").mkdir()
+        (tmp_path / "status" / "watchlist_summary.json").write_text(
+            '{"@timestamp": "t", "file": "w.txt", "terms": 2, "terms_found": 1, "hits": {"Anna": 4, "Erik": 0}}'
+        )
+        monkeypatch.setattr(deis_module, "es_request", lambda *_a, **_k: (_ for _ in ()).throw(ConnectionError()))
+        monkeypatch.setattr(deis_module, "_agg_buckets", lambda *_a, **_k: [])
+        html = deis_module.build_html_report()
+        assert "Watchlist (1 of 2 terms found)" in html
+        assert "Anna" in html
+
+
+class TestNewSubcommandsRegistered:
+    @pytest.mark.parametrize("command", ["secret-scan", "secret-report", "inventory", "subject", "watchlist"])
+    def test_listed_and_parseable(self, deis_module, command):
+        assert command in deis_module.SUBCOMMANDS
+        parser = deis_module.build_parser()
+        extra = {"subject": ["x"], "watchlist": ["w.txt"]}.get(command, [])
+        args = parser.parse_args([command, *extra])
+        assert callable(args.func)
+
+    def test_search_flags(self, deis_module):
+        args = deis_module.build_parser().parse_args(["search", "x", "--fuzzy", "--rows"])
+        assert args.fuzzy and args.rows
+
+    def test_report_html_flag(self, deis_module, tmp_path):
+        args = deis_module.build_parser().parse_args(["report", "--html", str(tmp_path / "r.html")])
+        assert args.html == tmp_path / "r.html"

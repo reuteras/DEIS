@@ -141,4 +141,11 @@ progress: python-bin
 test: _venv-dir
     uv run ruff check .
     uv run ruff format --check .
+    uv run python3 setup/dashboards.py --check
     uv run pytest
+
+# Regenerate setup/export.ndjson's generated dashboards (item 55) after
+# editing setup/dashboards.py - run this, then `just test`, then re-run
+# `deis run --only setup` against a live stack to see the result.
+dashboards: _venv-dir
+    uv run python3 setup/dashboards.py

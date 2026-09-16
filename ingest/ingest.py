@@ -4,10 +4,15 @@
 import base64
 import configparser
 import csv
+import email
+import email.header
+import email.policy
+import email.utils
 import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -53,6 +58,357 @@ BULK_MAX_BYTES = 20 * 1024 * 1024
 INDEXED = "indexed"  # sent to Elasticsearch during this run
 PRESENT = "present"  # a document for this content already existed
 FAILED = "failed"  # could not be indexed, will be retried on the next run
+
+# Bytes read from the start of every file for classify_sensitive() below -
+# enough for every magic number checked there plus a ransom note's opening
+# lines, small enough to be free even for a file too large to index.
+_HEAD_BYTES = 4096
+
+# Content signatures for classify_sensitive(): (magic prefix, class). Only
+# unambiguous, well-known signatures - "MZ" (PE), ELF, Mach-O (both byte
+# orders, 32/64-bit, and fat binaries), SQLite 3, KeePass 1.x/2.x (both
+# share the first four bytes), VMDK, VHDX, EnCase E01, WIM, qcow2.
+_SENSITIVE_MAGIC = (
+    (b"MZ", "executable"),
+    (b"\x7fELF", "executable"),
+    (b"\xfe\xed\xfa\xce", "executable"),
+    (b"\xfe\xed\xfa\xcf", "executable"),
+    (b"\xce\xfa\xed\xfe", "executable"),
+    (b"\xcf\xfa\xed\xfe", "executable"),
+    (b"\xca\xfe\xba\xbe", "executable"),
+    (b"SQLite format 3\x00", "database"),
+    (b"\x03\xd9\xa2\x9a", "credential_store"),
+    (b"KDMV", "disk_image"),
+    (b"vhdxfile", "disk_image"),
+    (b"EVF\x09\x0d\x0a\xff\x00", "disk_image"),
+    (b"MSWIM\x00\x00\x00", "disk_image"),
+    (b"QFI\xfb", "disk_image"),
+)
+
+# Extension-based classes, lowercased, without the dot. Deliberately not
+# ".db": a real corpus turned out to be almost entirely Thumbs.db under
+# that extension (docs/IMPROVEMENTS.md item 21), so SQLite is recognized
+# by its magic number above instead.
+_SENSITIVE_EXTENSIONS = {
+    "kdbx": "credential_store",
+    "kdb": "credential_store",
+    "psafe3": "credential_store",
+    "1pif": "credential_store",
+    "pem": "key_material",
+    "key": "key_material",
+    "p12": "key_material",
+    "pfx": "key_material",
+    "ppk": "key_material",
+    "jks": "key_material",
+    "keystore": "key_material",
+    "p8": "key_material",
+    "pk8": "key_material",
+    "rdp": "remote_access",
+    "rdg": "remote_access",
+    "ovpn": "remote_access",
+    "exe": "executable",
+    "dll": "executable",
+    "sys": "executable",
+    "scr": "executable",
+    "com": "executable",
+    "msi": "executable",
+    "bat": "executable",
+    "cmd": "executable",
+    "ps1": "executable",
+    "vbs": "executable",
+    "vbe": "executable",
+    "hta": "executable",
+    "jar": "executable",
+    "lnk": "executable",
+    "sqlite": "database",
+    "sqlite3": "database",
+    "mdb": "database",
+    "accdb": "database",
+    "sql": "database",
+    "mdf": "database",
+    "ldf": "database",
+    "ndf": "database",
+    "frm": "database",
+    "ibd": "database",
+    "myd": "database",
+    "dbf": "database",
+    "vmdk": "disk_image",
+    "vhd": "disk_image",
+    "vhdx": "disk_image",
+    "vdi": "disk_image",
+    "qcow2": "disk_image",
+    "iso": "disk_image",
+    "wim": "disk_image",
+    "e01": "disk_image",
+    "ex01": "disk_image",
+    "aff": "disk_image",
+    "dd": "disk_image",
+    "img": "disk_image",
+}
+
+# Exact (case-insensitive) basenames: browser password stores, SSH keys,
+# and the usual places a service's own credentials end up on disk.
+_SENSITIVE_NAMES = {
+    "login data": "credential_store",
+    "logins.json": "credential_store",
+    "key3.db": "credential_store",
+    "key4.db": "credential_store",
+    "signons.sqlite": "credential_store",
+    "id_rsa": "key_material",
+    "id_dsa": "key_material",
+    "id_ecdsa": "key_material",
+    "id_ed25519": "key_material",
+    ".env": "config_secrets",
+    "web.config": "config_secrets",
+    "wp-config.php": "config_secrets",
+    ".htpasswd": "config_secrets",
+    ".netrc": "config_secrets",
+    "_netrc": "config_secrets",
+    ".pgpass": "config_secrets",
+    ".my.cnf": "config_secrets",
+    "credentials": "config_secrets",
+    ".git-credentials": "config_secrets",
+    "secrets.yml": "config_secrets",
+    "secrets.yaml": "config_secrets",
+    ".npmrc": "config_secrets",
+    ".pypirc": "config_secrets",
+    "unattend.xml": "config_secrets",
+    "sysprep.inf": "config_secrets",
+    "ntds.dit": "credential_store",
+}
+
+# Windows registry hives ("regf" magic) that hold password material - the
+# SAM, SYSTEM (the boot key needed to decrypt SAM) and SECURITY (LSA
+# secrets, cached domain credentials) hives. Only those three by name;
+# SOFTWARE/NTUSER.DAT share the magic but hold configuration, not
+# credentials.
+_CREDENTIAL_HIVES = {"sam", "system", "security"}
+
+# Ransom notes: the filenames the well-known families drop (a name alone
+# that says "decrypt"/"restore"/"recover" next to a text-ish extension
+# is already a strong signal), plus the phrases the notes themselves
+# open with, checked against the first few KB of any text-ish file
+# whatever it is called.
+_RANSOM_NAME_RE = re.compile(
+    r"(decrypt|restore|recover|ransom|how[-_ ]?to[-_ ]?(back|get|unlock)|read[-_ ]?me[-_ ]?now)", re.IGNORECASE
+)
+_RANSOM_TEXT_RE = re.compile(
+    r"(your (files|data|network|documents|company|servers?) (have|has|were|are|is) (all )?been "
+    r"(encrypted|stolen|locked|exfiltrated|downloaded))|(decrypt(ion|or)? (key|tool|software|program))",
+    re.IGNORECASE,
+)
+_RANSOM_TEXT_EXTENSIONS = {"txt", "html", "htm", "hta", "rtf", "url", "(none)"}
+
+
+# Item 50: email structure. An RFC 822 message is recognized by its
+# header block, not its extension - readpst (unpack/start.sh's process_pst)
+# writes each message to a bare numbered file, and .eml is only ever a
+# convention. Enough of these header names at the start of the file, before
+# the first blank line, and it is a message.
+_RFC822_HEADER_NAMES = {
+    "from",
+    "to",
+    "cc",
+    "subject",
+    "date",
+    "message-id",
+    "received",
+    "return-path",
+    "mime-version",
+    "content-type",
+    "delivered-to",
+    "x-mailer",
+}
+_RFC822_MIN_HEADERS = 3
+_MAX_EMAIL_ADDRESSES = 500
+
+
+def looks_like_rfc822(head: bytes) -> bool:
+    """Whether the first bytes of a file are an email's header block: at
+    least _RFC822_MIN_HEADERS distinct well-known header names as line
+    starts before the first blank line (or an mbox "From " line first).
+    Deliberately conservative - a text file that merely mentions "From:"
+    once is not a message.
+    """
+    text = head.decode("latin-1")
+    seen = set()
+    for i, line in enumerate(text.splitlines()):
+        if i == 0 and line.startswith("From "):
+            continue
+        if not line.strip():
+            break
+        if line[:1] in (" ", "\t"):
+            continue  # folded continuation of the previous header
+        name, sep, _ = line.partition(":")
+        if not sep:
+            break
+        name = name.strip().lower()
+        if name in _RFC822_HEADER_NAMES:
+            seen.add(name)
+        elif not name.startswith("x-") and not all(c.isalnum() or c == "-" for c in name):
+            break
+    return len(seen) >= _RFC822_MIN_HEADERS
+
+
+def _addresses(message, header: str) -> list[str]:
+    """Bare, lowercased addresses from every instance of a header, via
+    the stdlib's own RFC 2822 address-list parser - so "Anna <a@x.se>",
+    a quoted display name with a comma in it, and a folded multi-line
+    list all come out as plain addresses. Capped: a mass mailing's
+    To: line can run to thousands, which is noise for pivoting.
+    """
+    raw = message.get_all(header, [])
+    found = []
+    for _name, address in email.utils.getaddresses([str(value) for value in raw]):
+        address = address.strip().lower()
+        if address and "@" in address and address not in found:
+            found.append(address)
+        if len(found) >= _MAX_EMAIL_ADDRESSES:
+            break
+    return found
+
+
+def parse_email(content: bytes) -> dict | None:
+    """Structured fields from an RFC 822 message: sender and recipient
+    addresses, the sender's domains, subject, date (ISO 8601), message
+    id / in-reply-to for threading, and the names and count of attached
+    parts. Tika already indexes the body text as attachment.content;
+    this is the who/whom/when it leaves out, as real keyword/date fields
+    an "Email" dashboard can aggregate.
+
+    compat32 policy rather than the default one: the modern policy parses
+    header values eagerly into typed objects and raises on the malformed
+    headers real mail archives are full of, while compat32 hands back raw
+    strings that getaddresses()/parsedate_to_datetime() then tolerate
+    individually. Never raises - a message the parser cannot make sense
+    of at all returns None and the file stays a plain document.
+    """
+    try:
+        message = email.message_from_bytes(content, policy=email.policy.compat32)
+        result: dict = {"has_email": True}
+        from_addresses = _addresses(message, "From")
+        to_addresses = _addresses(message, "To")
+        cc_addresses = _addresses(message, "Cc")
+        bcc_addresses = _addresses(message, "Bcc")
+        result["from_addresses"] = from_addresses
+        result["from_domains"] = sorted({address.rsplit("@", 1)[1] for address in from_addresses})
+        result["to_addresses"] = to_addresses
+        result["cc_addresses"] = cc_addresses
+        result["bcc_addresses"] = bcc_addresses
+        result["recipients"] = list(dict.fromkeys(to_addresses + cc_addresses + bcc_addresses))
+        subject = message.get("Subject")
+        if subject:
+            decoded = []
+            for part, charset in email.header.decode_header(str(subject)):
+                if isinstance(part, bytes):
+                    decoded.append(part.decode(charset or "utf-8", "replace"))
+                else:
+                    decoded.append(part)
+            result["subject"] = " ".join(" ".join(decoded).split())[:1000]
+        date_header = message.get("Date")
+        if date_header:
+            try:
+                parsed = email.utils.parsedate_to_datetime(str(date_header))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                result["date"] = parsed.isoformat()
+            except (TypeError, ValueError, OverflowError):
+                pass
+        for header, key in (("Message-ID", "message_id"), ("In-Reply-To", "in_reply_to")):
+            value = message.get(header)
+            if value:
+                result[key] = str(value).strip()[:500]
+        names = []
+        count = 0
+        for part in message.walk():
+            if part.is_multipart():
+                continue
+            filename = part.get_filename()
+            disposition = str(part.get("Content-Disposition", "")).lower()
+            if filename or disposition.startswith("attachment"):
+                count += 1
+                if filename:
+                    try:
+                        decoded_name = " ".join(
+                            piece.decode(charset or "utf-8", "replace") if isinstance(piece, bytes) else piece
+                            for piece, charset in email.header.decode_header(filename)
+                        )
+                    except (LookupError, ValueError):
+                        decoded_name = filename
+                    names.append(decoded_name[:255])
+        result["attachment_names"] = names[:_MAX_EMAIL_ADDRESSES]
+        result["attachment_count"] = count
+        return result
+    except Exception:  # noqa: BLE001 - one unparseable message must not stop the batch/run
+        return None
+
+
+def file_extension(fname: Path) -> str:
+    """Lowercased extension without the dot, or "(none)" - a real value
+    rather than an empty string so Kibana's terms aggregations have a
+    bucket to show for extensionless files (common in leak dumps, and
+    the readpst output this pipeline itself produces) instead of a
+    missing-value gap.
+    """
+    suffix = fname.suffix.lower().lstrip(".")
+    return suffix or "(none)"
+
+
+def classify_sensitive(fname: Path, head: bytes) -> str | None:
+    """Which class of operator-relevant sensitive file this is, if any:
+    ransom_note, key_material, credential_store, config_secrets,
+    remote_access, executable, disk_image, database - or None for an
+    ordinary document. Flagging is cheap even for formats this pipeline
+    doesn't (yet) open, such as disk images (docs/IMPROVEMENTS.md item
+    21): a dump that contains one is worth knowing about immediately,
+    whether or not its contents ever get extracted.
+
+    Magic numbers are checked before names, so a KeePass database or a PE
+    binary renamed to ".txt" is still recognized, and a "database.exe"
+    that's really a text file isn't. A PEM private key is recognized by
+    its own header wherever it lives, while a PEM-shaped file that only
+    holds a certificate or public key is not key material at all.
+    Ransom notes are checked last by name pattern and, for text-ish
+    files, by the phrases the notes themselves open with.
+    """
+    name = fname.name.lower()
+    extension = file_extension(fname)
+
+    for magic, klass in _SENSITIVE_MAGIC:
+        if head.startswith(magic):
+            return klass
+    if head.startswith(b"-----BEGIN ") and b"PRIVATE KEY" in head[:64]:
+        return "key_material"
+    if b"PuTTY-User-Key-File" in head[:32]:
+        return "key_material"
+    if head.startswith(b"regf") and name in _CREDENTIAL_HIVES:
+        return "credential_store"
+
+    if extension in _RANSOM_TEXT_EXTENSIONS and _RANSOM_NAME_RE.search(fname.stem):
+        return "ransom_note"
+    if extension in _RANSOM_TEXT_EXTENSIONS and _RANSOM_TEXT_RE.search(head.decode("latin-1")):
+        return "ransom_note"
+
+    if name in _SENSITIVE_NAMES:
+        return _SENSITIVE_NAMES[name]
+    if extension in _SENSITIVE_EXTENSIONS:
+        return _SENSITIVE_EXTENSIONS[extension]
+    return None
+
+
+def indexed_chars_for(extension: str) -> int:
+    """How many characters of Tika-extracted text to index for a file of
+    this extension - passed per document via the attachment processor's
+    indexed_chars_field (see setup/entrypoint.sh's cbor-attachment
+    pipeline), rather than one fixed pipeline-wide cap. A default of
+    200,000 covers most documents, but a scanned 300-page PDF's later
+    pages would silently never be searchable at all - and that's the
+    document a name is most likely to be buried in - so PDFs get their
+    own, larger cap. Both from deis.cfg's [ingest] section.
+    """
+    if extension == "pdf":
+        return indexed_chars_pdf
+    return indexed_chars
 
 
 def read_configuration(config_file):
@@ -275,7 +631,7 @@ def parse_csv_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
             rows.append(
                 {columns[i] if i < len(columns) else f"column_{i + 1}": value for i, value in enumerate(raw_row)}
             )
-        return rows, {"truncated": truncated}
+        return rows, {"truncated": truncated, "columns": columns or []}
     except Exception as error:  # noqa: BLE001 - one bad CSV must not stop the batch/run
         return [], {"error": repr(error)}
 
@@ -492,6 +848,7 @@ def parse_xlsx_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
 
             rows: list[dict] = []
             truncated = False
+            all_columns: list[str] = []
             for sheet_name, part_path in sheet_targets:
                 if truncated:
                     break
@@ -512,6 +869,7 @@ def parse_xlsx_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
                         ordered = [cells.get(i, "") for i in range(max(cells) + 1)]
                         if columns is None:
                             columns = [value.strip() or f"column_{i + 1}" for i, value in enumerate(ordered)]
+                            all_columns.extend(name for name in columns if name not in all_columns)
                             continue
                         if len(rows) >= max_rows:
                             truncated = True
@@ -522,7 +880,7 @@ def parse_xlsx_rows(content: bytes, max_rows: int) -> tuple[list[dict], dict]:
                         }
                         row["_source_table"] = sheet_name
                         rows.append(row)
-            return rows, {"truncated": truncated}
+            return rows, {"truncated": truncated, "columns": all_columns}
     except Exception as error:  # noqa: BLE001 - one bad .xlsx must not stop the batch/run
         return [], {"error": repr(error)}
 
@@ -574,13 +932,21 @@ def prepare_file(fname: Path):
             # by an identical copy of the file elsewhere in the tree.
             return {"status": PRESENT, "sha256": sha256}
 
-        if fname.stat().st_size > max_size:
+        size = fname.stat().st_size
+        if size > max_size:
             content = b""
             message = "to large"
+            with open(fname, "rb") as f:
+                head = f.read(_HEAD_BYTES)
         else:
             with open(fname, "rb") as f:
                 content = f.read()
             message = "ok"
+            head = content[:_HEAD_BYTES]
+        sensitive_class = classify_sensitive(fname, head)
+        parsed_email = None
+        if message == "ok" and (suffix == ".eml" or looks_like_rfc822(head)):
+            parsed_email = parse_email(content)
 
         rows, row_meta = (None, None)
         if needs_rows:
@@ -595,6 +961,9 @@ def prepare_file(fname: Path):
         "message": message,
         "rows": rows,
         "row_meta": row_meta,
+        "size": size,
+        "sensitive_class": sensitive_class,
+        "email": parsed_email,
     }
 
 
@@ -809,6 +1178,26 @@ def build_bulk_body(items):
             # original name.
             "source_chain": resolve_source_chain(str(item["fname"]), item["sha256"]),
         }
+        # Structural fields (docs/IMPROVEMENTS.md item 47): what was only
+        # ever visible in the filename or on disk, as real aggregatable
+        # fields. nesting_depth is how many archives deep this file was
+        # found (0 = downloaded directly); indexed_chars_limit is read by
+        # the cbor-attachment pipeline's attachment processor as this
+        # document's own Tika text cap, and again by its classify-file
+        # script to set content_truncated - see indexed_chars_for().
+        extension = file_extension(item["fname"])
+        doc["file_size"] = item.get("size", 0)
+        doc["extension"] = extension
+        doc["nesting_depth"] = len(doc["source_chain"]["sha256s"])
+        doc["indexed_chars_limit"] = indexed_chars_for(extension)
+        # Only set when classify_sensitive() had something to say -
+        # omitted rather than null on the ordinary document, same
+        # reasoning as decrypt_password below.
+        if sensitive_class := item.get("sensitive_class"):
+            doc["sensitive_class"] = sensitive_class
+        # Item 50: only on files that parsed as an RFC 822 message.
+        if parsed_email := item.get("email"):
+            doc["email"] = parsed_email
         # Only set when this exact document was individually
         # password-protected and recovered (extraction_status ==
         # "decrypted") - see load_decrypted_passwords/
@@ -920,9 +1309,58 @@ def build_rows_bulk_body(items):
                 "source_filename": source_filename,
                 "row_number": row_number,
                 "row": row,
+                # Item 53: the row's own column names as a keyword list -
+                # "row" is a flattened field, whose keys cannot be
+                # aggregated, so this is what lets Kibana answer "which
+                # files have a Personnummer column" directly.
+                "columns": [key for key in row if key != "_source_table"],
             }
             lines.append(json.dumps(doc))
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def build_row_metadata_body(items):
+    """Item 53's other half: the file's own document gets row_count,
+    row_columns and rows_truncated once its rows are confirmed indexed -
+    the header inventory in one place per file, and the csv_max_rows/
+    xlsx_max_rows cap made Kibana-visible instead of only logged."""
+    lines = []
+    for item in items:
+        meta = item.get("row_meta") or {}
+        lines.append(json.dumps({"update": {"_index": INDEX, "_id": item["sha256"]}}))
+        lines.append(
+            json.dumps(
+                {
+                    "doc": {
+                        "row_count": len(item["rows"]),
+                        "row_columns": meta.get("columns", []),
+                        "rows_truncated": bool(meta.get("truncated", False)),
+                    }
+                }
+            )
+        )
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def row_metadata_request(items, num_retries=3):
+    """Posts build_row_metadata_body's updates. Best effort, like the row
+    indexing it follows: a failure here (typically the file's own blob
+    document not existing yet, when its bulk batch failed) is reported
+    but never changes a file's outcome."""
+    url = f"http://{elastic_host}:9200/_bulk"
+    body = build_row_metadata_body(items)
+    for _ in range(num_retries):
+        try:
+            response = requests.post(url, data=body, headers=headers, auth=elastic_auth(), timeout=120)
+            if response.status_code in success_list:
+                return response.json()["items"]
+            time.sleep(15)
+        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
+            time.sleep(60)
+        except requests.exceptions.RequestException as error:
+            print("ERROR: Row-metadata request to Elastic failed:", error, flush=True)
+            time.sleep(15)
+    return None
 
 
 def rows_bulk_request(items, num_retries=5):
@@ -964,6 +1402,7 @@ def process_rows_batch(items):
         ]
 
     offset = 0
+    succeeded = []
     for item in items:
         row_count = len(item["rows"])
         item_responses = responses[offset : offset + row_count]
@@ -972,6 +1411,7 @@ def process_rows_batch(items):
         if not failed:
             create_row_hash_link(item["sha256"], item["fname"])
             results.append((INDEXED, item["sha256"], None))
+            succeeded.append(item)
         else:
             results.append(
                 (
@@ -980,6 +1420,14 @@ def process_rows_batch(items):
                     f"Error sending {len(failed)}/{row_count} CSV row(s) to Elastic: {item['fname']}",
                 )
             )
+    if succeeded:
+        metadata_responses = row_metadata_request(succeeded)
+        if metadata_responses is None:
+            print(f"WARNING: row_count/row_columns not recorded on {len(succeeded)} file document(s).", flush=True)
+        else:
+            not_updated = sum(1 for r in metadata_responses if r["update"]["status"] not in success_list)
+            if not_updated:
+                print(f"WARNING: row_count/row_columns not recorded on {not_updated} file document(s).", flush=True)
     return results
 
 
@@ -1115,6 +1563,10 @@ def process_files(directory: Path):
     def flush_rows():
         nonlocal rows_batch, rows_batch_count
         if rows_batch:
+            # The blob batch first: process_rows_batch updates each file's
+            # own document with its row metadata (item 53), which has to
+            # exist by then.
+            flush()
             row_results.extend(process_rows_batch(rows_batch))
             rows_batch = []
             rows_batch_count = 0
@@ -1189,6 +1641,10 @@ csv_rows_enabled = cfg.getboolean("ingest", "csv_rows", fallback=True)
 csv_max_rows = cfg.getint("ingest", "csv_max_rows", fallback=50000)
 xlsx_rows_enabled = cfg.getboolean("ingest", "xlsx_rows", fallback=True)
 xlsx_max_rows = cfg.getint("ingest", "xlsx_max_rows", fallback=50000)
+# Per-document Tika text caps - see indexed_chars_for(). 200000 is what the
+# pipeline's fixed indexed_chars was before this became per-document.
+indexed_chars = cfg.getint("ingest", "indexed_chars", fallback=200000)
+indexed_chars_pdf = cfg.getint("ingest", "indexed_chars_pdf", fallback=2000000)
 still_encrypted = load_sha256_set("status/still_encrypted.txt")
 still_corrupt = load_sha256_set("status/still_corrupt.txt")
 still_unsafe = load_sha256_set("status/still_unsafe.txt")

@@ -6,6 +6,7 @@ LABEL maintainer="code@ongoing.today"
 
 COPY install.sh /
 COPY start.sh /
+COPY mail.py /
 
 ENV DEBIAN_FRONTEND noninteractive
 

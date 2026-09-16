@@ -35,6 +35,7 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geo
 import pii
+import secretscan
 import simhash
 
 # entities (item 32) and language are deliberately NOT imported up here
@@ -50,6 +51,8 @@ ES_URL = "http://127.0.0.1:9200"
 KIBANA_URL = "http://127.0.0.1:5601"
 INDEX = "leakdata-index-000001"
 RUNS_INDEX = "deis-ingest-runs"
+# ingest.py's ROW_INDEX - one document per .csv/.xlsx row (item 21).
+ROW_INDEX = "leakdata-rows-000001"
 # docker-compose.yml names this volume implicitly (project name "deis",
 # derived from this directory's name, prefixed onto the "elasticsearch"
 # service volume - same convention Justfile's docker-clean already
@@ -72,7 +75,46 @@ VIEW_URL = "http://127.0.0.1:8081/view"
 ALLOWED_URL_SCHEMES = ("http://", "https://", "ftp://", "magnet:")
 # Shared between cmd_pii_scan (what it writes) and cmd_pii_report (what it
 # reads back) - see pii.detect_all()'s own result shape in bin/pii.py.
-PII_FIELDS = ("personnummer", "emails", "phone_numbers", "ibans", "card_numbers")
+PII_FIELDS = (
+    "personnummer",
+    "emails",
+    "phone_numbers",
+    "ibans",
+    "card_numbers",
+    "organisationsnummer",
+    "bankgiro",
+    "plusgiro",
+    "fodselsnummer",
+    "hetu",
+    "cpr",
+)
+# Derived from "personnummer" (item 48, see pii.normalize_personnummer) -
+# exported alongside the detected types by pii-report, but not a detector
+# of its own, so it has no per-type count in pii-scan's summary.
+PII_DERIVED_FIELDS = ("personnummer_normalized",)
+PII_REPORT_FIELDS = (*PII_FIELDS, *PII_DERIVED_FIELDS)
+# Same idea for secrets/artifacts - see bin/secretscan.py's detect_secrets()/
+# detect_artifacts() result shapes; both written by one secret-scan pass.
+SECRET_FIELDS = (
+    "private_keys",
+    "aws_access_keys",
+    "github_tokens",
+    "slack_tokens",
+    "google_api_keys",
+    "jwts",
+    "credential_urls",
+    "password_assignments",
+)
+ARTIFACT_FIELDS = (
+    "ipv4_addresses",
+    "private_ipv4_addresses",
+    "ipv6_addresses",
+    "unc_paths",
+    "usernames",
+    "domains",
+    "onion_addresses",
+    "bitcoin_addresses",
+)
 # Same idea, for entities - see entities.detect_entities()'s result shape
 # in bin/entities.py.
 ENTITY_FIELDS = ("persons", "organizations", "locations")
@@ -119,6 +161,11 @@ SUBCOMMANDS = (
     "dedupe-report",
     "geo-scan",
     "geo-report",
+    "secret-scan",
+    "secret-report",
+    "inventory",
+    "subject",
+    "watchlist",
     "archive",
     "restore",
     "clean",
@@ -852,8 +899,19 @@ def cmd_search(args) -> int:
         console.print("[red]Provide a search term, or use --sha256 <hash> [<hash> ...] and/or -f/--file.[/red]")
         return 1
 
+    if args.rows:
+        return cmd_search_rows(args)
+
+    # --fuzzy (item 58): Elasticsearch's own edit-distance matching, for a
+    # name you only know how to pronounce - "Svenson" finds "Svensson".
+    # AUTO is 1 edit for 3-5 character terms and 2 above that.
+    match = (
+        {"attachment.content": {"query": args.term, "fuzziness": "AUTO"}}
+        if args.fuzzy
+        else {"attachment.content": args.term}
+    )
     query = {
-        "query": {"match": {"attachment.content": args.term}},
+        "query": {"match": match},
         "highlight": {"fields": {"attachment.content": {"fragment_size": 150, "number_of_fragments": 1}}},
     }
     try:
@@ -923,7 +981,446 @@ def cmd_search(args) -> int:
     return 0
 
 
-def cmd_report(_args) -> int:
+def cmd_search_rows(args) -> int:
+    """--rows (item 58): exact cell-value search in the leakdata-rows-*
+    index - the one place a spreadsheet's structure survives. "row" is a
+    flattened field, so a term query against it matches the value in any
+    column; each hit shows the whole row and links to the file it came
+    from. Exact match only (flattened values are not analyzed), which is
+    what an identifier lookup wants; free-text goes through the normal
+    content search.
+    """
+    query = {"term": {"row": args.term}}
+    source = ["source_filename", "source_sha256", "row_number", "row"]
+    try:
+        if args.output:
+            written = 0
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["source_filename", "source_sha256", "row_number", "row", "link"])
+                for hit in scroll_hits(query, source, index=ROW_INDEX):
+                    doc = hit["_source"]
+                    writer.writerow(
+                        [
+                            doc.get("source_filename", ""),
+                            doc.get("source_sha256", ""),
+                            doc.get("row_number", ""),
+                            json.dumps(doc.get("row", {}), ensure_ascii=False),
+                            f"{VIEW_URL}/{doc.get('source_sha256', '')}",
+                        ]
+                    )
+                    written += 1
+            console.print(f"Wrote {written} row(s) matching {args.term!r} to {args.output}.")
+            return 0
+        response = es_request(
+            f"/{ROW_INDEX}/_search", method="POST", body={"size": 20, "_source": source, "query": query}
+        )
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+    console.print(f"{total} row(s) with a cell equal to {args.term!r}.")
+    table = Table()
+    table.add_column("File", overflow="ellipsis", max_width=40, no_wrap=True)
+    table.add_column("Row")
+    table.add_column("Values", overflow="fold", max_width=80)
+    table.add_column("Link", overflow="fold")
+    for hit in response.get("hits", {}).get("hits", []):
+        doc = hit["_source"]
+        values = "; ".join(f"{k}={v}" for k, v in doc.get("row", {}).items() if v)
+        table.add_row(
+            Path(doc.get("source_filename", "")).name,
+            str(doc.get("row_number", "")),
+            rich_escape(values[:300]),
+            _rich_link(f"{VIEW_URL}/{doc.get('source_sha256', '')}"),
+        )
+    console.print(table)
+    if total > 20:
+        console.print(f"[yellow]{total - 20} more not shown - use --output <file> to export all of them.[/yellow]")
+    return 0
+
+
+# --- Subject lookup and watchlists (items 56/57) ---------------------------
+
+
+def classify_identifier(value: str) -> str:
+    """What kind of thing a watchlist/subject term is, which decides where
+    it is looked for: "personnummer" (normalized and matched exactly on
+    pii.personnummer_normalized), "email" (pii.emails plus mail headers),
+    or "text" (a name or any other phrase - exact phrase in content plus
+    entities/usernames)."""
+    value = value.strip()
+    if pii.normalize_personnummer(value) is not None and pii.find_personnummer(value):
+        return "personnummer"
+    if "@" in value and " " not in value:
+        return "email"
+    return "text"
+
+
+def subject_queries(value: str) -> dict[str, dict]:
+    """Every place a term can match, keyed by a human label - each an
+    Elasticsearch query against INDEX, run separately so the report can
+    say *where* something matched (a phrase in prose, a validated
+    identifier, a mail header), not just that it did."""
+    kind = classify_identifier(value)
+    value = value.strip()
+    if kind == "personnummer":
+        normalized = pii.normalize_personnummer(value)
+        return {
+            "personnummer": {"term": {"pii.personnummer_normalized": normalized}},
+            "content": {"match_phrase": {"attachment.content": value}},
+        }
+    if kind == "email":
+        lowered = value.lower()
+        return {
+            "pii.emails": {"term": {"pii.emails": lowered}},
+            "mail sender": {"term": {"email.from_addresses": lowered}},
+            "mail recipient": {"term": {"email.recipients": lowered}},
+            "content": {"match_phrase": {"attachment.content": value}},
+        }
+    return {
+        "content": {"match_phrase": {"attachment.content": value}},
+        "entities.persons": {"term": {"entities.persons": value}},
+        "artifacts.usernames": {"term": {"artifacts.usernames": value}},
+        "email.subject": {"match_phrase": {"email.subject": value}},
+    }
+
+
+def cmd_subject(args) -> int:
+    """Item 56: one identifier, every angle - the terminal counterpart of
+    the "Subject lookup" dashboard. Runs each of subject_queries()'s
+    queries, plus an exact cell match in the rows index, and reports
+    per-source counts, then the documents (deduplicated, with which
+    sources matched each) - a capped table, or every hit as CSV with
+    --output."""
+    value = args.value.strip()
+    queries = subject_queries(value)
+    matched: dict[str, tuple[str, set[str]]] = {}
+    counts: dict[str, int] = {}
+    try:
+        for label, query in queries.items():
+            counts[label] = 0
+            for hit in scroll_hits(query, ["filename", "sha256"]):
+                counts[label] += 1
+                filename, sources = matched.setdefault(hit["_id"], (hit["_source"].get("filename", ""), set()))
+                sources.add(label)
+        rows_count = 0
+        for hit in scroll_hits({"term": {"row": value}}, ["source_filename", "source_sha256"], index=ROW_INDEX):
+            rows_count += 1
+            doc = hit["_source"]
+            _f, sources = matched.setdefault(doc.get("source_sha256", ""), (doc.get("source_filename", ""), set()))
+            sources.add("spreadsheet cell")
+        counts["spreadsheet cell (rows)"] = rows_count
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    console.print(f"Subject {value!r} ({classify_identifier(value)}): {len(matched)} document(s) in total.")
+    summary = Table(title="Where it matched")
+    summary.add_column("Source")
+    summary.add_column("Hits")
+    for label, count in counts.items():
+        summary.add_row(label, str(count))
+    console.print(summary)
+
+    ordered = sorted(matched.items(), key=lambda item: (-len(item[1][1]), item[1][0]))
+    if args.output:
+        try:
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["filename", "sha256", "matched_via", "link"])
+                for sha256, (filename, sources) in ordered:
+                    writer.writerow([filename, sha256, "; ".join(sorted(sources)), f"{VIEW_URL}/{sha256}"])
+        except OSError as error:
+            console.print(f"[red]Could not write {args.output}: {error}[/red]")
+            return 1
+        console.print(f"Wrote {len(ordered)} document(s) to {args.output}.")
+        return 0
+
+    table = Table()
+    table.add_column("Filename", overflow="ellipsis", max_width=50, no_wrap=True)
+    table.add_column("Matched via", overflow="fold", max_width=30)
+    table.add_column("Link", overflow="fold")
+    for sha256, (filename, sources) in ordered[:PII_REPORT_TABLE_LIMIT]:
+        table.add_row(Path(filename).name, ", ".join(sorted(sources)), _rich_link(f"{VIEW_URL}/{sha256}"))
+    console.print(table)
+    if len(ordered) > PII_REPORT_TABLE_LIMIT:
+        console.print(
+            f"[yellow]{len(ordered) - PII_REPORT_TABLE_LIMIT} more not shown - use --output <file> to export all.[/yellow]"
+        )
+    return 0
+
+
+def read_watchlist(path: Path) -> list[str]:
+    """One term per line; blank lines and '#' comments skipped, duplicates
+    dropped keeping first-seen order."""
+    terms = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line not in terms:
+            terms.append(line)
+    return terms
+
+
+def cmd_watchlist(args) -> int:
+    """Item 57: a list of names/identifiers to check for - the shape a
+    victim organization hands over ("are any of these employees in it?").
+    For each term, the union of subject_queries()'s matches is counted;
+    --output writes every (term, document) pair; --tag additionally
+    writes the term into each matching document's watchlist_hits field so
+    Kibana can filter on it. A summary lands in status/watchlist_summary.json
+    for the web page and the HTML report."""
+    try:
+        terms = read_watchlist(args.file)
+    except OSError as error:
+        console.print(f"[red]Could not read {args.file}: {error}[/red]")
+        return 1
+    if not terms:
+        console.print(f"[red]{args.file} contains no terms.[/red]")
+        return 1
+
+    writer = None
+    output_file = None
+    per_term: dict[str, int] = {}
+    failures: list[str] = []
+    try:
+        if args.output:
+            output_file = args.output.open("w", newline="", encoding="utf-8")
+            writer = csv.writer(output_file)
+            writer.writerow(["term", "kind", "filename", "sha256", "matched_via", "link"])
+        for term in terms:
+            kind = classify_identifier(term)
+            matched: dict[str, tuple[str, set[str]]] = {}
+            for label, query in subject_queries(term).items():
+                for hit in scroll_hits(query, ["filename", "sha256"]):
+                    _f, sources = matched.setdefault(hit["_id"], (hit["_source"].get("filename", ""), set()))
+                    sources.add(label)
+            per_term[term] = len(matched)
+            if writer:
+                for sha256, (filename, sources) in matched.items():
+                    writer.writerow([term, kind, filename, sha256, "; ".join(sorted(sources)), f"{VIEW_URL}/{sha256}"])
+            if args.tag and matched:
+                actions = []
+                for sha256 in matched:
+                    actions.append({"update": {"_index": INDEX, "_id": sha256}})
+                    actions.append(
+                        {
+                            "script": {
+                                "source": "if (ctx._source.watchlist_hits == null) { ctx._source.watchlist_hits = []; } "
+                                "if (!ctx._source.watchlist_hits.contains(params.term)) { ctx._source.watchlist_hits.add(params.term); }",
+                                "lang": "painless",
+                                "params": {"term": term},
+                            }
+                        }
+                    )
+                    if len(actions) >= 400:
+                        failures.extend(bulk_failures(es_bulk(actions)))
+                        actions = []
+                if actions:
+                    failures.extend(bulk_failures(es_bulk(actions)))
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if output_file:
+            output_file.close()
+
+    found = {term: count for term, count in per_term.items() if count}
+    table = Table(title=f"Watchlist {args.file.name}: {len(found)} of {len(terms)} term(s) found")
+    table.add_column("Term", overflow="ellipsis", max_width=40)
+    table.add_column("Kind")
+    table.add_column("Documents")
+    for term, count in sorted(per_term.items(), key=lambda item: -item[1]):
+        style = "red" if count else "dim"
+        table.add_row(f"[{style}]{rich_escape(term)}[/{style}]", classify_identifier(term), str(count))
+    console.print(table)
+    if writer:
+        console.print(f"Wrote every match to {args.output}.")
+
+    (REPO_ROOT / "status" / "watchlist_summary.json").write_text(
+        json.dumps(
+            {
+                "@timestamp": datetime.now(UTC).isoformat(),
+                "file": str(args.file),
+                "terms": len(terms),
+                "terms_found": len(found),
+                "hits": per_term,
+                "tagged": bool(args.tag),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_bulk_failures(failures)
+
+
+# --- HTML case report (item 59) -------------------------------------------
+
+
+def _agg_buckets(field: str, size: int = 15, kql_filter: dict | None = None) -> list[tuple[str, int]]:
+    body = {"size": 0, "aggs": {"a": {"terms": {"field": field, "size": size}}}}
+    if kql_filter:
+        body["query"] = kql_filter
+    try:
+        response = es_request(f"/{INDEX}/_search", method="POST", body=body)
+    except ES_REQUEST_ERRORS:
+        return []
+    return [(b["key"], b["doc_count"]) for b in response.get("aggregations", {}).get("a", {}).get("buckets", [])]
+
+
+def _count(query: dict | None = None) -> int | None:
+    try:
+        body = {"query": query} if query else None
+        return es_request(f"/{INDEX}/_count", method="POST" if body else "GET", body=body)["count"]
+    except (*ES_REQUEST_ERRORS, KeyError):
+        return None
+
+
+def build_html_report() -> str:
+    """A self-contained HTML case report: pipeline funnel, what could not
+    be processed, and what every scan found - counts and top values only,
+    no document content, so it can be handed to the affected person or to
+    legal without handing over the dump. Every value is HTML-escaped; the
+    top values are leak data and are treated as hostile text."""
+    import html
+
+    def esc(value) -> str:
+        return html.escape(str(value))
+
+    def rows(pairs) -> str:
+        return "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in pairs)
+
+    def section(title: str, body: str) -> str:
+        return f"<h2>{esc(title)}</h2>{body}"
+
+    status = marker_status()
+    funnel = [
+        ("files in files/", count_files(REPO_ROOT / "files", exclude={".gitignore"})),
+        ("files under extracted/files", count_files(REPO_ROOT / "extracted" / "files", exclude=set())),
+        ("unique sha256", count_files(REPO_ROOT / "extracted" / "sha256", exclude=set())),
+        ("documents in Elasticsearch", _count() if _count() is not None else "could not be read"),
+    ]
+    problems = []
+    for label, filename in (
+        ("still encrypted", "still_encrypted.txt"),
+        ("still corrupt", "still_corrupt.txt"),
+        ("rejected as unsafe", "still_unsafe.txt"),
+        ("stuck multi-volume parts", "still_multivolume.txt"),
+        ("recovered by password-cracking", "decrypted.txt"),
+    ):
+        path = REPO_ROOT / "status" / filename
+        problems.append((label, len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0))
+    problems.append(("truncated text (hit indexed_chars)", _count({"term": {"content_truncated": True}})))
+    problems.append(("extension/content mismatches", _count({"term": {"mime_mismatch": True}})))
+
+    pii_counts = [(field, _count({"exists": {"field": f"pii.{field}"}})) for field in PII_FIELDS]
+    pii_counts.insert(0, ("documents with any identifier", _count({"term": {"pii.has_pii": True}})))
+    secret_counts = [(field, _count({"exists": {"field": f"secrets.{field}"}})) for field in SECRET_FIELDS]
+    secret_counts.insert(0, ("documents with any credential", _count({"term": {"secrets.has_secrets": True}})))
+
+    parts = [section("Pipeline", "<table>" + rows(status.items()) + "</table>")]
+    parts.append(section("Funnel", "<table>" + rows(funnel) + "</table>"))
+    if run := latest_run_summary():
+        keys = ("@timestamp", "files_looked_at", "unique_files", "indexed_this_run", "already_indexed", "failed")
+        parts.append(section("Latest ingest run", "<table>" + rows((k, run.get(k, "?")) for k in keys) + "</table>"))
+    parts.append(section("Could not be fully processed", "<table>" + rows(problems) + "</table>"))
+    parts.append(section("File types", "<table>" + rows(_agg_buckets("extension", 20)) + "</table>"))
+    parts.append(section("Sensitive file classes", "<table>" + rows(_agg_buckets("sensitive_class", 20)) + "</table>"))
+    parts.append(section("Personal identifiers (deis pii-scan)", "<table>" + rows(pii_counts) + "</table>"))
+    parts.append(
+        section(
+            "Most-mentioned people (deis entity-scan)",
+            "<table>" + rows(_agg_buckets("entities.persons", 25)) + "</table>",
+        )
+    )
+    parts.append(
+        section(
+            "Organizations (deis entity-scan)",
+            "<table>" + rows(_agg_buckets("entities.organizations", 25)) + "</table>",
+        )
+    )
+    parts.append(section("Credentials (deis secret-scan)", "<table>" + rows(secret_counts) + "</table>"))
+    parts.append(
+        section(
+            "Infrastructure (deis secret-scan)",
+            "<h3>Servers and shares</h3><table>"
+            + rows(_agg_buckets("artifacts.unc_paths", 15))
+            + "</table><h3>Accounts</h3><table>"
+            + rows(_agg_buckets("artifacts.usernames", 15))
+            + "</table><h3>Hostnames</h3><table>"
+            + rows(_agg_buckets("artifacts.domains", 15))
+            + "</table>",
+        )
+    )
+    email_total = _count({"term": {"email.has_email": True}})
+    parts.append(
+        section(
+            "Email",
+            f"<p>{esc(email_total if email_total is not None else 'could not be read')} message(s).</p>"
+            "<h3>Top senders</h3><table>" + rows(_agg_buckets("email.from_addresses", 15)) + "</table>",
+        )
+    )
+    parts.append(section("Languages", "<table>" + rows(_agg_buckets("language", 5)) + "</table>"))
+    watchlist_path = REPO_ROOT / "status" / "watchlist_summary.json"
+    if watchlist_path.is_file():
+        try:
+            summary = json.loads(watchlist_path.read_text(encoding="utf-8"))
+            hits = sorted(summary.get("hits", {}).items(), key=lambda item: -item[1])
+            parts.append(
+                section(
+                    f"Watchlist ({summary.get('terms_found', '?')} of {summary.get('terms', '?')} terms found)",
+                    f"<p>{esc(summary.get('file', ''))}, run {esc(summary.get('@timestamp', ''))}</p><table>"
+                    + rows(hits)
+                    + "</table>",
+                )
+            )
+        except (OSError, ValueError):
+            pass
+
+    generated = datetime.now(UTC).isoformat(timespec="seconds")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DEIS case report</title>
+<style>
+body {{ font-family: sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; color: #222; }}
+h1 {{ font-size: 1.5rem; }} h2 {{ font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ccc; }}
+h3 {{ font-size: 0.95rem; margin-bottom: 0.2rem; }}
+table {{ border-collapse: collapse; width: 100%; margin-bottom: 0.5rem; }}
+td {{ padding: 0.25rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }}
+td:last-child {{ text-align: right; white-space: nowrap; }}
+.note {{ color: #666; font-size: 0.85rem; }}
+</style>
+</head>
+<body>
+<h1>DEIS case report</h1>
+<p class="note">Generated {esc(generated)}. Counts and top values only - no document content. The index this was
+built from holds the dump's full text and every identifier found in it; this page does not.</p>
+{"".join(parts)}
+</body>
+</html>
+"""
+
+
+def cmd_report(args) -> int:
+    if getattr(args, "html", None):
+        try:
+            args.html.write_text(build_html_report(), encoding="utf-8")
+        except OSError as error:
+            console.print(f"[red]Could not write {args.html}: {error}[/red]")
+            return 1
+        console.print(f"Wrote case report to {args.html}.")
+        return 0
+    return cmd_report_text()
+
+
+def cmd_report_text() -> int:
     console.print("DEIS report")
     console.print("-----------")
 
@@ -1072,7 +1569,7 @@ def cmd_pii_report(args) -> int:
             method="POST",
             body={
                 "size": 200,
-                "_source": ["filename", "sha256", *[f"pii.{field}" for field in PII_FIELDS]],
+                "_source": ["filename", "sha256", *[f"pii.{field}" for field in PII_REPORT_FIELDS]],
                 "query": query,
             },
         )
@@ -1090,7 +1587,7 @@ def cmd_pii_report(args) -> int:
         if args.output:
             output_file = args.output.open("w", newline="", encoding="utf-8")
             writer = csv.writer(output_file)
-            writer.writerow(["filename", "sha256", *PII_FIELDS])
+            writer.writerow(["filename", "sha256", *PII_REPORT_FIELDS])
 
         while True:
             hits = response.get("hits", {}).get("hits", [])
@@ -1101,7 +1598,7 @@ def cmd_pii_report(args) -> int:
                 source = hit.get("_source", {})
                 pii_result = source.get("pii", {})
                 row = [source.get("filename", ""), source.get("sha256", "")]
-                row += ["; ".join(pii_result.get(field, []) or []) for field in PII_FIELDS]
+                row += ["; ".join(pii_result.get(field, []) or []) for field in PII_REPORT_FIELDS]
                 if writer:
                     writer.writerow(row)
                 elif len(rows) < PII_REPORT_TABLE_LIMIT:
@@ -1135,13 +1632,17 @@ def cmd_pii_report(args) -> int:
         return 0
 
     console.print(f"{total} document(s) with personal identifiers found.")
+    # Twelve identifier types is too wide for a quick-scan preview -
+    # only the columns with at least one value among the rows shown are
+    # printed (the CSV export above always carries every column).
+    shown = [i for i in range(len(PII_REPORT_FIELDS)) if any(row[2 + i] for row in rows)]
     table = Table()
     table.add_column("Filename", overflow="ellipsis", max_width=40, no_wrap=True)
     table.add_column("SHA256", overflow="ellipsis", max_width=12, no_wrap=True)
-    for column in PII_FIELDS:
-        table.add_column(column, overflow="ellipsis", max_width=24, no_wrap=True)
+    for i in shown:
+        table.add_column(PII_REPORT_FIELDS[i], overflow="ellipsis", max_width=24, no_wrap=True)
     for row in rows:
-        table.add_row(*row)
+        table.add_row(row[0], row[1], *[row[2 + i] for i in shown])
     console.print(table)
     if total > len(rows):
         console.print(
@@ -1467,7 +1968,10 @@ def cmd_geo_scan(args) -> int:
     """
     query = {"term": {"attachment.content_type.keyword": "image/jpeg"}}
     if not args.rescan:
-        query = {"bool": {"must": query, "must_not": {"exists": {"field": "location"}}}}
+        # exif.has_exif is written on every examined image (item 51), so
+        # its absence - not location's, which most images never get - is
+        # what "not yet scanned" means.
+        query = {"bool": {"must": query, "must_not": {"exists": {"field": "exif.has_exif"}}}}
     try:
         response = es_request(
             f"/{INDEX}/_search?scroll=1m",
@@ -1481,6 +1985,7 @@ def cmd_geo_scan(args) -> int:
     scroll_id = response.get("_scroll_id")
     scanned = 0
     with_location = 0
+    with_exif = 0
     missing_on_disk = 0
     failures: list[str] = []
 
@@ -1500,12 +2005,19 @@ def cmd_geo_scan(args) -> int:
                 except OSError:
                     missing_on_disk += 1
                     continue
+                # Item 51: device/software/capture-time alongside the GPS
+                # fix - always written (has_exif false included) so the
+                # image counts as examined, see the query above.
+                exif = geo.extract_exif(content)
+                update = {"exif": exif}
+                if exif["has_exif"]:
+                    with_exif += 1
                 location = geo.extract_gps(content)
-                if location is None:
-                    continue
-                with_location += 1
+                if location is not None:
+                    with_location += 1
+                    update["location"] = location
                 actions.append({"update": {"_index": INDEX, "_id": sha256}})
-                actions.append({"doc": {"location": location}})
+                actions.append({"doc": update})
 
             if actions:
                 failures.extend(bulk_failures(es_bulk(actions)))
@@ -1522,7 +2034,10 @@ def cmd_geo_scan(args) -> int:
             except ES_REQUEST_ERRORS:
                 pass
 
-    console.print(f"Scanned {scanned} image(s), {with_location} with GPS coordinates found.")
+    console.print(
+        f"Scanned {scanned} image(s), {with_location} with GPS coordinates found, "
+        f"{with_exif} with camera/software/capture-time metadata."
+    )
     if missing_on_disk:
         console.print(
             f"[yellow]{missing_on_disk} image(s) skipped: not found under extracted/sha256/ (moved/removed "
@@ -1550,6 +2065,7 @@ def cmd_geo_scan(args) -> int:
                 "rescan": bool(args.rescan),
                 "images_scanned": scanned,
                 "with_location": with_location,
+                "with_exif": with_exif,
             }
         ),
         encoding="utf-8",
@@ -1651,6 +2167,297 @@ def cmd_geo_report(args) -> int:
         console.print(
             f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
         )
+    return 0
+
+
+def scroll_hits(query: dict, source, size: int = 200, index: str = INDEX):
+    """Every hit for `query`, one at a time, via the scroll API - the loop
+    pii-scan/entity-scan/pii-report each spell out by hand, shared by the
+    commands added from item 49 on. `source` is passed through as the
+    request's _source (a field list, or False for ids only). The scroll
+    context is always cleared, even when the caller stops early or an
+    Elasticsearch error propagates (callers catch ES_REQUEST_ERRORS
+    themselves, so the error message stays specific to what they were
+    doing).
+    """
+    response = es_request(
+        f"/{index}/_search?scroll=1m", method="POST", body={"size": size, "_source": source, "query": query}
+    )
+    scroll_id = response.get("_scroll_id")
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                return
+            yield from hits
+            response = es_request("/_search/scroll", method="POST", body={"scroll": "1m", "scroll_id": scroll_id})
+            scroll_id = response.get("_scroll_id")
+    finally:
+        if scroll_id:
+            try:
+                es_request("/_search/scroll", method="DELETE", body={"scroll_id": [scroll_id]})
+            except ES_REQUEST_ERRORS:
+                pass
+
+
+def report_bulk_failures(failures: list[str]) -> int:
+    """Prints a scan's un-saved documents (see bulk_failures) and returns
+    the exit code the scan should use - 1 if anything was lost."""
+    if not failures:
+        return 0
+    console.print(f"[red]{len(failures)} document(s) could not be updated - these results were NOT saved:[/red]")
+    for reason in failures[:10]:
+        console.print(f"  [red]{reason}[/red]")
+    if len(failures) > 10:
+        console.print(f"  [red]... and {len(failures) - 10} more.[/red]")
+    return 1
+
+
+def cmd_secret_scan(args) -> int:
+    """Item 49/52: credentials (bin/secretscan.py's detect_secrets) and
+    infrastructure/identity artifacts (detect_artifacts) from each
+    document's Tika-extracted text, written to its "secrets" and
+    "artifacts" fields in one pass - same post-ingest, scroll-and-bulk-
+    update shape as pii-scan, for the same reason (attachment.content
+    only exists once Elasticsearch's own pipeline has run Tika).
+    """
+    query = {"match_all": {}} if args.rescan else {"bool": {"must_not": {"exists": {"field": "secrets.has_secrets"}}}}
+    secret_totals = dict.fromkeys(SECRET_FIELDS, 0)
+    artifact_totals = dict.fromkeys(ARTIFACT_FIELDS, 0)
+    scanned = with_secrets = with_artifacts = 0
+    failures: list[str] = []
+    actions: list[dict] = []
+
+    def flush():
+        nonlocal actions
+        if actions:
+            failures.extend(bulk_failures(es_bulk(actions)))
+            actions = []
+
+    try:
+        for hit in scroll_hits(query, ["attachment.content"]):
+            content = hit.get("_source", {}).get("attachment", {}).get("content", "") or ""
+            found_secrets = secretscan.detect_secrets(content)
+            found_artifacts = secretscan.detect_artifacts(content)
+            scanned += 1
+            with_secrets += found_secrets["has_secrets"]
+            with_artifacts += found_artifacts["has_artifacts"]
+            for key in secret_totals:
+                secret_totals[key] += len(found_secrets[key])
+            for key in artifact_totals:
+                artifact_totals[key] += len(found_artifacts[key])
+            actions.append({"update": {"_index": INDEX, "_id": hit["_id"]}})
+            actions.append({"doc": {"secrets": found_secrets, "artifacts": found_artifacts}})
+            if len(actions) >= 400:
+                flush()
+        flush()
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    console.print(
+        f"Scanned {scanned} document(s): {with_secrets} with at least one credential, "
+        f"{with_artifacts} with at least one infrastructure/identity artifact."
+    )
+    for title, totals in (("Credentials found", secret_totals), ("Artifacts found", artifact_totals)):
+        table = Table(title=title)
+        table.add_column("Type")
+        table.add_column("Count")
+        for key, count in totals.items():
+            table.add_row(key, str(count))
+        console.print(table)
+    return report_bulk_failures(failures)
+
+
+def field_report(args, *, query: dict, prefix: str, fields: tuple[str, ...], what: str) -> int:
+    """The shape pii-report/entity-report share: every document matching
+    `query`, its `<prefix>.<field>` lists joined with "; " - as a CSV of
+    every column when --output is given, otherwise a capped preview table
+    showing only the columns with at least one value.
+    """
+    rows: list[list[str]] = []
+    total = 0
+    writer = None
+    output_file = None
+    try:
+        if args.output:
+            output_file = args.output.open("w", newline="", encoding="utf-8")
+            writer = csv.writer(output_file)
+            writer.writerow(["filename", "sha256", *fields])
+        for hit in scroll_hits(query, ["filename", "sha256", *[f"{prefix}.{field}" for field in fields]]):
+            total += 1
+            source = hit.get("_source", {})
+            values = source.get(prefix, {})
+            row = [source.get("filename", ""), source.get("sha256", "")]
+            row += ["; ".join(str(v) for v in (values.get(field, []) or [])) for field in fields]
+            if writer:
+                writer.writerow(row)
+            elif len(rows) < PII_REPORT_TABLE_LIMIT:
+                rows.append([Path(row[0]).name, row[1], *row[2:]])
+    except OSError as error:
+        console.print(f"[red]Could not write {args.output}: {error}[/red]")
+        return 1
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+    finally:
+        if output_file:
+            output_file.close()
+
+    if writer:
+        console.print(f"Wrote {total} document(s) with {what} to {args.output}.")
+        return 0
+
+    console.print(f"{total} document(s) with {what} found.")
+    shown = [i for i in range(len(fields)) if any(row[2 + i] for row in rows)]
+    table = Table()
+    table.add_column("Filename", overflow="ellipsis", max_width=40, no_wrap=True)
+    table.add_column("SHA256", overflow="ellipsis", max_width=12, no_wrap=True)
+    for i in shown:
+        table.add_column(fields[i], overflow="ellipsis", max_width=24, no_wrap=True)
+    for row in rows:
+        table.add_row(row[0], row[1], *[row[2 + i] for i in shown])
+    console.print(table)
+    if total > len(rows):
+        console.print(
+            f"[yellow]{total - len(rows)} more not shown - use --output <file> to export all of them.[/yellow]"
+        )
+    return 0
+
+
+def cmd_secret_report(args) -> int:
+    """Lists what secret-scan already found - credentials by default, or
+    the infrastructure/identity artifacts with --artifacts."""
+    if args.artifacts:
+        return field_report(
+            args,
+            query={"term": {"artifacts.has_artifacts": True}},
+            prefix="artifacts",
+            fields=ARTIFACT_FIELDS,
+            what="infrastructure/identity artifacts",
+        )
+    return field_report(
+        args, query={"term": {"secrets.has_secrets": True}}, prefix="secrets", fields=SECRET_FIELDS, what="credentials"
+    )
+
+
+def human_size(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def cmd_inventory(args) -> int:
+    """Item 54: the corpus check docs/IMPROVEMENTS.md item 21 prescribes
+    before building any new parser, as one command instead of a find(1)
+    recipe: per extension, how many documents, how many bytes, how many
+    have no text at all after Tika (the formats where a new extractor
+    would actually pay off), how many hit their Tika text cap, and what
+    Tika thinks the content really is. Plus the sensitive-file classes
+    seen (item 47's classifier). Aggregations over the fields ingest.py
+    writes from item 47 on; documents indexed before then show up under
+    "(unknown)" until `deis run --only setup`'s backfill has run.
+    """
+    body = {
+        "size": 0,
+        "aggs": {
+            "by_extension": {
+                "terms": {"field": "extension", "size": args.top, "missing": "(unknown)"},
+                "aggs": {
+                    "bytes": {"sum": {"field": "file_size"}},
+                    "no_text": {
+                        "filter": {
+                            "bool": {
+                                "should": [
+                                    {"range": {"attachment.content_length": {"lte": 0}}},
+                                    {"bool": {"must_not": {"exists": {"field": "attachment.content_length"}}}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    },
+                    "truncated": {"filter": {"term": {"content_truncated": True}}},
+                    "mime": {"terms": {"field": "attachment.content_type.keyword", "size": 1}},
+                },
+            },
+            "sensitive": {"terms": {"field": "sensitive_class", "size": 20}},
+            "mismatched": {"filter": {"term": {"mime_mismatch": True}}},
+            "truncated_total": {"filter": {"term": {"content_truncated": True}}},
+        },
+    }
+    try:
+        response = es_request(f"/{INDEX}/_search", method="POST", body=body)
+    except ES_REQUEST_ERRORS as error:
+        console.print(f"[red]Search failed: {error}[/red]")
+        return 1
+
+    total = response.get("hits", {}).get("total", {}).get("value", 0)
+    aggs = response.get("aggregations", {})
+    rows = []
+    for bucket in aggs.get("by_extension", {}).get("buckets", []):
+        count = bucket["doc_count"]
+        no_text = bucket["no_text"]["doc_count"]
+        mime_buckets = bucket["mime"]["buckets"]
+        rows.append(
+            {
+                "extension": bucket["key"],
+                "documents": count,
+                "bytes": int(bucket["bytes"]["value"] or 0),
+                "no_text": no_text,
+                "no_text_pct": round(100 * no_text / count, 1) if count else 0.0,
+                "truncated": bucket["truncated"]["doc_count"],
+                "top_mime": mime_buckets[0]["key"].split(";")[0] if mime_buckets else "",
+            }
+        )
+
+    if args.output:
+        try:
+            with args.output.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["extension"])
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as error:
+            console.print(f"[red]Could not write {args.output}: {error}[/red]")
+            return 1
+        console.print(f"Wrote {len(rows)} extension row(s) to {args.output}.")
+        return 0
+
+    console.print(f"{total} document(s) in Elasticsearch.")
+    table = Table(title=f"Top {args.top} extensions")
+    for column in ("Extension", "Documents", "Size", "No text", "No text %", "Truncated", "Tika says"):
+        table.add_column(column)
+    for row in rows:
+        no_text_style = "red" if row["no_text_pct"] >= 50 and row["documents"] >= 10 else ""
+        table.add_row(
+            row["extension"],
+            str(row["documents"]),
+            human_size(row["bytes"]),
+            str(row["no_text"]),
+            f"[{no_text_style}]{row['no_text_pct']}[/{no_text_style}]" if no_text_style else str(row["no_text_pct"]),
+            str(row["truncated"]),
+            row["top_mime"],
+        )
+    console.print(table)
+    console.print(
+        "A high 'No text %' on a format with real volume is where the next extractor is needed "
+        "(docs/IMPROVEMENTS.md item 21); 'Truncated' documents hit their Tika text cap "
+        "(deis.cfg's indexed_chars/indexed_chars_pdf)."
+    )
+
+    sensitive = aggs.get("sensitive", {}).get("buckets", [])
+    if sensitive:
+        table = Table(title="Sensitive file classes")
+        table.add_column("Class")
+        table.add_column("Documents")
+        for bucket in sensitive:
+            table.add_row(bucket["key"], str(bucket["doc_count"]))
+        console.print(table)
+    console.print(
+        f"{aggs.get('mismatched', {}).get('doc_count', 0)} document(s) whose extension disagrees with their content; "
+        f"{aggs.get('truncated_total', {}).get('doc_count', 0)} truncated."
+    )
     return 0
 
 
@@ -2612,9 +3419,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument(
         "--output", type=Path, help="write every match (snippet, filename, sha256, link) to this CSV file"
     )
+    p_search.add_argument(
+        "--fuzzy", action="store_true", help="tolerate spelling differences (edit distance 1-2) in the search term"
+    )
+    p_search.add_argument(
+        "--rows", action="store_true", help="exact cell-value search in the spreadsheet/CSV rows index instead"
+    )
     p_search.set_defaults(func=cmd_search)
 
-    sub.add_parser("report", help="what was found, what could not be processed").set_defaults(func=cmd_report)
+    p_report = sub.add_parser("report", help="what was found, what could not be processed")
+    p_report.add_argument(
+        "--html", type=Path, metavar="FILE", help="write a self-contained HTML case report (counts only) to FILE"
+    )
+    p_report.set_defaults(func=cmd_report)
+
+    p_subject = sub.add_parser("subject", help="everything about one person/identifier, from every scan and index")
+    p_subject.add_argument("value", help="a personnummer, email address, name, username or phrase")
+    p_subject.add_argument("--output", type=Path, help="write every matching document to this CSV file")
+    p_subject.set_defaults(func=cmd_subject)
+
+    p_watchlist = sub.add_parser(
+        "watchlist", help="check a file of names/identifiers (one per line) against the corpus"
+    )
+    p_watchlist.add_argument("file", type=Path, help="one term per line; '#' comments and blank lines are skipped")
+    p_watchlist.add_argument("--output", type=Path, help="write every (term, document) match to this CSV file")
+    p_watchlist.add_argument(
+        "--tag", action="store_true", help="also record each term on its matching documents (watchlist_hits field)"
+    )
+    p_watchlist.set_defaults(func=_with_liveness_marker("watchlist_scanning", cmd_watchlist))
 
     p_add = sub.add_parser("add-urls", help="queue a URL, or a file of URLs, for download")
     p_add.add_argument("target", help="a single URL, or a path to a file of URLs (one per line)")
@@ -2686,6 +3518,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", type=Path, help="write every match (incl. raw lat/lon) to this CSV file instead of a capped table"
     )
     p_geo_report.set_defaults(func=cmd_geo_report)
+
+    p_secret = sub.add_parser(
+        "secret-scan", help="detect credentials and infrastructure/identity artifacts in indexed content"
+    )
+    p_secret.add_argument("--rescan", action="store_true", help="rescan every document, not just unscanned ones")
+    p_secret.set_defaults(func=_with_liveness_marker("secret_scanning", cmd_secret_scan))
+
+    p_secret_report = sub.add_parser("secret-report", help="list what secret-scan already found")
+    p_secret_report.add_argument(
+        "--artifacts", action="store_true", help="list infrastructure/identity artifacts instead of credentials"
+    )
+    p_secret_report.add_argument(
+        "--output", type=Path, help="write every match to this CSV file instead of a capped terminal table"
+    )
+    p_secret_report.set_defaults(func=cmd_secret_report)
+
+    p_inventory = sub.add_parser(
+        "inventory", help="per-extension corpus check: volume, no-text rate, truncation, sensitive classes"
+    )
+    p_inventory.add_argument("--top", type=int, default=40, help="how many extensions to list (default: 40)")
+    p_inventory.add_argument("--output", type=Path, help="write the per-extension table to this CSV file")
+    p_inventory.set_defaults(func=cmd_inventory)
 
     p_archive = sub.add_parser(
         "archive", help="archive Elasticsearch data, Kibana objects, extracted files, and images for later restore"

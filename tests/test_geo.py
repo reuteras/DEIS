@@ -189,3 +189,98 @@ class TestNearestCity:
         # Roughly between Gothenburg and Malmö, but nearer Malmö.
         result = geo.nearest_city(56.2, 12.8)
         assert result["name"] == "Malmö"
+
+
+def _build_jpeg_with_exif_tags(
+    make: str | None = "Apple",
+    model: str | None = "iPhone 13",
+    software: str | None = None,
+    datetime_original: str | None = "2023:05:14 09:31:07",
+    datetime: str | None = None,
+) -> bytes:
+    """A minimal little-endian Exif blob with IFD0 ASCII tags (Make/
+    Model/Software/DateTime, each behind a pointer since they never fit
+    the 4-byte inline field) and, when datetime_original is given, an
+    Exif sub-IFD holding DateTimeOriginal - the structure extract_exif()
+    walks. Item 51's counterpart to _build_jpeg_with_gps above.
+    """
+    endian = "<"
+
+    def entry(tag, typ, count, value_bytes):
+        return struct.pack(endian + "HHI", tag, typ, count) + value_bytes
+
+    ifd0_tags = [
+        (t, v)
+        for t, v in (
+            (geo._TAG_MAKE, make),
+            (geo._TAG_MODEL, model),
+            (geo._TAG_SOFTWARE, software),
+            (geo._TAG_DATETIME, datetime),
+        )
+        if v is not None
+    ]
+    ifd0_count = len(ifd0_tags) + (1 if datetime_original is not None else 0)
+    ifd0_offset = 8
+    ifd0_size = 2 + ifd0_count * 12 + 4
+    sub_offset = ifd0_offset + ifd0_size
+    sub_count = 1 if datetime_original is not None else 0
+    sub_size = (2 + sub_count * 12 + 4) if sub_count else 0
+    data_offset = sub_offset + sub_size
+
+    data = b""
+    ifd0 = struct.pack(endian + "H", ifd0_count)
+    for tag, value in ifd0_tags:
+        raw = value.encode("ascii") + b"\x00"
+        ifd0 += entry(tag, geo._TYPE_ASCII, len(raw), struct.pack(endian + "I", data_offset + len(data)))
+        data += raw
+    sub_ifd = b""
+    if datetime_original is not None:
+        ifd0 += entry(geo._EXIF_SUB_IFD_POINTER, 4, 1, struct.pack(endian + "I", sub_offset))
+        raw = datetime_original.encode("ascii") + b"\x00"
+        sub_ifd = struct.pack(endian + "H", 1)
+        sub_ifd += entry(
+            geo._TAG_DATETIME_ORIGINAL, geo._TYPE_ASCII, len(raw), struct.pack(endian + "I", data_offset + len(data))
+        )
+        sub_ifd += struct.pack(endian + "I", 0)
+        data += raw
+    ifd0 += struct.pack(endian + "I", 0)
+
+    tiff = b"II" + struct.pack(endian + "H", 42) + struct.pack(endian + "I", ifd0_offset) + ifd0 + sub_ifd + data
+    exif_segment = b"Exif\x00\x00" + tiff
+    app1 = b"\xff\xe1" + struct.pack(">H", len(exif_segment) + 2) + exif_segment
+    return b"\xff\xd8" + app1 + b"\xff\xd9"
+
+
+class TestExtractExif:
+    def test_reads_make_model_and_capture_time(self):
+        result = geo.extract_exif(_build_jpeg_with_exif_tags())
+        assert result == {
+            "has_exif": True,
+            "make": "Apple",
+            "model": "iPhone 13",
+            "datetime_original": "2023-05-14T09:31:07",
+        }
+
+    def test_falls_back_to_datetime_when_no_original(self):
+        result = geo.extract_exif(_build_jpeg_with_exif_tags(datetime_original=None, datetime="2022:01:02 03:04:05"))
+        assert result["datetime_original"] == "2022-01-02T03:04:05"
+
+    def test_zero_placeholder_timestamp_is_dropped(self):
+        result = geo.extract_exif(_build_jpeg_with_exif_tags(datetime_original="0000:00:00 00:00:00"))
+        assert "datetime_original" not in result
+        assert result["has_exif"] is True  # make/model were still there
+
+    def test_software_and_padding(self):
+        result = geo.extract_exif(_build_jpeg_with_exif_tags(make="Canon   ", software="Adobe Photoshop"))
+        assert result["make"] == "Canon"
+        assert result["software"] == "Adobe Photoshop"
+
+    def test_no_exif_is_has_exif_false(self):
+        assert geo.extract_exif(b"\xff\xd8\xff\xd9") == {"has_exif": False}
+        assert geo.extract_exif(b"not a jpeg") == {"has_exif": False}
+
+    def test_gps_only_exif_has_no_device_fields(self):
+        assert geo.extract_exif(_build_jpeg_with_gps(59.0, 18.0)) == {"has_exif": False}
+
+    def test_truncated_bytes_do_not_raise(self):
+        assert geo.extract_exif(_build_jpeg_with_exif_tags()[:40]) == {"has_exif": False}

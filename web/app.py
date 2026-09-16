@@ -217,6 +217,20 @@ def language_scan_summary() -> dict | None:
         return None
 
 
+def watchlist_summary() -> dict | None:
+    """Same shape as dedupe_scan_summary()/language_scan_summary() - item
+    57's `deis watchlist` writes this once, at the end of a run, since
+    a watchlist scan has no per-document field to count live progress
+    from the way pii-scan/entity-scan do."""
+    path = Path(STATUS_DIR) / "watchlist_summary.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def scan_running(marker_name: str) -> bool:
     """Whether bin/deis.py's pii-scan/entity-scan/dedupe-scan is currently
     running - same real-liveness-marker pattern as pipeline_status()'s
@@ -270,8 +284,10 @@ def render_index_html() -> str:
     run = latest_run_summary()
     pii_progress = elastic_scan_progress("pii.has_pii")
     entity_progress = elastic_scan_progress("entities.has_entities")
+    secret_progress = elastic_scan_progress("secrets.has_secrets")
     dedupe_summary = dedupe_scan_summary()
     language_summary = language_scan_summary()
+    watchlist = watchlist_summary()
 
     def stage_row(label: str, key: str) -> str:
         state = status[key]
@@ -351,13 +367,26 @@ def render_index_html() -> str:
             f"(last run {html.escape(str(language_summary.get('@timestamp', '?')))})</td></tr>"
         )
 
+    if scan_running("watchlist_scanning"):
+        watchlist_row = '<tr><td>Watchlist</td><td><span style="color:#f9a825;">running</span></td></tr>'
+    elif watchlist is None:
+        watchlist_row = "<tr><td>Watchlist</td><td>not yet run</td></tr>"
+    else:
+        watchlist_row = (
+            "<tr><td>Watchlist</td>"
+            f"<td>{watchlist.get('terms_found', '?')} of {watchlist.get('terms', '?')} term(s) found "
+            f"(last run {html.escape(str(watchlist.get('@timestamp', '?')))})</td></tr>"
+        )
+
     scan_section = f"""
 <h2>Post-processing</h2>
 <table>
 {scan_row("PII scan", "pii_scanning", pii_progress)}
 {scan_row("Entity scan", "entity_scanning", entity_progress)}
+{scan_row("Secret scan", "secret_scanning", secret_progress)}
 {dedupe_row}
 {language_row}
+{watchlist_row}
 </table>
 """
 
@@ -400,7 +429,8 @@ ul {{ padding-left: 1.2rem; }}
 {scan_section}
 <h2>Search and review</h2>
 <ul>
-<li><a href="{KIBANA_LINK}" target="_blank">Kibana</a> - search and dashboards</li>
+<li><a href="{KIBANA_LINK}" target="_blank">Kibana</a> - search and dashboards
+  (start at "Subject lookup" or "Leaked data")</li>
 <li><a href="{JUPYTER_LINK}" target="_blank">JupyterLab</a> - notebook (token is in .env)</li>
 <li><a href="{DOWNLOAD_STATUS_LINK}" target="_blank">Download status</a> - only reachable while the
 download stage is running</li>

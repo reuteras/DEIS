@@ -11,6 +11,7 @@ discovered data.
 
 import importlib.util
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -166,3 +167,197 @@ class TestDetectAll:
         result = pii.detect_all("Contact jane.doe@example.com for questions.")
         assert result["has_pii"] is True
         assert result["emails"] == ["jane.doe@example.com"]
+
+
+def _luhn_complete(prefix: str) -> str:
+    """prefix plus the standard Luhn check digit (bankgiro/plusgiro)."""
+    return prefix + pii._luhn_check_digit(prefix)
+
+
+class TestNormalizePersonnummer:
+    TODAY = date(2026, 9, 16)
+
+    def test_twelve_digit_form_is_kept(self):
+        assert pii.normalize_personnummer("198001011234", today=self.TODAY) == "198001011234"
+        assert pii.normalize_personnummer("19800101-1234", today=self.TODAY) == "198001011234"
+
+    def test_ten_digit_form_gets_the_most_recent_past_century(self):
+        assert pii.normalize_personnummer("800101-1234", today=self.TODAY) == "198001011234"
+        assert pii.normalize_personnummer("8001011234", today=self.TODAY) == "198001011234"
+
+    def test_year_not_yet_reached_belongs_to_the_previous_century(self):
+        # "30" in 2026 can only mean 1930, not 2030.
+        assert pii.normalize_personnummer("300101-1234", today=self.TODAY) == "193001011234"
+
+    def test_current_year_is_this_century(self):
+        assert pii.normalize_personnummer("260101-1234", today=self.TODAY) == "202601011234"
+
+    def test_plus_separator_means_a_hundred_years_older(self):
+        assert pii.normalize_personnummer("200101+1234", today=self.TODAY) == "192001011234"
+
+    def test_non_personnummer_is_none(self):
+        assert pii.normalize_personnummer("hello", today=self.TODAY) is None
+
+    def test_find_normalized_collapses_both_spellings_of_one_person(self):
+        number = _valid_personnummer("800101123")
+        text = f"a {number[:6]}-{number[6:]} b 19{number} c"
+        assert pii.find_personnummer(text) == sorted({f"{number[:6]}-{number[6:]}", "19" + number})
+        assert pii.find_personnummer_normalized(text, today=self.TODAY) == ["19" + number]
+
+    def test_detect_all_carries_the_normalized_form(self):
+        number = _valid_personnummer("800101123")
+        result = pii.detect_all(f"id {number}")
+        assert result["personnummer"] == [number]
+        assert result["personnummer_normalized"] == ["19" + number]
+
+
+class TestOrganisationsnummer:
+    def test_valid_number_is_found_and_normalized(self):
+        number = _valid_personnummer("556000123")  # "month" 60 -> a company
+        assert pii.find_organisationsnummer(f"Org.nr {number[:6]}-{number[6:]}") == [number]
+        assert pii.find_organisationsnummer(f"16{number}") == [number]
+
+    def test_wrong_check_digit_is_rejected(self):
+        number = _valid_personnummer("556000123")
+        wrong = number[:-1] + str((int(number[-1]) + 1) % 10)
+        assert pii.find_organisationsnummer(wrong) == []
+
+    def test_a_personnummer_is_not_an_organisationsnummer(self):
+        number = _valid_personnummer("800101123")
+        assert pii.find_organisationsnummer(number) == []
+        assert pii.find_personnummer(number) == [number]
+
+
+class TestBankgiroPlusgiro:
+    def test_bankgiro_luhn_valid(self):
+        digits = _luhn_complete("5050105")
+        written = f"{digits[:4]}-{digits[4:]}"
+        assert pii.find_bankgiro(f"Bankgiro: {written}") == [written]
+
+    def test_bankgiro_wrong_check_digit_rejected(self):
+        digits = _luhn_complete("5050105")
+        wrong = digits[:-1] + str((int(digits[-1]) + 1) % 10)
+        assert pii.find_bankgiro(f"{wrong[:4]}-{wrong[4:]}") == []
+
+    def test_bankgiro_requires_the_separator(self):
+        digits = _luhn_complete("5050105")
+        assert pii.find_bankgiro(digits) == []
+
+    def test_plusgiro_luhn_valid(self):
+        digits = _luhn_complete("1234567")
+        written = f"{digits[:-1]}-{digits[-1]}"
+        assert pii.find_plusgiro(f"Plusgiro {written}") == [written]
+
+    def test_plusgiro_wrong_check_digit_rejected(self):
+        digits = _luhn_complete("1234567")
+        wrong = digits[:-1] + str((int(digits[-1]) + 1) % 10)
+        assert pii.find_plusgiro(f"{wrong[:-1]}-{wrong[-1]}") == []
+
+
+def _valid_fodselsnummer(ddmmyy: str) -> str:
+    """The first individual number on this date for which both mod-11
+    check digits exist - searched for, not memorized."""
+    for individual in range(1000):
+        base = f"{ddmmyy}{individual:03d}"
+        k1 = pii._mod11_check_digit(base, pii._FODSELSNUMMER_K1_WEIGHTS)
+        if k1 is None:
+            continue
+        k2 = pii._mod11_check_digit(base + str(k1), pii._FODSELSNUMMER_K2_WEIGHTS)
+        if k2 is None:
+            continue
+        return base + str(k1) + str(k2)
+    raise AssertionError("no valid number on that date")
+
+
+class TestFodselsnummer:
+    def test_valid_number_is_found(self):
+        number = _valid_fodselsnummer("010180")
+        assert pii.find_fodselsnummer(f"fnr {number} ok") == [number]
+
+    def test_d_number_day_plus_forty_is_valid(self):
+        number = _valid_fodselsnummer("410180")
+        assert pii.find_fodselsnummer(number) == [number]
+
+    def test_either_check_digit_wrong_is_rejected(self):
+        number = _valid_fodselsnummer("010180")
+        wrong_k2 = number[:-1] + str((int(number[-1]) + 1) % 10)
+        wrong_k1 = number[:-2] + str((int(number[-2]) + 1) % 10) + number[-1]
+        assert pii.find_fodselsnummer(wrong_k2) == []
+        assert pii.find_fodselsnummer(wrong_k1) == []
+
+    def test_invalid_date_is_rejected(self):
+        assert pii.fodselsnummer_valid("32138012345") is False
+
+
+def _valid_hetu(ddmmyy: str, sign: str, nnn: str) -> str:
+    return ddmmyy + sign + nnn + pii.HETU_CHECK_CHARS[int(ddmmyy + nnn) % 31]
+
+
+class TestHetu:
+    def test_valid_number_is_found(self):
+        number = _valid_hetu("010180", "-", "123")
+        assert pii.find_hetu(f"hetu {number}") == [number]
+
+    def test_new_century_signs_are_accepted(self):
+        number = _valid_hetu("010105", "A", "321")
+        assert pii.find_hetu(number) == [number]
+        number = _valid_hetu("010180", "Y", "321")
+        assert pii.find_hetu(number) == [number]
+
+    def test_wrong_check_character_is_rejected(self):
+        number = _valid_hetu("010180", "-", "123")
+        wrong = number[:-1] + ("A" if number[-1] != "A" else "B")
+        assert pii.find_hetu(wrong) == []
+
+    def test_invalid_date_is_rejected(self):
+        assert pii.hetu_valid(_valid_hetu("321380", "-", "123")) is False
+
+
+class TestCpr:
+    def test_shape_with_a_real_date_is_found(self):
+        # Pick a suffix that is not also a valid Swedish personnummer
+        # (the two shapes overlap exactly - see CPR_RE).
+        for suffix in range(1000, 1100):
+            candidate = f"010180-{suffix}"
+            if not pii.find_personnummer(candidate):
+                break
+        assert pii.find_cpr(f"CPR {candidate}") == [candidate]
+
+    def test_invalid_date_is_rejected(self):
+        assert pii.find_cpr("321380-1234") == []
+
+    def test_requires_the_separator(self):
+        assert pii.find_cpr("0101801234") == []
+
+    def test_valid_swedish_personnummer_is_not_reported_as_cpr(self):
+        number = _valid_personnummer("010120123")  # 2001-01-20 in Swedish terms, and a CPR shape
+        written = f"{number[:6]}-{number[6:]}"
+        assert pii.find_personnummer(written) == [written]
+        assert pii.find_cpr(written) == []
+
+
+class TestDetectAllNordic:
+    def test_new_types_count_toward_has_pii(self):
+        number = _valid_fodselsnummer("010180")
+        result = pii.detect_all(f"x {number} y")
+        assert result["has_pii"] is True
+        assert result["fodselsnummer"] == [number]
+
+    def test_every_expected_key_is_present(self):
+        result = pii.detect_all("nothing here")
+        for key in (
+            "personnummer",
+            "personnummer_normalized",
+            "emails",
+            "phone_numbers",
+            "ibans",
+            "card_numbers",
+            "organisationsnummer",
+            "bankgiro",
+            "plusgiro",
+            "fodselsnummer",
+            "hetu",
+            "cpr",
+        ):
+            assert result[key] == []
+        assert result["has_pii"] is False

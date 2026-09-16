@@ -6,18 +6,18 @@ Two detector groups, applied by `deis secret-scan` to every indexed
 document's Tika-extracted text:
 
 - detect_secrets(): credentials. Private-key headers, cloud/API tokens
-  with a recognizable fixed prefix (AWS, GitHub, Slack, Google), JWTs
-  (validated by decoding their header), URLs carrying user:password@, and
-  password=... style assignments. Values are stored in full, the same
-  deliberate choice pii.py makes - the point is to find every document
-  that exposes one specific credential, and that needs the value.
+    with a recognizable fixed prefix (AWS, GitHub, Slack, Google), JWTs
+    (validated by decoding their header), URLs carrying user:password@, and
+    password=... style assignments. Values are stored in full, the same
+    deliberate choice pii.py makes - the point is to find every document
+    that exposes one specific credential, and that needs the value.
 - detect_artifacts(): infrastructure and identity. IPv4/IPv6 addresses
-  (split into public and private ranges), UNC paths, usernames lifted
-  from Windows/Unix home-directory paths and DOMAIN\\user references,
-  hostnames from URLs, .onion addresses, and Bitcoin addresses
-  (base58check / bech32 validated, so a random string is not reported).
-  Together they answer "what did this dump come from" - and the .onion
-  and Bitcoin ones in particular are what a ransom note carries.
+    (split into public and private ranges), UNC paths, usernames lifted
+    from Windows/Unix home-directory paths and DOMAIN\\user references,
+    hostnames from URLs, .onion addresses, and Bitcoin addresses
+    (base58check / bech32 validated, so a random string is not reported).
+    Together they answer "what did this dump come from" - and the .onion
+    and Bitcoin ones in particular are what a ransom note carries.
 
 Every detector that has a checksum uses it. The two that cannot (password
 assignments, and IP addresses beyond octet range) are the noisy ones, and

@@ -430,7 +430,7 @@ ul {{ padding-left: 1.2rem; }}
 <h2>Search and review</h2>
 <ul>
 <li><a href="{KIBANA_LINK}" target="_blank">Kibana</a> - search and dashboards
-  (start at "Subject lookup" or "Leaked data")</li>
+    (start at "Subject lookup" or "Leaked data")</li>
 <li><a href="{JUPYTER_LINK}" target="_blank">JupyterLab</a> - notebook (token is in .env)</li>
 <li><a href="{DOWNLOAD_STATUS_LINK}" target="_blank">Download status</a> - only reachable while the
 download stage is running</li>

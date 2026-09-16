@@ -32,6 +32,15 @@ xlsx_rows=true
 # Safety cap on rows parsed per .xlsx file, across all its sheets combined
 # - same reasoning as csv_max_rows.
 xlsx_max_rows=50000
+# How many characters of Tika-extracted text to index per document - the
+# rest of a longer document is silently unsearchable, so each document is
+# flagged content_truncated: true in Kibana when it hits its own cap.
+# indexed_chars is the general cap (what the pipeline used to apply to
+# everything); indexed_chars_pdf is a separate, larger cap for PDFs, the
+# format a 300-page scan most often arrives in. Raising either costs
+# Elasticsearch heap and index size in proportion.
+indexed_chars=200000
+indexed_chars_pdf=2000000
 [unpack]
 pst=true
 pst_archive=true
@@ -83,6 +92,16 @@ access_export=true
 # off if that cost isn't wanted and this corpus has no encrypted PDFs.
 document_decrypt_office=true
 document_decrypt_pdf=true
+# Mail (docs/IMPROVEMENTS.md item 50). mbox_split writes each message of
+# an mbox mailbox to its own .eml in a "<name>.messages/" sidecar
+# directory, so every message is its own searchable document with its own
+# sender/recipient/date fields instead of one flattened blob per mailbox.
+# mail_attachments writes each attachment of an RFC 822 message (.eml, or
+# readpst's output) to "<name>.attachments/", where the next extraction
+# round treats it like any other file - an attached zip is opened, an
+# attached spreadsheet row-indexed. .msg attachments are not handled.
+mbox_split=true
+mail_attachments=true
 [entities]
 # Named-entity extraction (docs/IMPROVEMENTS.md item 32, `deis entity-scan`)
 # runs spaCy NER against attachment.content. Cost scales with input length,

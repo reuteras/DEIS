@@ -120,6 +120,30 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_s
 }
 ' > /dev/null && sublog 'Done'
 
+# Item 47's structural fields, the two that can only be known once Tika has
+# run: content_truncated (did the document's extracted text hit its own
+# indexed_chars_limit - a name on page 300 of a big PDF is otherwise
+# silently unsearchable with no signal at all) and mime_mismatch (does the
+# file's extension disagree with what Tika detected the content to be - a
+# renamed file, a disguised one, or just the wrong-extension mess leak dumps
+# are full of). Same stored-script-by-id shape as deis-detect-language
+# above, for the same reason: it runs both in the ingest pipeline and as an
+# _update_by_query backfill over documents indexed before it existed, and
+# the two must never drift apart. The backfill case has no "extension"
+# field yet (ingest.py only sends one from item 47 on), so the script
+# derives one from the filename when it is missing. The expected-MIME
+# table is deliberately short and only lists formats Tika identifies
+# unambiguously; an extension not in it is never flagged.
+log 'Add file-classification stored script'
+curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_scripts/deis-classify-file?pretty" -H 'Content-Type: application/json' -d'
+{
+    "script" : {
+        "lang" : "painless",
+        "source" : "def doc = ctx.containsKey(\"_source\") ? ctx._source : ctx; String ext = doc.extension; if (ext == null) { ext = \"(none)\"; String fn = doc.filename; if (fn != null) { int slash = fn.lastIndexOf(\"/\"); String base = slash >= 0 ? fn.substring(slash + 1) : fn; int dot = base.lastIndexOf(\".\"); if (dot > 0 && dot < base.length() - 1) { ext = base.substring(dot + 1).toLowerCase(); } } doc.extension = ext; } boolean truncated = false; if (doc.attachment != null && doc.attachment.content != null) { int limit = 200000; if (doc.indexed_chars_limit != null) { limit = ((Number) doc.indexed_chars_limit).intValue(); } truncated = ((String) doc.attachment.content).length() >= limit; } doc.content_truncated = truncated; Map expected = [\"pdf\": [\"application/pdf\"], \"doc\": [\"application/msword\", \"application/x-tika-msoffice\"], \"dot\": [\"application/msword\", \"application/x-tika-msoffice\"], \"xls\": [\"application/vnd.ms-excel\", \"application/x-tika-msoffice\"], \"ppt\": [\"application/vnd.ms-powerpoint\", \"application/x-tika-msoffice\"], \"docx\": [\"application/vnd.openxmlformats-officedocument.wordprocessingml.document\", \"application/x-tika-ooxml\"], \"docm\": [\"application/vnd.ms-word.document.macroenabled.12\", \"application/x-tika-ooxml\"], \"xlsx\": [\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\", \"application/x-tika-ooxml\"], \"xlsm\": [\"application/vnd.ms-excel.sheet.macroenabled.12\", \"application/x-tika-ooxml\"], \"pptx\": [\"application/vnd.openxmlformats-officedocument.presentationml.presentation\", \"application/x-tika-ooxml\"], \"odt\": [\"application/vnd.oasis.opendocument.text\"], \"ods\": [\"application/vnd.oasis.opendocument.spreadsheet\"], \"jpg\": [\"image/jpeg\"], \"jpeg\": [\"image/jpeg\"], \"png\": [\"image/png\"], \"gif\": [\"image/gif\"], \"bmp\": [\"image/bmp\", \"image/x-ms-bmp\"], \"tif\": [\"image/tiff\"], \"tiff\": [\"image/tiff\"], \"zip\": [\"application/zip\"], \"rar\": [\"application/x-rar-compressed\", \"application/vnd.rar\"], \"7z\": [\"application/x-7z-compressed\"], \"gz\": [\"application/gzip\", \"application/x-gzip\"], \"exe\": [\"application/x-msdownload\", \"application/x-dosexec\", \"application/vnd.microsoft.portable-executable\"], \"dll\": [\"application/x-msdownload\", \"application/x-dosexec\", \"application/vnd.microsoft.portable-executable\"], \"txt\": [\"text/plain\", \"text/csv\"], \"csv\": [\"text/csv\", \"text/plain\"], \"xml\": [\"application/xml\", \"text/xml\"], \"html\": [\"text/html\", \"application/xhtml+xml\"], \"htm\": [\"text/html\", \"application/xhtml+xml\"], \"json\": [\"application/json\", \"text/plain\"], \"eml\": [\"message/rfc822\"], \"msg\": [\"application/vnd.ms-outlook\"], \"pst\": [\"application/vnd.ms-outlook-pst\"], \"rtf\": [\"application/rtf\", \"text/rtf\"], \"mp3\": [\"audio/mpeg\"], \"mp4\": [\"video/mp4\", \"video/quicktime\"], \"mov\": [\"video/quicktime\"]]; boolean mismatch = false; if (doc.attachment != null && doc.attachment.content_type != null && expected.containsKey(ext)) { String mime = (String) doc.attachment.content_type; int semi = mime.indexOf(\";\"); if (semi >= 0) { mime = mime.substring(0, semi); } mime = mime.trim().toLowerCase(); mismatch = true; for (def candidate : expected.get(ext)) { if (mime.equals(candidate)) { mismatch = false; break; } } if (mismatch && ext.equals(\"xml\") && mime.endsWith(\"+xml\")) { mismatch = false; } } doc.mime_mismatch = mismatch;"
+    }
+}
+' > /dev/null && sublog 'Done'
+
 # Only cbor-attachment is used - ingest.py posts CBOR-encoded documents, not
 # JSON, so a JSON-only "attachment" pipeline would never be reachable anyway.
 log 'Add cbor-attachment pipeline'
@@ -131,7 +155,8 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
             "attachment" : {
             "field" : "data",
             "remove_binary": true,
-            "indexed_chars": 200000
+            "indexed_chars": 200000,
+            "indexed_chars_field": "indexed_chars_limit"
             },
             "date" : {
                 "field" : "mtime",
@@ -144,6 +169,12 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
             "script" : {
                 "description" : "item 32: tag detected language by stopword presence, so the notebook can stop applying both stopword lists indiscriminately and Kibana can filter by language",
                 "id" : "deis-detect-language"
+            }
+        },
+        {
+            "script" : {
+                "description" : "item 47: content_truncated / mime_mismatch, see deis-classify-file",
+                "id" : "deis-classify-file"
             }
         }
     ]
@@ -217,7 +248,14 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                         "phone_numbers" : { "type" : "keyword" },
                         "ibans" : { "type" : "keyword" },
                         "card_numbers" : { "type" : "keyword" },
-                        "has_pii" : { "type" : "boolean" }
+                        "has_pii" : { "type" : "boolean" },
+                        "personnummer_normalized" : { "type" : "keyword" },
+                        "organisationsnummer" : { "type" : "keyword" },
+                        "bankgiro" : { "type" : "keyword" },
+                        "plusgiro" : { "type" : "keyword" },
+                        "fodselsnummer" : { "type" : "keyword" },
+                        "hetu" : { "type" : "keyword" },
+                        "cpr" : { "type" : "keyword" }
                     }
                 },
                 "entities" : {
@@ -236,13 +274,82 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                         "archive_types" : { "type" : "keyword" }
                     }
                 },
-                "location" : { "type" : "geo_point" }
+                "location" : { "type" : "geo_point" },
+                "file_size" : { "type" : "long" },
+                "extension" : { "type" : "keyword" },
+                "nesting_depth" : { "type" : "integer" },
+                "indexed_chars_limit" : { "type" : "integer" },
+                "content_truncated" : { "type" : "boolean" },
+                "mime_mismatch" : { "type" : "boolean" },
+                "sensitive_class" : { "type" : "keyword" },
+                "watchlist_hits" : { "type" : "keyword" },
+                "row_count" : { "type" : "integer" },
+                "row_columns" : { "type" : "keyword" },
+                "rows_truncated" : { "type" : "boolean" },
+                "email" : {
+                    "properties" : {
+                        "from_addresses" : { "type" : "keyword" },
+                        "from_domains" : { "type" : "keyword" },
+                        "to_addresses" : { "type" : "keyword" },
+                        "cc_addresses" : { "type" : "keyword" },
+                        "bcc_addresses" : { "type" : "keyword" },
+                        "recipients" : { "type" : "keyword" },
+                        "subject" : { "type" : "text", "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 512 } } },
+                        "date" : { "type" : "date", "ignore_malformed" : true },
+                        "message_id" : { "type" : "keyword" },
+                        "in_reply_to" : { "type" : "keyword" },
+                        "attachment_names" : { "type" : "keyword" },
+                        "attachment_count" : { "type" : "integer" },
+                        "has_email" : { "type" : "boolean" }
+                    }
+                },
+                "exif" : {
+                    "properties" : {
+                        "make" : { "type" : "keyword" },
+                        "model" : { "type" : "keyword" },
+                        "software" : { "type" : "keyword" },
+                        "datetime_original" : { "type" : "date", "ignore_malformed" : true },
+                        "has_exif" : { "type" : "boolean" }
+                    }
+                },
+                "secrets" : {
+                    "properties" : {
+                        "private_keys" : { "type" : "keyword" },
+                        "aws_access_keys" : { "type" : "keyword" },
+                        "github_tokens" : { "type" : "keyword" },
+                        "slack_tokens" : { "type" : "keyword" },
+                        "google_api_keys" : { "type" : "keyword" },
+                        "jwts" : { "type" : "keyword" },
+                        "credential_urls" : { "type" : "keyword" },
+                        "password_assignments" : { "type" : "keyword" },
+                        "has_secrets" : { "type" : "boolean" }
+                    }
+                },
+                "artifacts" : {
+                    "properties" : {
+                        "ipv4_addresses" : { "type" : "ip" },
+                        "private_ipv4_addresses" : { "type" : "ip" },
+                        "ipv6_addresses" : { "type" : "ip" },
+                        "unc_paths" : { "type" : "keyword" },
+                        "usernames" : { "type" : "keyword" },
+                        "domains" : { "type" : "keyword" },
+                        "onion_addresses" : { "type" : "keyword" },
+                        "bitcoin_addresses" : { "type" : "keyword" },
+                        "has_artifacts" : { "type" : "boolean" }
+                    }
+                }
             },
             "runtime" : {
                 "top_folder" : {
                     "type" : "keyword",
                     "script" : {
                         "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 4) { emit(parts[3]); } else { emit('"'"'(ungrouped)'"'"'); }"
+                    }
+                },
+                "pii_email_domain" : {
+                    "type" : "keyword",
+                    "script" : {
+                        "source" : "for (def address : doc['"'"'pii.emails'"'"']) { int at = address.lastIndexOf('"'"'@'"'"'); if (at >= 0) { emit(address.substring(at + 1)); } }"
                     }
                 }
             }
@@ -288,7 +395,8 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/_i
                 "source_sha256" : { "type" : "keyword" },
                 "source_filename" : { "type" : "keyword" },
                 "row_number" : { "type" : "integer" },
-                "row" : { "type" : "flattened" }
+                "row" : { "type" : "flattened" },
+                "columns" : { "type" : "keyword" }
             }
         }
     }
@@ -352,7 +460,14 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
                 "phone_numbers" : { "type" : "keyword" },
                 "ibans" : { "type" : "keyword" },
                 "card_numbers" : { "type" : "keyword" },
-                "has_pii" : { "type" : "boolean" }
+                "has_pii" : { "type" : "boolean" },
+                "personnummer_normalized" : { "type" : "keyword" },
+                "organisationsnummer" : { "type" : "keyword" },
+                "bankgiro" : { "type" : "keyword" },
+                "plusgiro" : { "type" : "keyword" },
+                "fodselsnummer" : { "type" : "keyword" },
+                "hetu" : { "type" : "keyword" },
+                "cpr" : { "type" : "keyword" }
             }
         },
         "entities" : {
@@ -371,13 +486,82 @@ curl -s -X PUT "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/le
                 "archive_types" : { "type" : "keyword" }
             }
         },
-        "location" : { "type" : "geo_point" }
+        "location" : { "type" : "geo_point" },
+        "file_size" : { "type" : "long" },
+        "extension" : { "type" : "keyword" },
+        "nesting_depth" : { "type" : "integer" },
+        "indexed_chars_limit" : { "type" : "integer" },
+        "content_truncated" : { "type" : "boolean" },
+        "mime_mismatch" : { "type" : "boolean" },
+        "sensitive_class" : { "type" : "keyword" },
+        "watchlist_hits" : { "type" : "keyword" },
+        "row_count" : { "type" : "integer" },
+        "row_columns" : { "type" : "keyword" },
+        "rows_truncated" : { "type" : "boolean" },
+        "email" : {
+            "properties" : {
+                "from_addresses" : { "type" : "keyword" },
+                "from_domains" : { "type" : "keyword" },
+                "to_addresses" : { "type" : "keyword" },
+                "cc_addresses" : { "type" : "keyword" },
+                "bcc_addresses" : { "type" : "keyword" },
+                "recipients" : { "type" : "keyword" },
+                "subject" : { "type" : "text", "fields" : { "keyword" : { "type" : "keyword", "ignore_above" : 512 } } },
+                "date" : { "type" : "date", "ignore_malformed" : true },
+                "message_id" : { "type" : "keyword" },
+                "in_reply_to" : { "type" : "keyword" },
+                "attachment_names" : { "type" : "keyword" },
+                "attachment_count" : { "type" : "integer" },
+                "has_email" : { "type" : "boolean" }
+            }
+        },
+        "exif" : {
+            "properties" : {
+                "make" : { "type" : "keyword" },
+                "model" : { "type" : "keyword" },
+                "software" : { "type" : "keyword" },
+                "datetime_original" : { "type" : "date", "ignore_malformed" : true },
+                "has_exif" : { "type" : "boolean" }
+            }
+        },
+        "secrets" : {
+            "properties" : {
+                "private_keys" : { "type" : "keyword" },
+                "aws_access_keys" : { "type" : "keyword" },
+                "github_tokens" : { "type" : "keyword" },
+                "slack_tokens" : { "type" : "keyword" },
+                "google_api_keys" : { "type" : "keyword" },
+                "jwts" : { "type" : "keyword" },
+                "credential_urls" : { "type" : "keyword" },
+                "password_assignments" : { "type" : "keyword" },
+                "has_secrets" : { "type" : "boolean" }
+            }
+        },
+        "artifacts" : {
+            "properties" : {
+                "ipv4_addresses" : { "type" : "ip" },
+                "private_ipv4_addresses" : { "type" : "ip" },
+                "ipv6_addresses" : { "type" : "ip" },
+                "unc_paths" : { "type" : "keyword" },
+                "usernames" : { "type" : "keyword" },
+                "domains" : { "type" : "keyword" },
+                "onion_addresses" : { "type" : "keyword" },
+                "bitcoin_addresses" : { "type" : "keyword" },
+                "has_artifacts" : { "type" : "boolean" }
+            }
+        }
     },
     "runtime" : {
         "top_folder" : {
             "type" : "keyword",
             "script" : {
                 "source" : "def parts = doc['"'"'filename'"'"'].value.splitOnToken('"'"'/'"'"'); if (parts.length > 4) { emit(parts[3]); } else { emit('"'"'(ungrouped)'"'"'); }"
+            }
+        },
+        "pii_email_domain" : {
+            "type" : "keyword",
+            "script" : {
+                "source" : "for (def address : doc['"'"'pii.emails'"'"']) { int at = address.lastIndexOf('"'"'@'"'"'); if (at >= 0) { emit(address.substring(at + 1)); } }"
             }
         }
     }
@@ -408,6 +592,16 @@ curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/l
 {
     "query" : { "bool" : { "must_not" : { "exists" : { "field" : "language" } } } },
     "script" : { "id" : "deis-detect-language" }
+}
+' > /dev/null && sublog 'Done'
+
+# Same again for item 47's content_truncated/mime_mismatch/extension, via
+# the same stored script the pipeline runs (see deis-classify-file above).
+log 'Backfill extension/content_truncated/mime_mismatch onto documents indexed before file classification existed'
+curl -s -X POST "http://elastic:${ELASTIC_PASSWORD}@${elasticsearch_host}:9200/leakdata-index-000001/_update_by_query?conflicts=proceed&pretty" -H 'Content-Type: application/json' -d'
+{
+    "query" : { "bool" : { "must_not" : { "exists" : { "field" : "content_truncated" } } } },
+    "script" : { "id" : "deis-classify-file" }
 }
 ' > /dev/null && sublog 'Done'
 

@@ -169,7 +169,51 @@ logged, never silently dropped.
 which `.csv` never does - each row carries a `_source_table` field set to the sheet name, so
 `row._source_table: "Sheet1"` filters to one sheet, and `row_number` is one sequence across the
 whole file rather than resetting per sheet. Capped at `xlsx_max_rows` (default 50000) across all
-sheets combined. SQL dumps/SQLite are not handled yet.
+sheets combined. SQL dumps/SQLite are not handled yet. Every row document also carries a
+`columns` field (its own column names) so "which files have a `Personnummer` column" is a
+direct aggregation instead of a full corpus scan, and the file's own document gets
+`row_count`/`row_columns`/`rows_truncated` once its rows are indexed.
+
+Every document also carries a handful of structural fields, set once at ingest time:
+`file_size`, `extension` (lowercased, `(none)` for an extensionless file), `nesting_depth`
+(how many archives deep it was found - the same count as `source_chain.sha256s`'s length), and
+`sensitive_class` when the file matched one of the sensitive-file signatures below.
+`content_truncated` and `mime_mismatch` are set once Tika has run: the first is true when a
+document's extracted text hit its own `indexed_chars` cap (`deis.cfg`'s `indexed_chars`,
+default 200000 characters, and a separate, larger `indexed_chars_pdf`, default 2,000,000, since
+a scanned 300-page PDF's later pages would otherwise silently never be searchable at all); the
+second is true when a file's extension disagrees with what Tika detected the content to be -
+the pattern that already found the OOXML-shredding bug in item 45, now surfaced as a real field
+instead of something you'd have to notice by eye.
+
+Every file is checked against a set of content-signature, name and extension rules and, when
+one matches, flagged with a `sensitive_class`: `key_material` (a PEM/PuTTY private key,
+`.pem`/`.p12`/`.pfx`/`id_rsa`/...), `credential_store` (a KeePass/1Password/browser password
+database, or a Windows SAM/SECURITY registry hive), `config_secrets` (`.env`, `wp-config.php`,
+`.netrc`, ...), `remote_access` (`.rdp`/`.ovpn`), `executable` (PE/ELF/Mach-O by magic number,
+not just extension - a renamed binary is still caught), `database` (SQLite by magic number,
+`.mdb`/`.sql`/...), `disk_image` (`.vmdk`/`.e01`/`.wim`/...), or `ransom_note` (a filename like
+`HOW_TO_DECRYPT.txt`, or opening text that reads like one). Magic-number checks run before
+name/extension checks, so a KeePass database renamed to `.txt` is still recognized and a
+`database.exe` that's really a text file is not.
+
+An RFC 822 message - `.eml`, an mbox message, or one of `readpst`'s numbered files with no
+extension at all - gets its headers parsed into an `email` field: `from_addresses`,
+`to_addresses`/`cc_addresses`/`bcc_addresses`/`recipients`, `from_domains`, `subject`, `date`,
+`message_id`/`in_reply_to`, and `attachment_names`/`attachment_count`. Detection checks the
+file's own header block for enough recognizable header names, not just the extension, since
+`readpst` output has none. Before that, `unpack` (`deis.cfg`'s `mbox_split`, on by default)
+splits a mailbox into one `.eml` per message in a `<name>.messages/` sidecar directory, so each
+message becomes its own searchable document instead of one flattened blob per mailbox; and
+`mail_attachments` (also on by default) writes each attachment of a message out as its own file
+in a `<name>.attachments/` directory, so an attached archive gets extracted and an attached
+spreadsheet gets its rows indexed, the same as anything that came out of a zip. `.msg`
+(Outlook's OLE format) is not split this way - its attachments stay Tika-inline only.
+
+A JPEG's Exif data also yields `exif.make`/`exif.model`/`exif.software` (what took the photo
+and what last wrote the file) and `exif.datetime_original` (when the shutter fired, distinct
+from the file's own filesystem `timestamp`), alongside the GPS `location` field `deis geo-scan`
+already wrote - all three sourced from the same JPEG bytes in one pass.
 
 ### Search
 
@@ -186,11 +230,16 @@ by the notebook's word cloud to pick the right stopword list automatically inste
 it set by hand.
 
 `deis pii-scan` fills each document's `pii` field with the personal identifiers found in its
-text - Swedish personnummer/samordningsnummer, IBANs and card numbers (each validated against
-its own checksum, so a random run of digits is not reported), plus emails and phone numbers.
-Values are stored **in full**, not masked: finding every document that mentions one specific
-person is the question this tool exists to answer, and that needs the actual value to pivot
-on. Treat the index accordingly - it is as sensitive as the dump it came from.
+text - Swedish personnummer/samordningsnummer, organisationsnummer, bankgiro/plusgiro,
+Norwegian fødselsnummer, Finnish henkilötunnus, IBANs and card numbers (each validated against
+its own checksum, so a random run of digits is not reported), Danish CPR-nummer (shape only -
+its checksum was abolished in 2007), plus emails and phone numbers. `pii.personnummer_normalized`
+additionally rewrites every personnummer/samordningsnummer found to its canonical 12-digit form
+(`YYYYMMDDNNNN`), so `800101-1234` and `19800101-1234` pivot to the same value in Kibana instead
+of looking like two different people. Values are stored **in full**, not masked: finding every
+document that mentions one specific person is the question this tool exists to answer, and that
+needs the actual value to pivot on. Treat the index accordingly - it is as sensitive as the dump
+it came from.
 
 `deis pii-report` lists what a prior `pii-scan` already found, without rescanning anything -
 a capped preview table by default (filenames shortened to their basename, values truncated,
@@ -201,11 +250,89 @@ text - people, organizations, and locations - via spaCy's trained NER models
 (English/Swedish; documents in another language are skipped rather than guessed at). `deis
 entity-report` lists what a prior `entity-scan` already found, same shape as `pii-report`.
 
+`deis secret-scan` fills each document's `secrets` field with credentials found in its text -
+private-key headers, AWS/GitHub/Slack/Google API tokens, JWTs (validated by decoding their own
+header), `user:password@host` URLs, and `password = ...`-style assignments (unvalidated, a
+lead rather than proof, the same as `pii`'s phone numbers) - and its `artifacts` field with
+infrastructure and identity signal: IPv4/IPv6 addresses (split into `ipv4_addresses`, public,
+and `private_ipv4_addresses`), UNC paths, usernames lifted from `C:\Users\<name>`/
+`/home/<name>` paths and `DOMAIN\user` references, hostnames from URLs, `.onion` addresses,
+and Bitcoin addresses (base58check/bech32 validated, so a random string isn't reported). `deis
+secret-report` lists what a prior scan already found - credentials by default, or `--artifacts`
+for the infrastructure/identity fields - same capped-table-or-CSV shape as `pii-report`.
+
 `deis dedupe-scan` groups near-identical documents (the same template letter, a monthly report
 with one number changed) into `duplicate_cluster`, using a SimHash fingerprint rather than the
 exact sha256 match that ingest already deduplicates on. Documents with no alphabetic words at
 all - pure numeric or tabular exports - have nothing to compare and are reported as skipped
 rather than being grouped together.
+
+`deis inventory` prints the per-extension corpus check `docs/IMPROVEMENTS.md` asks you to run
+before building any new extractor: document count, total size, how many have no searchable text
+at all after Tika (where a new extractor would actually pay off), how many hit their
+`indexed_chars` cap, and what Tika thinks the content really is - plus a breakdown of
+`sensitive_class` values seen and how many extension/content mismatches exist. `--top N`
+controls how many extensions are listed (default 40); `--output <file>.csv` writes the full
+per-extension table instead.
+
+`deis subject <value>` answers "is this person in the dump" as one command: it detects whether
+`<value>` is a personnummer, an email address, or a name/phrase, then checks every place that
+kind of value can appear - `pii.personnummer_normalized`/`pii.emails`, a content phrase match,
+`entities.persons`, `artifacts.usernames`, mail headers, and an exact cell match in the
+`leakdata-rows-*` index - and reports, per document, which of those matched. A capped table by
+default, or every match as CSV via `--output <file>.csv`.
+
+`deis watchlist <file>` runs the same lookup `subject` does for one term, for every line in
+`<file>` (one name/identifier per line, `#` comments and blanks skipped) - the shape a victim
+organization hands over ("are any of these employees in it?"). Prints how many of the list's
+terms were found and how many documents each matched; `--output <file>.csv` writes every
+(term, document) pair; `--tag` additionally records each matched term into that document's
+`watchlist_hits` field so Kibana can filter on it directly.
+
+`deis search <term> --fuzzy` tolerates spelling differences (Elasticsearch's own edit-distance
+matching) - useful for a name you only know how to pronounce. `deis search <term> --rows`
+searches the `leakdata-rows-*` index instead - an exact match against any column's value in a
+parsed `.csv`/`.xlsx` row, showing the whole row and a link to its source file.
+
+`deis report --html <file>.html` writes a self-contained case report: the pipeline funnel, what
+could not be processed, and counts (never document content or found values) from every scan
+that has run - personal identifiers, entities, credentials, infrastructure, email volume,
+languages, and a watchlist's results if one was run. Meant for handing to the affected person
+or to legal without handing over the dump itself.
+
+### Dashboards
+
+Beyond the original **Leaked data** overview and **Photo locations** map, Kibana ships with:
+
+- **Subject lookup** - pick a personnummer, email, name or username in the controls at the top
+  and every panel narrows to documents that mention them. The dashboard equivalent of `deis
+  subject`.
+- **Personal data** - counts per identifier type, the most-mentioned personnummer and
+  organisationsnummer, email domains, and where in the corpus personal data concentrates.
+- **Entities** - word clouds of people, organizations and locations, and which organizations
+  are mentioned alongside the most distinct people.
+- **Email** - senders, recipients, sender domains, message volume over time, subjects and
+  attachment names.
+- **Secrets and sensitive files** - which credential types were found, the sensitive-file
+  classes present, and the infrastructure a dump reveals (servers, shares, accounts, hostnames,
+  `.onion` addresses, Bitcoin addresses).
+- **Corpus triage** - extensions by volume, which formats have the highest no-text rate (where
+  a new extractor is needed), extension/content mismatches, truncated documents, and the column
+  names available across every parsed spreadsheet.
+- **Timeline** - how old the data is, by document creation/modification dates, filesystem
+  mtime, mail dates, and photo capture times.
+- **Ingest health** - every ingest run's reconciliation counts over time, and how far each
+  post-ingest scan (PII, entities, secrets, language, dedupe) has got.
+
+These are generated, not hand-built: `setup/dashboards.py` builds them as code and writes them
+into `setup/export.ndjson`, which `deis run --only setup` imports the same way it always has.
+Edit `setup/dashboards.py` and run `just dashboards` to regenerate after a change; `just test`
+(and CI) fails if the checked-in `export.ndjson` doesn't match what the generator would produce,
+so the two can't silently drift apart. A dashboard edited by hand in Kibana keeps those edits
+until the next regeneration overwrites it - true only for the dashboards this script owns
+(matched by a stable id derived from their title); the original hand-exported objects (the
+**Leaked data** dashboard, the plain saved searches, the data views, the photo map) are left
+untouched.
 
 ### Known limitations and planned work
 
@@ -351,8 +478,13 @@ deis entity-scan     # extract named entities (people/orgs/locations) from index
 deis entity-report   # list what entity-scan already found (see below)
 deis dedupe-scan     # cluster near-duplicate documents (see below)
 deis dedupe-report   # list what dedupe-scan already found, by cluster (see below)
-deis geo-scan        # extract GPS coordinates from JPEG EXIF data (see below)
+deis geo-scan        # extract GPS coordinates and camera/capture metadata from JPEG EXIF data (see below)
 deis geo-report      # list what geo-scan already found, with the nearest big city (see below)
+deis secret-scan     # detect credentials and infrastructure/identity artifacts (see below)
+deis secret-report   # list what secret-scan already found (see below)
+deis inventory        # per-extension corpus check: volume, no-text rate, truncation (see below)
+deis subject <value>  # everything about one person/identifier, from every scan and index (see below)
+deis watchlist <file>  # check a file of names/identifiers against the corpus (see below)
 deis archive <dir>   # archive this case for later restore (see below)
 deis restore <dir>   # restore a case archived with 'deis archive'
 deis clean           # wraps 'just clean' behind a confirmation prompt
@@ -377,6 +509,7 @@ uv run deis pii-scan
 uv run deis entity-scan
 uv run deis dedupe-scan
 uv run deis geo-scan
+uv run deis secret-scan
 ```
 
 To save the reports from the scans:
@@ -386,6 +519,8 @@ uv run deis pii-report --output logs/pii-report.csv
 uv run deis entity-report --output logs/entity-report.csv
 uv run deis dedupe-report --output logs/dedupe-report.csv
 uv run deis geo-report --output logs/geo-report.csv
+uv run deis secret-report --output logs/secret-report.csv
+uv run deis secret-report --artifacts --output logs/artifact-report.csv
 ```
 
 `bin/deis pii-scan` is a post-pass, run after ingest: it fetches each document's already

@@ -34,7 +34,7 @@ export MAX_COMPRESSION_RATIO_DEFAULT=200                      # uncompressed:com
 export EXTRACT_TIMEOUT_DEFAULT=1800                           # seconds per archive
 
 log() {
-    # $1 = level (EXTRACTED / COPIED / ENCRYPTED / CORRUPT / UNSAFE / RENAMED / MULTIVOLUME / DEPTH-LIMIT / OCR / TABLES / DECRYPTED)
+    # $1 = level (EXTRACTED / COPIED / ENCRYPTED / CORRUPT / UNSAFE / RENAMED / MULTIVOLUME / DEPTH-LIMIT / OCR / TABLES / DECRYPTED / MAILBOX / ATTACHMENTS)
     # $2 = message
     echo "$2"
     echo "$(date -Iseconds) [$1] $2" >> "${LOG}"
@@ -633,6 +633,60 @@ maybe_export_access_tables() {
     (( exported > 0 )) && log TABLES "Exported ${exported} table(s) to CSV: ${final_path}.*.csv"
 }
 
+# Item 50: mail. An mbox is one file holding a whole folder of messages -
+# Tika flattens all of them into one text blob, so "which message was
+# this in, from whom" is lost. Split into one .eml per message in a
+# sidecar directory ("<name>.messages/"), queued for the next round like
+# any extraction output, so each becomes its own document with its own
+# sender/recipient/date fields (ingest.py's parse_email).
+maybe_split_mailbox() {
+    local final_path="$1" mime outdir count
+    config_true_default mbox_split true || return 0
+    mime="$(file --mime-type -b -- "${final_path}" 2>/dev/null)"
+    [[ "${mime}" == "application/mbox" ]] || return 0
+    outdir="${final_path}.messages"
+    if ! count="$(timeout "$(config_int extract_timeout "${EXTRACT_TIMEOUT_DEFAULT}")" \
+        python3 /mail.py split-mbox "${final_path}" "${outdir}" 2>>"${LOG}")"; then
+        rm -rf "${outdir}"
+        log CORRUPT "Could not split mailbox (corrupt or unsupported), left as-is: ${final_path}"
+        return
+    fi
+    if (( count > 0 )); then
+        log MAILBOX "Split mailbox into ${count} message(s): ${outdir}/"
+        queue_new_files "${outdir}"
+    else
+        rmdir "${outdir}" 2>/dev/null
+    fi
+}
+
+# Item 50: attachments of a single RFC 822 message (.eml, or readpst's
+# numbered output) written out as their own files in "<name>.attachments/"
+# and queued for the next round - an attached zip gets extracted, an
+# attached spreadsheet gets row-indexed, an attached PDF gets its own
+# viewable document, none of which happens while the attachment only
+# exists as base64 inside the message. Tika does inline an attachment's
+# text into the message's own content, so search already found it; this
+# is what makes it a document in its own right. .msg (Outlook's OLE
+# format) is not handled here - its attachments are opaque property
+# streams without a stdlib parser, so they stay Tika-inline only.
+maybe_extract_mail_attachments() {
+    local final_path="$1" mime outdir count
+    config_true_default mail_attachments true || return 0
+    mime="$(file --mime-type -b -- "${final_path}" 2>/dev/null)"
+    [[ "${mime}" == "message/rfc822" ]] || return 0
+    outdir="${final_path}.attachments"
+    if ! count="$(timeout "$(config_int extract_timeout "${EXTRACT_TIMEOUT_DEFAULT}")" \
+        python3 /mail.py attachments "${final_path}" "${outdir}" 2>>"${LOG}")"; then
+        rm -rf "${outdir}"
+        log CORRUPT "Could not read message attachments, left as-is: ${final_path}"
+        return
+    fi
+    if (( count > 0 )); then
+        log ATTACHMENTS "Extracted ${count} attachment(s): ${outdir}/"
+        queue_new_files "${outdir}"
+    fi
+}
+
 # Tries every password from PASSWORDS against a document already confirmed
 # individually password-protected (application/encrypted - a specific,
 # reliable mime signal, confirmed against a real corpus where it never
@@ -765,6 +819,8 @@ process_zip_like() {
             maybe_decrypt_document "${final_path}"
             maybe_ocr "${final_path}"
             maybe_export_access_tables "${final_path}"
+            maybe_split_mailbox "${final_path}"
+            maybe_extract_mail_attachments "${final_path}"
             ;;
         encrypted)
             echo "${sha}" >> "${STILL_ENCRYPTED}"
@@ -925,7 +981,8 @@ process_one_file() {
 export -f log read_cfg config_true config_true_default config_int load_passwords \
     sanitize_component safe_copy place_sanitized dispose_of_original multivolume_family \
     queue_new_files json_escape record_lineage_edge record_decrypted_password check_archive_safety maybe_ocr \
-    maybe_export_access_tables maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
+    maybe_export_access_tables maybe_split_mailbox maybe_extract_mail_attachments \
+    maybe_decrypt_document decrypt_office_document decrypt_pdf_document try_extract \
     is_pst_like is_ole_document is_zip_based_document is_pdf_document is_ooxml_or_odf_zip \
     process_zip_like process_pst apply_known_result worker_entrypoint process_one_file
 

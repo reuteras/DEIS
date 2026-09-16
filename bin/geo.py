@@ -22,6 +22,7 @@ comment for provenance) but nothing else; no network either.
 
 import math
 import struct
+from datetime import datetime
 from pathlib import Path
 
 # The two GPS IFD tags this cares about (WGS84 lat/lon as three rationals -
@@ -34,6 +35,17 @@ _GPS_LAT = 2
 _GPS_LON_REF = 3
 _GPS_LON = 4
 _EXIF_GPS_IFD_POINTER = 0x8825
+# Item 51: the handful of IFD0/Exif-sub-IFD tags worth a field of their
+# own - which device took the photo, what wrote the file, and when the
+# shutter actually fired (DateTimeOriginal, as opposed to the file's own
+# mtime, which is whenever it was last copied).
+_EXIF_SUB_IFD_POINTER = 0x8769
+_TAG_MAKE = 0x010F
+_TAG_MODEL = 0x0110
+_TAG_SOFTWARE = 0x0131
+_TAG_DATETIME = 0x0132
+_TAG_DATETIME_ORIGINAL = 0x9003
+_TYPE_ASCII = 2
 
 
 def _read_ifd(exif: bytes, endian: str, offset: int) -> tuple[dict[int, tuple[int, int, int]], int]:
@@ -83,31 +95,28 @@ def _read_ascii_ref(exif: bytes, count: int, field_offset: int) -> str:
     return exif[field_offset : field_offset + count].split(b"\x00")[0].decode("ascii", "replace")
 
 
-def extract_gps(content: bytes) -> dict[str, float] | None:
-    """Returns {"lat": ..., "lon": ...} (WGS84 decimal degrees, southern/
-    western hemispheres already negated) from a JPEG's Exif GPS IFD, or
-    None if this isn't a JPEG, has no Exif segment, or the Exif segment has
-    no GPS IFD (the ordinary case - most JPEGs, especially screenshots and
-    scans, never had a GPS fix to record). Never raises: a truncated or
-    malformed segment - a real risk parsing arbitrary struct offsets from a
-    leak dump's files, not just clean camera output - is treated the same
-    as "no GPS data" rather than aborting a scan over one bad image.
+def _read_ascii_value(exif: bytes, endian: str, count: int, field_offset: int) -> str:
+    """An ASCII tag value of any length: inline in the entry's 4-byte
+    value field when it fits (count <= 4, terminator included), else
+    behind a pointer stored there. Null-terminated; surrounding whitespace
+    stripped (camera firmware pads Make/Model with spaces).
     """
-    try:
-        return _extract_gps(content)
-    except (struct.error, IndexError, UnicodeDecodeError):
-        return None
+    if count <= 4:
+        raw = exif[field_offset : field_offset + count]
+    else:
+        data_offset = struct.unpack(endian + "I", exif[field_offset : field_offset + 4])[0]
+        raw = exif[data_offset : data_offset + count]
+    return raw.split(b"\x00")[0].decode("ascii", "replace").strip()
 
 
-def _extract_gps(content: bytes) -> dict[str, float] | None:
+def _find_exif(content: bytes) -> tuple[bytes, str] | None:
+    """The TIFF-structured Exif payload of a JPEG's APP1 segment and its
+    byte order ("<"/">"), or None if this isn't a JPEG or has no Exif.
+    Walks the marker stream up to the first scan (0xFFDA) - everything
+    worth knowing precedes the compressed image data.
+    """
     if content[:2] != b"\xff\xd8":
         return None
-
-    # Walk the JPEG marker stream looking for APP1 (0xFFE1) carrying an
-    # "Exif\0\0" header - the only segment Exif data lives in. Stops at the
-    # first scan (0xFFDA, the actual compressed image data starts there,
-    # everything worth knowing precedes it) or end-of-image (0xFFD9)
-    # without finding one, which is most images.
     pos = 2
     exif = None
     while pos + 4 <= len(content):
@@ -126,10 +135,82 @@ def _extract_gps(content: bytes) -> dict[str, float] | None:
         pos += 2 + segment_length
     if exif is None or len(exif) < 8:
         return None
-
     endian = {b"II": "<", b"MM": ">"}.get(exif[:2])
     if endian is None:
         return None
+    return exif, endian
+
+
+def _exif_datetime_to_iso(value: str) -> str | None:
+    """Exif's own "YYYY:MM:DD HH:MM:SS" into ISO 8601, or None when the
+    field holds the all-zero placeholder some devices write, or anything
+    else that isn't a real timestamp."""
+    try:
+        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").isoformat()  # noqa: DTZ007 - Exif has no zone
+    except ValueError:
+        return None
+
+
+def extract_exif(content: bytes) -> dict:
+    """Camera make/model, the software that wrote the file, and the
+    capture timestamp (DateTimeOriginal, falling back to DateTime) from a
+    JPEG's Exif IFD0 and Exif sub-IFD - each key only present when the
+    tag was. Always returns a dict with "has_exif" (True when at least
+    one of them was found), so a scan can mark an image as examined
+    regardless. Never raises, same reasoning as extract_gps.
+    """
+    result: dict = {"has_exif": False}
+    try:
+        found = _find_exif(content)
+        if found is None:
+            return result
+        exif, endian = found
+        ifd0_offset = struct.unpack(endian + "I", exif[4:8])[0]
+        ifd0, _next = _read_ifd(exif, endian, ifd0_offset)
+        tags = dict(ifd0)
+        if _EXIF_SUB_IFD_POINTER in ifd0:
+            pointer_offset = ifd0[_EXIF_SUB_IFD_POINTER][2]
+            sub_offset = struct.unpack(endian + "I", exif[pointer_offset : pointer_offset + 4])[0]
+            sub_ifd, _next = _read_ifd(exif, endian, sub_offset)
+            tags.update(sub_ifd)
+        for tag, key in ((_TAG_MAKE, "make"), (_TAG_MODEL, "model"), (_TAG_SOFTWARE, "software")):
+            if tag in tags and tags[tag][0] == _TYPE_ASCII:
+                value = _read_ascii_value(exif, endian, tags[tag][1], tags[tag][2])
+                if value:
+                    result[key] = value
+        for tag in (_TAG_DATETIME_ORIGINAL, _TAG_DATETIME):
+            if tag in tags and tags[tag][0] == _TYPE_ASCII:
+                iso = _exif_datetime_to_iso(_read_ascii_value(exif, endian, tags[tag][1], tags[tag][2]))
+                if iso:
+                    result["datetime_original"] = iso
+                    break
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return result
+    result["has_exif"] = len(result) > 1
+    return result
+
+
+def extract_gps(content: bytes) -> dict[str, float] | None:
+    """Returns {"lat": ..., "lon": ...} (WGS84 decimal degrees, southern/
+    western hemispheres already negated) from a JPEG's Exif GPS IFD, or
+    None if this isn't a JPEG, has no Exif segment, or the Exif segment has
+    no GPS IFD (the ordinary case - most JPEGs, especially screenshots and
+    scans, never had a GPS fix to record). Never raises: a truncated or
+    malformed segment - a real risk parsing arbitrary struct offsets from a
+    leak dump's files, not just clean camera output - is treated the same
+    as "no GPS data" rather than aborting a scan over one bad image.
+    """
+    try:
+        return _extract_gps(content)
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+
+
+def _extract_gps(content: bytes) -> dict[str, float] | None:
+    found = _find_exif(content)
+    if found is None:
+        return None
+    exif, endian = found
 
     ifd0_offset = struct.unpack(endian + "I", exif[4:8])[0]
     ifd0, _next = _read_ifd(exif, endian, ifd0_offset)

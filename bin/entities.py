@@ -67,6 +67,31 @@ _LABEL_BUCKETS = {
 }
 
 
+def _chunk_text(text: str, size: int):
+    """Yields consecutive slices of `text` no longer than `size` chars,
+    breaking on whitespace where possible so a chunk boundary doesn't land
+    in the middle of a name spaCy would otherwise have tagged as one
+    entity. Only used when text exceeds spaCy's own nlp.max_length (see
+    detect_entities) - deis.cfg's [entities] max_chars=0 ("scan full text,
+    uncapped") must not mean "crash on any document over spaCy's hard
+    1,000,000-character limit" (E088).
+    """
+    start = 0
+    n = len(text)
+    while start < n:
+        end = start + size
+        if end >= n:
+            yield text[start:n]
+            break
+        split = end
+        while split > start and not text[split - 1].isspace():
+            split -= 1
+        if split == start:
+            split = end
+        yield text[start:split]
+        start = split
+
+
 def detect_entities(text: str, language: str) -> dict:
     """Runs the NER model matching `language` ("english"/"swedish", the
     same values bin/deis.py's language-detection stopword script already
@@ -90,10 +115,12 @@ def detect_entities(text: str, language: str) -> dict:
 
     buckets = _LABEL_BUCKETS[language]
     found = {"persons": set(), "organizations": set(), "locations": set()}
-    for ent in nlp(text).ents:
-        bucket = buckets.get(ent.label_)
-        if bucket is not None:
-            found[bucket].add(ent.text.strip())
+    chunks = [text] if len(text) <= nlp.max_length else _chunk_text(text, nlp.max_length)
+    for doc in nlp.pipe(chunks):
+        for ent in doc.ents:
+            bucket = buckets.get(ent.label_)
+            if bucket is not None:
+                found[bucket].add(ent.text.strip())
 
     for bucket, values in found.items():
         result[bucket] = sorted(values)

@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich import print
 from rich.console import Console
@@ -49,7 +49,7 @@ try:
         print("DEIS - progress")
         print("###############")
         print("")
-        print(datetime.now(tz=timezone.utc).strftime("%c"))
+        print(datetime.now(tz=UTC).strftime("%c"))
         print("")
 
         # Checking Setup

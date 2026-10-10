@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -404,6 +404,7 @@ name = "deis-web"
 version = "0.1.0"
 source = { virtual = "web" }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "python-magic" },
     { name = "requests" },
@@ -413,6 +414,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.14.2" },
     { name = "fastapi", specifier = ">=0.139.0" },
     { name = "python-magic", specifier = ">=0.4.27" },
     { name = "requests", specifier = ">=2.34.2" },

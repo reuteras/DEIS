@@ -3,6 +3,10 @@ name = "deis-web"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    # Transitive (via starlette), but GitHub's dependency graph resolves this
+    # file without uv.lock and picked a vulnerable anyio, re-raising
+    # GHSA-82r6-8w77-94w6 / GHSA-5p39-cfhj-2xmp. The floor keeps it honest.
+    "anyio>=4.14.2",
     "fastapi>=0.139.0",
     "python-magic>=0.4.27",
     "requests>=2.34.2",

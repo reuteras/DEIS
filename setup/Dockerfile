@@ -15,9 +15,9 @@ FROM docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
 # pre-edit saved objects until the image was rebuilt.
 COPY export.ndjson /export.ndjson
 
-USER elasticsearch
+USER 1000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:9200/_cluster/health || exit 1
+    CMD ["/bin/sh", "-c", "curl -f http://localhost:9200/_cluster/health || exit 1"]
 
 ENTRYPOINT ["/entrypoint.sh"]

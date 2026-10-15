@@ -15,10 +15,10 @@ RUN addgroup -g 1000 -S nginx && adduser -u 1000 -S nginx -G nginx && \
 
 COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
 
-USER nginx
+USER 1000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8080 || exit 1
+    CMD ["/bin/sh", "-c", "wget -q -O /dev/null http://127.0.0.1:8080 || exit 1"]
 
 CMD ["/docker-entrypoint.sh"]
 

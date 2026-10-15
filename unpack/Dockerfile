@@ -39,9 +39,9 @@ RUN apt-get update && \
     rm -rf /usr/local/share/man /var/cache/debconf/*-old /*.txt /install.sh && \
     useradd -m -u 1000 -s /bin/bash unpack
 
-USER unpack
+USER 1000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD test -f /start.sh || exit 1
+    CMD ["/bin/sh", "-c", "test -f /start.sh || exit 1"]
 
 CMD ["/start.sh"]

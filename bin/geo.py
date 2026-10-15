@@ -146,7 +146,8 @@ def _exif_datetime_to_iso(value: str) -> str | None:
     field holds the all-zero placeholder some devices write, or anything
     else that isn't a real timestamp."""
     try:
-        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").isoformat()
+        # Exif timestamps carry no timezone, so a naive datetime is correct here.
+        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").isoformat()  # noqa: DTZ007
     except ValueError:
         return None
 

@@ -10,7 +10,7 @@ FROM docker.elastic.co/kibana/kibana:${ELASTIC_VERSION}
 # Add your kibana plugins setup here
 # Example: RUN kibana-plugin install <name|url>
 
-USER kibana
+USER 1000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:5601/api/status || exit 1
+    CMD ["/bin/sh", "-c", "curl -f http://localhost:5601/api/status || exit 1"]

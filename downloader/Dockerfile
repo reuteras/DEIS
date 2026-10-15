@@ -38,10 +38,10 @@ COPY creatorrc/creatorrc.py creatorrc/guard_country_resolver.py ./
 
 RUN addgroup -g 1000 -S aria2 && adduser -u 1000 -S aria2 -G aria2
 
-USER aria2
+USER 1000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD aria2c --version || exit 1
+    CMD ["/bin/sh", "-c", "aria2c --version || exit 1"]
 
 CMD ["/run/run_aria2.sh"]
 

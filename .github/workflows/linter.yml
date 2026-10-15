@@ -38,6 +38,10 @@ jobs:
         uses: super-linter/super-linter/slim@2da136927bd4a73596db63044b504547c62cb854 # v9.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # pre-commit can't install node hooks with the npm shipped in
+          # super-linter v9 (EALLOWGIT). Markdown is still checked by
+          # super-linter's own MARKDOWN linter.
+          SKIP: markdownlint
           DEFAULT_BRANCH: main
           VALIDATE_ALL_CODEBASE: true
           VALIDATE_BIOME_LINT: false
@@ -54,12 +58,6 @@ jobs:
           VALIDATE_PYTHON_MYPY: false
           VALIDATE_YAML: false
           VALIDATE_BIOME_FORMAT: false
-          VALIDATE_JUPYTER_NBQA_BLACK: false
-          VALIDATE_JUPYTER_NBQA_FLAKE8: false
-          VALIDATE_JUPYTER_NBQA_ISORT: false
-          VALIDATE_JUPYTER_NBQA_MYPY: false
-          VALIDATE_JUPYTER_NBQA_PYLINT: false
-          VALIDATE_JUPYTER_NBQA_RUFF: false
           VALIDATE_PYTHON_RUFF_FORMAT: false
           VALIDATE_SHELL_SHFMT: false
           VALIDATE_SPELL_CODESPELL: false

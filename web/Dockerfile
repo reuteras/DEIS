@@ -23,13 +23,13 @@ RUN apt-get update && \
     mkdir -p /extracted/sha256 && \
     chown web:web /extracted/sha256
 
-USER web
+USER 1000
 
 EXPOSE 8081
 
 ENV UVICORN_LOG_LEVEL=info
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://127.0.0.1:8081/openapi.json || exit 1
+    CMD ["/bin/sh", "-c", "curl -f http://127.0.0.1:8081/openapi.json || exit 1"]
 
 CMD ["./startup.sh"]

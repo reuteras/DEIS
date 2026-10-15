@@ -22,7 +22,7 @@ comment for provenance) but nothing else; no network either.
 
 import math
 import struct
-from datetime import datetime
+import time
 from pathlib import Path
 
 # The two GPS IFD tags this cares about (WGS84 lat/lon as three rationals -
@@ -146,7 +146,8 @@ def _exif_datetime_to_iso(value: str) -> str | None:
     field holds the all-zero placeholder some devices write, or anything
     else that isn't a real timestamp."""
     try:
-        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S").isoformat()
+        # Exif timestamps carry no timezone, so the result has none either.
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.strptime(value, "%Y:%m:%d %H:%M:%S"))
     except ValueError:
         return None
 

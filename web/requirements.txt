@@ -8,13 +8,13 @@ anyio==4.15.1
     # via
     #   deis-web
     #   starlette
-certifi==2026.7.22
+certifi==2026.10.19
     # via requests
 charset-normalizer==3.5.2
     # via requests
 click==8.5.0
     # via uvicorn
-fastapi==0.143.0
+fastapi==0.158.1
     # via deis-web
 h11==0.16.0
     # via uvicorn
@@ -24,15 +24,15 @@ idna==3.20
     #   requests
 opentelemetry-api==1.45.1
     # via fastapi
-pydantic==2.14.0
+pydantic==2.14.1
     # via fastapi
-pydantic-core==2.50.0
+pydantic-core==2.50.1
     # via pydantic
 python-magic==0.4.27
     # via deis-web
 requests==2.34.2
     # via deis-web
-starlette==1.7.0
+starlette==1.9.0
     # via
     #   deis-web
     #   fastapi

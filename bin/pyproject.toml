@@ -1,12 +1,12 @@
 [project]
 name = "deis-bin"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "en-core-web-sm",
     "py3langid==0.3.0",
     "rich>=15.0.0",
-    "spacy==3.8.16",
+    "spacy>=3.8.16",
     "sv-core-news-sm",
     "textual>=8.2.8",
     "tqdm>=4.68.4",

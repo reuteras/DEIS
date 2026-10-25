@@ -91,7 +91,7 @@ packaging==26.3
     #   weasel
 platformdirs==4.13.5
     # via textual
-preshed==3.0.14
+preshed==3.0.13
     # via
     #   spacy
     #   thinc

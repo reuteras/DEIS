@@ -1,11 +1,6 @@
 [tool.uv.workspace]
 members = ["bin", "ingest", "web"]
 
-[tool.uv]
-# preshed 3.0.14 breaks spaCy 3.8.16 tokenizer loading
-# (OverflowError in Tokenizer._flush_specials). Drop once fixed upstream.
-constraint-dependencies = ["preshed==3.0.13"]
-
 [tool.ruff]
 # Allow lines to be as long as 120 characters.
 line-length = 120

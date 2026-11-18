@@ -1,6 +1,6 @@
 #checkov:skip=CKV_DOCKER_2
 #checkov:skip=CKV_DOCKER_3
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 

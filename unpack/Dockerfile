@@ -29,6 +29,7 @@ RUN apt-get update && \
     /install.sh && \
     python3 -m venv /opt/msoffcrypto-venv && \
     /opt/msoffcrypto-venv/bin/pip install --no-cache-dir "msoffcrypto-tool==6.0.0" && \
+    /opt/msoffcrypto-venv/bin/pip uninstall -y pip && \
     apt-get autoremove -y \
         ca-certificates \
         python3-venv \

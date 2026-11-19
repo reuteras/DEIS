@@ -9,7 +9,9 @@ COPY *.py /app
 COPY *.sh /app
 COPY requirements.txt /app
 
-RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt && \
+# apt-get upgrade: Debian security updates the official image does not have yet.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* && \
+    python3 -m pip install --no-cache-dir -r /app/requirements.txt && \
     useradd -m -u 1000 -s /bin/bash ingest
 
 USER 1000

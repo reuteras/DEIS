@@ -15,7 +15,7 @@ name: osv-images
 
 "on":
   schedule:
-    - cron: "23 3 * * *"
+    - cron: "23 */4 * * *"
   push:
     branches:
       - main
@@ -41,31 +41,14 @@ jobs:
         include:
           - context: "controller"
             dockerfile: "controller/Dockerfile"
-            env_args: ""
           - context: "deis"
             dockerfile: "deis/Dockerfile"
-            env_args: ""
-          - context: "downloader"
-            dockerfile: "downloader/Dockerfile"
-            env_args: ""
-          - context: "elasticsearch"
-            dockerfile: "elasticsearch/Dockerfile"
-            env_args: "ELASTIC_VERSION"
           - context: "ingest"
             dockerfile: "ingest/Dockerfile"
-            env_args: ""
-          - context: "kibana"
-            dockerfile: "kibana/Dockerfile"
-            env_args: "ELASTIC_VERSION"
-          - context: "setup"
-            dockerfile: "setup/Dockerfile"
-            env_args: "ELASTIC_VERSION"
           - context: "unpack"
             dockerfile: "unpack/Dockerfile"
-            env_args: ""
           - context: "web"
             dockerfile: "web/Dockerfile"
-            env_args: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,16 +58,9 @@ jobs:
         env:
           CONTEXT: ${{ matrix.context }}
           DOCKERFILE: ${{ matrix.dockerfile }}
-          ENV_ARGS: ${{ matrix.env_args }}
         run: |
           set -euo pipefail
-          args=()
-          for name in $ENV_ARGS; do
-            value=$(sed -n "s/^${name}=//p" .env.default)
-            [ -n "$value" ] || { echo "$name not set in .env.default"; exit 1; }
-            args+=(--build-arg "$name=$value")
-          done
-          docker build --pull -f "$DOCKERFILE" "${args[@]}" -t osv-images/target "$CONTEXT"
+          docker build --pull -f "$DOCKERFILE" -t osv-images/target "$CONTEXT"
           docker save -o "$RUNNER_TEMP/image.tar" osv-images/target
 
       - name: Scan image

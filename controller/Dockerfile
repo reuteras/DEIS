@@ -9,6 +9,7 @@ LABEL maintainer="sn0b4ll"
 
 # hadolint ignore=DL3018
 RUN addgroup -g 1000 -S nginx && adduser -u 1000 -S nginx -G nginx && \
+    apk upgrade --no-cache && \
     apk add --update --no-cache bash nginx
 
 # RUN wget https://github.com/mayswind/AriaNg-DailyBuild/archive/master.zip

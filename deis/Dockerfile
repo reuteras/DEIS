@@ -9,7 +9,8 @@ COPY crawl_links.py /deis/bin/
 COPY crontab.txt /deis/
 
 # hadolint ignore=DL3018
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache && \
+    apk add --no-cache \
         bash \
         curl \
         dcron \

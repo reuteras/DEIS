@@ -177,6 +177,23 @@ RUN_ONLY_CHOICES = ("setup", "download", "extract", "ingest")
 console = Console()
 
 
+def pinned_elastic_version(path: Path | None = None) -> str:
+    """The Elastic Stack version pinned in elasticsearch/Dockerfile's FROM
+    line (tag before the digest; Dependabot bumps it), or "unknown" if the
+    file or the line is missing. `path` defaults to REPO_ROOT /
+    "elasticsearch" / "Dockerfile", resolved on every call so tests can
+    monkeypatch REPO_ROOT.
+    """
+    if path is None:
+        path = REPO_ROOT / "elasticsearch" / "Dockerfile"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    match = re.search(r"^FROM docker\.elastic\.co/elasticsearch/elasticsearch:([\d.]+)", text, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
 def read_env(path: Path | None = None) -> dict[str, str]:
     """Parses .env's KEY=VALUE lines - the only place this project reads
     that file today is docker compose itself, so there's nothing existing
@@ -2845,7 +2862,7 @@ def cmd_reset(_args) -> int:
 #
 # canvas-workspace deliberately NOT included, despite _find still
 # reporting it as a registered type: Canvas was deprecated and its type
-# marked non-exportable as of this project's pinned ELASTIC_VERSION
+# marked non-exportable as of this project's pinned Elastic version
 # (confirmed live - _export 400s with "Trying to export non-exportable
 # type(s): canvas-workspace" even with zero Canvas objects present).
 def _backup_es_volume(destination: Path) -> None:
@@ -2989,7 +3006,7 @@ def _build_manifest(images: list[str], missing_images: list[str], counts: dict) 
     return {
         "archived_at": datetime.now(UTC).isoformat(),
         "deis_commit": commit or "unknown",
-        "elastic_version": read_env().get("ELASTIC_VERSION", "unknown"),
+        "elastic_version": pinned_elastic_version(),
         "images": images,
         "missing_images": missing_images,
         "counts": counts,

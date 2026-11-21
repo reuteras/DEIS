@@ -23,15 +23,10 @@ updates:
         patterns:
           - "*"
 
-  # One entry per directory containing a Dockerfile - Dependabot's docker
-  # ecosystem only ever looks at a single Dockerfile per directory entry,
-  # not recursively, so each of this project's 9 needs its own block.
-  # Bumps each Dockerfile's own FROM line(s) directly (alpine/python/
-  # debian/docker.elastic.co base images). Does NOT cover
-  # docker-compose.yml's ELASTIC_VERSION build arg (passed in from .env,
-  # not a literal version in any Dockerfile's own FROM line, so
-  # Dependabot has nothing to resolve there) - see
-  # scripts/check_vendored.py's "elastic-stack" item for that instead.
+  # Dependabot's docker ecosystem only looks at the Dockerfile in each
+  # listed directory, not recursively, so every directory with a
+  # Dockerfile is listed. Bumps each FROM line (tag and digest) directly:
+  # alpine/python/debian, and the Elastic Stack images (grouped below).
   - package-ecosystem: "docker"
     directory: "/controller"
     schedule:
@@ -65,41 +60,25 @@ updates:
         patterns:
           - "*"
 
+  # The three docker.elastic.co images in one entry and one group, so a new
+  # Elastic Stack release arrives as a single PR that bumps elasticsearch,
+  # kibana and setup together (never a version mix).
   - package-ecosystem: "docker"
-    directory: "/elasticsearch"
+    directories:
+      - "/elasticsearch"
+      - "/kibana"
+      - "/setup"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
     groups:
-      docker-deps:
+      elastic-stack:
         patterns:
           - "*"
 
   - package-ecosystem: "docker"
     directory: "/ingest"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      docker-deps:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "docker"
-    directory: "/kibana"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      docker-deps:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "docker"
-    directory: "/setup"
     schedule:
       interval: "weekly"
     cooldown:

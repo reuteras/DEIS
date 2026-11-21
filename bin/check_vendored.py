@@ -7,10 +7,7 @@ vendored creatorrc.py/guard_country_resolver.py - see
 creatorrc_upgrade), two pinned in notebook/Elastic.ipynb's own first
 code cell (elasticsearch-py, wordcloud) with no separate VENDORED.md of
 their own - a single self-explanatory pip install line needs no extra
-provenance doc the way a hash-pinned binary does - and .env.default's
-ELASTIC_VERSION (elastic-stack), which nothing else here or in
-.github/dependabot.yml can reach (see elastic_stack_upgrade's own
-comment for why). The notebook's pip cell also installs numpy/pandas/
+provenance doc the way a hash-pinned binary does. The notebook's pip cell also installs numpy/pandas/
 ipywidgets unpinned (floating latest) - nothing to check there, since
 there's no pinned version to compare against.
 
@@ -19,8 +16,8 @@ each component's pyproject.toml/uv.lock (`just update` already handles
 those - `uv lock --upgrade` + re-exporting requirements.txt), and every
 other Docker image reference - Dependabot's own "docker"/"docker-compose"
 ecosystems handle those now (see .github/dependabot.yml): each
-Dockerfile's own FROM line (alpine/python/debian/docker.elastic.co base
-images) and docker-compose.yml's directly pre-built images (the notebook
+Dockerfile's own FROM line (alpine/python/debian base images, and the
+Elastic Stack version in the docker.elastic.co images) and docker-compose.yml's directly pre-built images (the notebook
 service's reuteras/container-notebook, pinned by digest).
 
 Two subcommands:
@@ -77,7 +74,6 @@ DOWNLOADER_INSTALL_SH = REPO_ROOT / "downloader" / "install-release.sh"
 DOWNLOADER_VENDORED = REPO_ROOT / "downloader" / "VENDORED.md"
 CREATORRC_VENDORED = REPO_ROOT / "downloader" / "creatorrc" / "VENDORED.md"
 NOTEBOOK_IPYNB = REPO_ROOT / "notebook" / "Elastic.ipynb"
-ENV_DEFAULT = REPO_ROOT / ".env.default"
 
 
 # --------------------------------------------------------------------------
@@ -484,54 +480,6 @@ def _notebook_pip_upgrade(package: str, new_version: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Elastic Stack (.env.default's ELASTIC_VERSION) - the build arg every
-# docker.elastic.co-based Dockerfile (elasticsearch/, kibana/, setup/)
-# takes its FROM tag from. Not something Dependabot's own "docker"
-# ecosystem can resolve: the version lives in .env.default, not as a
-# literal in any Dockerfile's own FROM line, so there's nothing there for
-# it to version-bump (see .github/dependabot.yml's own comment on this).
-# elastic/elasticsearch's GitHub releases happen to use the exact same
-# version scheme as this project's ELASTIC_VERSION ("v9.5.3" -> "9.5.3"),
-# confirmed live, so this reuses github_latest_release_tag() rather than
-# dealing with docker.elastic.co's own registry auth flow for the same
-# answer.
-
-
-def elastic_stack_current() -> str:
-    match = re.search(r"^ELASTIC_VERSION=([\d.]+)", ENV_DEFAULT.read_text(encoding="utf-8"), re.MULTILINE)
-    if not match:
-        raise RuntimeError("could not find ELASTIC_VERSION= in .env.default")
-    return match.group(1)
-
-
-def elastic_stack_latest() -> str:
-    return github_latest_release_tag("elastic/elasticsearch").lstrip("v")
-
-
-def elastic_stack_upgrade(new_version: str) -> list[str]:
-    old = elastic_stack_current()
-    old_pin = f"ELASTIC_VERSION={old}"
-    text = ENV_DEFAULT.read_text(encoding="utf-8")
-    if old_pin not in text:
-        raise RuntimeError("ELASTIC_VERSION= pin not found to replace in .env.default")
-    new_text = text.replace(old_pin, f"ELASTIC_VERSION={new_version}", 1)
-    ENV_DEFAULT.write_text(new_text, encoding="utf-8")
-    return [
-        f".env.default: ELASTIC_VERSION {old} -> {new_version}",
-        (
-            "Read the Elasticsearch/Kibana release notes for breaking changes before running "
-            "this against real case data - a version bump can change index mapping defaults or "
-            "deprecate settings setup/entrypoint.sh relies on."
-        ),
-        (
-            "This only edits .env.default (the checked-in template) - .env itself is gitignored "
-            "and 'deis init' leaves an existing one alone, so update the live .env by hand too if "
-            "you want this to actually take effect."
-        ),
-    ]
-
-
-# --------------------------------------------------------------------------
 
 
 @dataclass
@@ -578,7 +526,6 @@ ITEMS: list[VendoredItem] = [
         lambda: pypi_latest_version("wordcloud"),
         lambda v: _notebook_pip_upgrade("wordcloud", v),
     ),
-    VendoredItem("elastic-stack", ENV_DEFAULT, elastic_stack_current, elastic_stack_latest, elastic_stack_upgrade),
 ]
 
 

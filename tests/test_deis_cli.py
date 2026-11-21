@@ -371,13 +371,20 @@ class TestSearchSnippets:
 
 class TestBuildManifest:
     """_build_manifest (deis archive/deis restore, case handoff) - pure
-    apart from a best-effort `git rev-parse HEAD` and reading .env for
-    ELASTIC_VERSION.
+    apart from a best-effort `git rev-parse HEAD` and reading the Elastic
+    version from elasticsearch/Dockerfile.
     """
+
+    @staticmethod
+    def _write_es_dockerfile(root, version="9.5.3"):
+        (root / "elasticsearch").mkdir()
+        (root / "elasticsearch" / "Dockerfile").write_text(
+            f"# comment\nFROM docker.elastic.co/elasticsearch/elasticsearch:{version}@sha256:{'0' * 64}\n"
+        )
 
     def test_includes_every_passed_in_fact(self, deis_module, tmp_path, monkeypatch):
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        (tmp_path / ".env").write_text("ELASTIC_VERSION=9.5.3\n")
+        self._write_es_dockerfile(tmp_path)
 
         manifest = deis_module._build_manifest(
             images=["deis-elasticsearch:latest"],
@@ -396,11 +403,15 @@ class TestBuildManifest:
         # to exercise the "git rev-parse failed" fallback without mocking
         # subprocess.
         monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
-        (tmp_path / ".env").write_text("ELASTIC_VERSION=9.5.3\n")
+        self._write_es_dockerfile(tmp_path)
 
         manifest = deis_module._build_manifest([], [], {})
 
         assert manifest["deis_commit"] == "unknown"
+
+    def test_elastic_version_unknown_without_dockerfile(self, deis_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(deis_module, "REPO_ROOT", tmp_path)
+        assert deis_module._build_manifest([], [], {})["elastic_version"] == "unknown"
 
 
 class TestManifestMismatches:

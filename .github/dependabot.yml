@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -15,7 +15,7 @@ updates:
   - package-ecosystem: "pre-commit"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -30,7 +30,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/controller"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -41,7 +41,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/deis"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -52,7 +52,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/downloader"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -69,7 +69,7 @@ updates:
       - "/kibana"
       - "/setup"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -80,7 +80,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/ingest"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -91,7 +91,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/unpack"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -102,7 +102,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/web"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -118,7 +118,7 @@ updates:
   - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7
     groups:
@@ -129,6 +129,6 @@ updates:
   - package-ecosystem: "docker"
     directory: "/.github/osv-scanner"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     cooldown:
       default-days: 7

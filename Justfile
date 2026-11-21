@@ -18,7 +18,8 @@ export:
 # Check every hand-pinned version against its latest upstream release - spaCy/its
 # models, 7-Zip, v2ray-core, the geonamescache snapshot behind bin/cities.tsv (each
 # documented in a VENDORED.md), elasticsearch-py/wordcloud pinned in
-# notebook/Elastic.ipynb's own first cell, and .env.default's ELASTIC_VERSION. See
+# notebook/Elastic.ipynb's own first cell. The Elastic Stack version is Dependabot's (pinned in
+# elasticsearch/kibana/setup Dockerfiles). See
 # bin/check_vendored.py's own docstring for exactly what this does and doesn't
 # cover - Docker image references are Dependabot's job now (.github/dependabot.yml),
 # and `just update` above is the separate mechanism for ordinary uv-managed deps.

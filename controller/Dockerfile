@@ -3,7 +3,7 @@
 #checkov:skip=CKV_DOCKER_7
 #checkov:skip=CKV_DOCKER_8
 # hadolint ignore=DL3007
-FROM alpine:3.24
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 LABEL maintainer="sn0b4ll"
 

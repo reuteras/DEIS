@@ -4,7 +4,7 @@
 # elasticsearch/, kibana/ and setup/ together in one grouped PR (see
 # .github/dependabot.yml), so the three always run the same version.
 # https://www.docker.elastic.co/
-FROM docker.elastic.co/elasticsearch/elasticsearch:9.5.6@sha256:79b4f1de4c15e6eca824723086a51e5934406d614d410cc11be77748cafac537
+FROM docker.elastic.co/elasticsearch/elasticsearch:9.5.7@sha256:8aa3b18f6a26880f4c2fa1ffb37a48213e201b0b6a1a47412c66b1f5d533de91
 
 # Unlike entrypoint.sh/lib.sh (bind-mounted read-only in docker-compose.yml,
 # so an edit takes effect on the next 'deis setup' with no rebuild needed),

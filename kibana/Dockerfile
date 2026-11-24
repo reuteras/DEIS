@@ -4,7 +4,7 @@
 # elasticsearch/, kibana/ and setup/ together in one grouped PR (see
 # .github/dependabot.yml), so the three always run the same version.
 # https://www.docker.elastic.co/
-FROM docker.elastic.co/kibana/kibana:9.5.6@sha256:c7ed45da5c3cfea020fc6c99ce027f4d21d19dab330379c5115d5eb95f6ecebc
+FROM docker.elastic.co/kibana/kibana:9.5.7@sha256:e34ecf8da9b5d858cbdff21a9049b4f21ee99e1039933b20c4fbdf8b500eabf5
 
 # Add your kibana plugins setup here
 # Example: RUN kibana-plugin install <name|url>

@@ -17,11 +17,11 @@ architectures (unchanged, informational), but refuses to install on one with no 
 rather than proceeding unverified.
 
 - Source: <https://github.com/v2fly/v2ray-core>
-- Version: `v5.53.0`
-- Pinned on: 2026-09-10
+- Version: `v5.57.0` (prerelease, adopted inside the 1-week cooldown to clear OSV findings in the bundled binary)
+- Pinned on: 2026-11-26
 - sha256:
-  - `v2ray-linux-64.zip`: `6bbb8aee65a57d0b12599b4b7c842b3ad0daca4436e661d94015c447cb31b4fa`
-  - `v2ray-linux-arm64-v8a.zip`: `2bda03a3d6b93122cb418504dc1c9ada10f99ae6be58a1fcc4a5ca1a01e12a30`
+  - `v2ray-linux-64.zip`: `c17a3998748d967522d304fead3af68ae3b425a6cc59972938e1b5bdf4a446e1`
+  - `v2ray-linux-arm64-v8a.zip`: `adc6e281a99b66e370d853e7f1b3d60bffc0652dc974770dd47438ac94340ced`
 - Cross-checked against the published `.dgst` files' own `SHA2-256` lines for the same
   release (independently downloaded, not trusted blindly - both matched the sha256 computed
   directly from the downloaded archive bytes).

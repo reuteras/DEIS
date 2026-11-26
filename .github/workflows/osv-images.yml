@@ -43,6 +43,8 @@ jobs:
             dockerfile: "controller/Dockerfile"
           - context: "deis"
             dockerfile: "deis/Dockerfile"
+          - context: "downloader"
+            dockerfile: "downloader/Dockerfile"
           - context: "ingest"
             dockerfile: "ingest/Dockerfile"
           - context: "unpack"
